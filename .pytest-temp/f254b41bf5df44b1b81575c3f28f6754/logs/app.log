@@ -1,0 +1,7 @@
+2026-04-04 22:43:19.129 | INFO     | 18824:7520 | barbybar.logging_config:setup_logging:82 | BarByBar starting version=0.1.0 python=3.12.12 db_path=C:\Users\admin\.barbybar\barbybar.db log_dir=C:\code\BarByBar\.pytest-temp\f254b41bf5df44b1b81575c3f28f6754\logs
+2026-04-04 22:43:19.131 | WARNING  | 18824:7520 | barbybar.logging_config:_qt_message_handler:103 | Qt message: qt warning from test
+2026-04-04 22:43:20.065 | INFO     | 18824:7520 | barbybar.ui.main_window:_import_csv_with_mapping:413 | event=import_success dataset_id=1 timeframe=1m
+2026-04-04 22:43:20.090 | WARNING  | 18824:7520 | barbybar.ui.main_window:_import_csv_with_mapping:392 | event=missing_columns missing_fields=volume
+2026-04-04 22:43:20.090 | INFO     | 18824:7520 | barbybar.ui.main_window:_import_csv_with_mapping:413 | event=import_success dataset_id=1 timeframe=1m
+2026-04-04 22:43:20.123 | WARNING  | 18824:7520 | barbybar.ui.main_window:_import_csv_with_mapping:392 | event=missing_columns missing_fields=datetime,volume
+2026-04-04 22:43:20.123 | INFO     | 18824:7520 | barbybar.ui.main_window:_import_csv_with_mapping:401 | event=column_mapping_cancelled

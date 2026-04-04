@@ -17,6 +17,22 @@ class ActionType(StrEnum):
     NOTE = "note"
 
 
+class OrderLineType(StrEnum):
+    ENTRY_LONG = "entry_long"
+    ENTRY_SHORT = "entry_short"
+    EXIT = "exit"
+    REVERSE = "reverse"
+    STOP_LOSS = "stop_loss"
+    TAKE_PROFIT = "take_profit"
+    AVERAGE_PRICE = "average_price"
+
+
+class OrderStatus(StrEnum):
+    ACTIVE = "active"
+    TRIGGERED = "triggered"
+    CANCELLED = "cancelled"
+
+
 class SessionStatus(StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
@@ -30,6 +46,15 @@ class Bar:
     low: float
     close: float
     volume: float
+
+
+@dataclass(slots=True)
+class WindowBars:
+    bars: list[Bar]
+    global_start_index: int
+    global_end_index: int
+    anchor_global_index: int
+    total_count: int
 
 
 @dataclass(slots=True)
@@ -55,6 +80,42 @@ class SessionAction:
     extra: dict[str, Any] = field(default_factory=dict)
     id: int | None = None
     session_id: int | None = None
+
+
+@dataclass(slots=True)
+class OrderLine:
+    order_type: OrderLineType
+    price: float
+    quantity: float
+    created_bar_index: int
+    active_from_bar_index: int
+    created_at: datetime
+    status: OrderStatus = OrderStatus.ACTIVE
+    triggered_bar_index: int | None = None
+    triggered_at: datetime | None = None
+    note: str = ""
+    id: int | None = None
+    session_id: int | None = None
+
+    @property
+    def is_active(self) -> bool:
+        return self.status is OrderStatus.ACTIVE
+
+    @property
+    def is_entry(self) -> bool:
+        return self.order_type in {OrderLineType.ENTRY_LONG, OrderLineType.ENTRY_SHORT}
+
+    @property
+    def is_flattening(self) -> bool:
+        return self.order_type in {OrderLineType.EXIT, OrderLineType.REVERSE}
+
+    @property
+    def is_protective(self) -> bool:
+        return self.order_type in {OrderLineType.STOP_LOSS, OrderLineType.TAKE_PROFIT}
+
+    @property
+    def is_reference(self) -> bool:
+        return self.order_type is OrderLineType.AVERAGE_PRICE
 
 
 @dataclass(slots=True)
@@ -163,8 +224,11 @@ class ReviewSession:
     dataset_id: int
     symbol: str
     timeframe: str
+    chart_timeframe: str
     start_index: int
     current_index: int
+    current_bar_time: datetime | None = None
+    tick_size: float = 1.0
     status: SessionStatus = SessionStatus.ACTIVE
     title: str = ""
     notes: str = ""

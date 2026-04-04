@@ -1,0 +1,404 @@
+from datetime import datetime, timedelta
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QPushButton
+
+from barbybar.data.csv_importer import MissingColumnsError
+from barbybar.data.tick_size import default_tick_size_for_symbol
+from barbybar.domain.engine import ReviewEngine
+from barbybar.domain.models import ActionType, Bar, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, WindowBars
+from barbybar.storage.repository import Repository
+from barbybar.ui.main_window import MainWindow
+
+
+def _app() -> QApplication:
+    app = QApplication.instance()
+    return app or QApplication([])
+
+
+@pytest.fixture(scope="module")
+def app() -> QApplication:
+    return _app()
+
+
+@pytest.fixture()
+def window(app: QApplication) -> MainWindow:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(180):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    repo.import_csv(csv_path, "IF", "1m")
+    main_window = MainWindow(repo)
+    yield main_window
+    main_window.close()
+    main_window.deleteLater()
+    app.processEvents()
+
+
+def _seed_engine(window: MainWindow) -> None:
+    bars = [
+        Bar(
+            timestamp=datetime(2025, 1, 1, 9, index),
+            open=100 + index,
+            high=101 + index,
+            low=99 + index,
+            close=100.5 + index,
+            volume=1000 + index,
+        )
+        for index in range(60)
+    ]
+    session = ReviewSession(
+        id=1,
+        dataset_id=1,
+        symbol="IF",
+        timeframe="1m",
+        chart_timeframe="1m",
+        start_index=0,
+        current_index=25,
+        current_bar_time=bars[25].timestamp,
+        status=SessionStatus.ACTIVE,
+        title="Test session",
+        notes="",
+        tags=[],
+        position=PositionState(),
+        stats=SessionStats(),
+        created_at=bars[0].timestamp,
+        updated_at=bars[0].timestamp,
+    )
+    window.engine = ReviewEngine(session, bars, window_start_index=0, total_count=len(bars))
+    window.current_session_id = 1
+
+
+def test_main_window_uses_timeframe_shortcut_buttons(window: MainWindow) -> None:
+    assert set(window.timeframe_buttons) == {"1m", "5m", "15m", "30m", "60m"}
+
+
+def test_main_window_has_no_autoplay_controls(window: MainWindow) -> None:
+    button_texts = {button.text() for button in window.findChildren(QPushButton)}
+    assert "自动播放" not in button_texts
+    assert not hasattr(window, "play_button")
+    assert not hasattr(window, "speed_combo")
+
+
+def test_main_window_removes_session_info_panel(window: MainWindow) -> None:
+    group_titles = {group.title() for group in window.findChildren(QGroupBox)}
+    assert "会话信息" not in group_titles
+    assert group_titles >= {"交易动作", "统计"}
+
+
+def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
+    button_texts = {button.text() for button in window.findChildren(QPushButton)}
+
+    assert "画线下单" not in button_texts
+    assert "买" in button_texts
+    assert "卖" in button_texts
+    assert "平" in button_texts
+    assert "反" in button_texts
+    assert "取消画线下单" in button_texts
+    assert "图上开多线" not in button_texts
+    assert "图上开空线" not in button_texts
+    assert "加仓" not in button_texts
+    assert "减仓" not in button_texts
+
+
+def test_timeframe_buttons_render_above_chart(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(1)
+    layout = center_panel.layout()
+
+    assert layout.itemAt(0).layout() is not None
+    assert layout.itemAt(1).widget() is window.chart_widget
+
+
+def test_draw_order_controls_sync_position_state(window: MainWindow) -> None:
+    _seed_engine(window)
+
+    window._sync_draw_order_controls()
+
+    assert window._draw_order_buttons[OrderLineType.EXIT].isEnabled() is False
+    assert window._draw_order_buttons[OrderLineType.REVERSE].isEnabled() is False
+
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=101)
+    window._sync_draw_order_controls()
+
+    assert window._draw_order_buttons[OrderLineType.EXIT].isEnabled() is True
+    assert window._draw_order_buttons[OrderLineType.REVERSE].isEnabled() is True
+
+
+def test_order_preview_confirmed_uses_selected_quantity(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    captured: list[tuple[object, float, float]] = []
+
+    def fake_place(order_type, price, quantity):
+        captured.append((order_type, price, quantity))
+
+    monkeypatch.setattr(window, "_place_order_line_with_quantity", fake_place)
+
+    window._handle_order_preview_confirmed("entry_long", 102.5, 3.0)
+
+    assert captured == [(OrderLineType.ENTRY_LONG, 102.5, 3.0)]
+
+
+def test_tick_size_defaults_from_symbol(window: MainWindow) -> None:
+    _seed_engine(window)
+    window.engine.session.symbol = "IF"
+    window.engine.session.tick_size = default_tick_size_for_symbol("IF")
+
+    window._update_ui_from_engine()
+
+    assert window.tick_size_spin.value() == 0.2
+
+
+def test_tick_size_change_snaps_price_input(window: MainWindow) -> None:
+    _seed_engine(window)
+    window.price_spin.setValue(5914.62)
+
+    window._handle_tick_size_changed(1.0)
+
+    assert window.price_spin.value() == 5915.0
+    window._session_dirty = False
+    window._auto_save_timer.stop()
+
+
+def test_busy_overlay_show_and_hide(window: MainWindow) -> None:
+    window.show_busy_overlay("正在加载案例...", "正在读取数据并构建图表")
+
+    assert window._busy_overlay is not None
+    assert not window._busy_overlay.isHidden()
+    assert window._busy_overlay.title_label.text() == "正在加载案例..."
+    assert QApplication.overrideCursor() is not None
+
+    window.hide_busy_overlay()
+
+    assert window._busy_overlay.isHidden()
+    assert QApplication.overrideCursor() is None
+
+
+def test_navigation_schedules_auto_save(window: MainWindow) -> None:
+    _seed_engine(window)
+
+    window.step_forward()
+
+    assert window._session_dirty is True
+    assert window._auto_save_timer.isActive()
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_flush_pending_auto_save_persists_session(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    calls: list[str] = []
+
+    def fake_save_session(*, trigger: str = "manual") -> None:
+        calls.append(trigger)
+        window._session_dirty = False
+        window._auto_save_timer.stop()
+
+    monkeypatch.setattr(window, "save_session", fake_save_session)
+    window._session_dirty = True
+    window._auto_save_timer.start(5000)
+
+    window._flush_pending_auto_save("change_chart_timeframe")
+
+    assert calls == ["auto_flush:change_chart_timeframe"]
+    assert not window._auto_save_timer.isActive()
+
+
+def test_order_line_context_price_edit_snaps_value(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    line = window.engine.place_order_line(OrderLineType.ENTRY_LONG, price=100.5, quantity=1)
+    line.id = 101
+    window.engine.session.tick_size = 0.2
+    monkeypatch.setattr(window, "save_session", lambda **kwargs: None)
+
+    monkeypatch.setattr("barbybar.ui.main_window.QInputDialog.getDouble", lambda *args, **kwargs: (100.73, True))
+
+    window._handle_order_line_action_requested(101, "edit_price")
+
+    updated = next(item for item in window.engine.active_order_lines if item.id == 101)
+    assert updated.price == 100.8
+
+
+def test_order_line_context_quantity_edit_uses_integer(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    line = window.engine.place_order_line(OrderLineType.ENTRY_LONG, price=100.5, quantity=1)
+    line.id = 202
+    monkeypatch.setattr(window, "save_session", lambda **kwargs: None)
+
+    monkeypatch.setattr("barbybar.ui.main_window.QInputDialog.getInt", lambda *args, **kwargs: (3, True))
+
+    window._handle_order_line_action_requested(202, "edit_quantity")
+
+    updated = next(item for item in window.engine.active_order_lines if item.id == 202)
+    assert updated.quantity == 3
+
+
+def test_order_line_context_delete_cancels_line(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    line = window.engine.place_order_line(OrderLineType.ENTRY_LONG, price=100.5, quantity=1)
+    line.id = 303
+    monkeypatch.setattr(window, "save_session", lambda **kwargs: None)
+
+    window._handle_order_line_action_requested(303, "delete")
+
+    assert all(item.id != 303 or item.is_active is False for item in window.engine.order_lines)
+
+
+def test_busy_overlay_becomes_visible_when_window_is_shown(window: MainWindow, app: QApplication) -> None:
+    window.show()
+    window.show_busy_overlay("正在加载案例...", "正在读取数据并构建图表")
+    app.processEvents()
+
+    assert window._busy_overlay is not None
+    assert window._busy_overlay.isVisible()
+
+
+def test_busy_overlay_covers_entire_main_workspace(window: MainWindow) -> None:
+    window.resize(1400, 900)
+    window.show_busy_overlay("正在加载案例...", "正在读取数据并构建图表")
+
+    assert window._busy_overlay is not None
+    assert window._busy_overlay.geometry() == window.centralWidget().rect()
+
+
+def test_set_timeframe_choices_does_not_trigger_replay_bar_loading(window: MainWindow, monkeypatch) -> None:
+    def fail_get_replay_bars(*args, **kwargs):
+        raise AssertionError("get_replay_bars should not be called when only updating button states")
+
+    monkeypatch.setattr(window.repo, "get_replay_bars", fail_get_replay_bars)
+
+    window._set_timeframe_choices("1m", "5m")
+
+    assert window.timeframe_buttons["1m"].isEnabled()
+    assert window.timeframe_buttons["5m"].isChecked()
+
+
+def test_import_csv_defaults_to_1m(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    csv_path = case_dir / "sample.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "datetime,open,high,low,close,volume",
+                "2025-01-01 09:00:00,100,101,99,100.5,1000",
+                "2025-01-01 09:01:00,100.5,101.5,100,101,1100",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
+    monkeypatch.setattr("barbybar.ui.main_window.QInputDialog.getText", lambda *args, **kwargs: ("IF", True))
+
+    window.import_csv()
+
+    datasets = repo.list_datasets()
+    assert len(datasets) == 1
+    assert datasets[0].timeframe == "1m"
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_import_csv_opens_mapping_dialog_for_missing_columns(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    csv_path = case_dir / "sample.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "date,open,high,low,close,size",
+                "2025-01-01 09:00:00,100,101,99,100.5,1000",
+                "2025-01-01 09:01:00,100.5,101.5,100,101,1100",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+
+    class FakeDialog:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def get_field_map(self):
+            return {
+                "datetime": "date",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "size",
+            }
+
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
+    monkeypatch.setattr("barbybar.ui.main_window.QInputDialog.getText", lambda *args, **kwargs: ("IF", True))
+    monkeypatch.setattr("barbybar.ui.main_window.ColumnMappingDialog", FakeDialog)
+
+    window.import_csv()
+
+    datasets = repo.list_datasets()
+    assert len(datasets) == 1
+    assert datasets[0].timeframe == "1m"
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_import_csv_cancel_mapping_does_not_write_dataset(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+
+    class FakeDialog:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def exec(self):
+            return QDialog.DialogCode.Rejected
+
+        def get_field_map(self):
+            return {}
+
+    def fake_import_csv(path, symbol, timeframe, field_map=None):
+        if field_map is None:
+            raise MissingColumnsError(
+                available_headers=["date", "open", "high", "low", "close", "size"],
+                missing_fields=["datetime", "volume"],
+                detected_field_map={"open": "open", "high": "high", "low": "low", "close": "close"},
+            )
+        raise AssertionError("manual mapping should not run after cancel")
+
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: ("dummy.csv", "CSV Files (*.csv)"))
+    monkeypatch.setattr("barbybar.ui.main_window.QInputDialog.getText", lambda *args, **kwargs: ("IF", True))
+    monkeypatch.setattr("barbybar.ui.main_window.ColumnMappingDialog", FakeDialog)
+    monkeypatch.setattr(repo, "import_csv", fake_import_csv)
+
+    window.import_csv()
+
+    assert repo.list_datasets() == []
+    window.close()
+    window.deleteLater()
+    app.processEvents()

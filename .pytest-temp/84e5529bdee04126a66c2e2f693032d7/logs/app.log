@@ -1,0 +1,26 @@
+2026-04-04 23:46:39.855 | INFO     | 16196:13916 | barbybar.logging_config:setup_logging:82 | BarByBar starting version=0.1.0 python=3.12.12 db_path=C:\Users\admin\.barbybar\barbybar.db log_dir=C:\code\BarByBar\.pytest-temp\84e5529bdee04126a66c2e2f693032d7\logs
+2026-04-04 23:46:39.855 | WARNING  | 16196:13916 | barbybar.logging_config:_qt_message_handler:103 | Qt message: qt warning from test
+2026-04-04 23:46:39.895 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:39.928 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:39.958 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:39.992 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.025 | DEBUG    | 16196:13916 | barbybar.ui.main_window:show_busy_overlay:788 | event=show_busy_overlay title=正在加载案例...
+2026-04-04 23:46:40.027 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.027 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.058 | DEBUG    | 16196:13916 | barbybar.ui.main_window:_schedule_auto_save:1023 | event=auto_save_scheduled
+2026-04-04 23:46:40.058 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.093 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.144 | DEBUG    | 16196:13916 | barbybar.ui.main_window:show_busy_overlay:788 | event=show_busy_overlay title=正在加载案例...
+2026-04-04 23:46:40.185 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.256 | DEBUG    | 16196:13916 | barbybar.ui.main_window:show_busy_overlay:788 | event=show_busy_overlay title=正在加载案例...
+2026-04-04 23:46:40.257 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.307 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.353 | INFO     | 16196:13916 | barbybar.ui.main_window:_import_csv_with_mapping:478 | event=import_success dataset_id=1 timeframe=1m
+2026-04-04 23:46:40.354 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.391 | WARNING  | 16196:13916 | barbybar.ui.main_window:_import_csv_with_mapping:457 | event=missing_columns missing_fields=volume
+2026-04-04 23:46:40.395 | INFO     | 16196:13916 | barbybar.ui.main_window:_import_csv_with_mapping:478 | event=import_success dataset_id=1 timeframe=1m
+2026-04-04 23:46:40.395 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.429 | WARNING  | 16196:13916 | barbybar.ui.main_window:_import_csv_with_mapping:457 | event=missing_columns missing_fields=datetime,volume
+2026-04-04 23:46:40.429 | INFO     | 16196:13916 | barbybar.ui.main_window:_import_csv_with_mapping:466 | event=column_mapping_cancelled
+2026-04-04 23:46:40.429 | DEBUG    | 16196:13916 | barbybar.ui.main_window:hide_busy_overlay:804 | event=hide_busy_overlay
+2026-04-04 23:46:40.515 | WARNING  | 16196:13916 | barbybar.storage.repository:_session_from_row:375 | event=deprecated_chart_timeframe_fallback

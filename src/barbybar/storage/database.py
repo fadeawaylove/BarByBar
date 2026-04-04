@@ -42,9 +42,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     dataset_id INTEGER NOT NULL,
     symbol TEXT NOT NULL,
     timeframe TEXT NOT NULL,
+    replay_timeframe TEXT NOT NULL DEFAULT '1m',
+    chart_timeframe TEXT NOT NULL DEFAULT '1m',
     title TEXT NOT NULL,
     start_index INTEGER NOT NULL,
     current_index INTEGER NOT NULL,
+    current_bar_time TEXT,
+    tick_size REAL NOT NULL DEFAULT 1.0,
     status TEXT NOT NULL,
     notes TEXT NOT NULL DEFAULT '',
     tags_json TEXT NOT NULL DEFAULT '[]',
@@ -67,6 +71,22 @@ CREATE TABLE IF NOT EXISTS actions (
     extra_json TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS order_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    order_type TEXT NOT NULL,
+    price REAL NOT NULL,
+    quantity REAL NOT NULL,
+    status TEXT NOT NULL,
+    created_bar_index INTEGER NOT NULL,
+    active_from_bar_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    triggered_bar_index INTEGER,
+    triggered_at TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
 """
 
 
@@ -76,4 +96,27 @@ def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_SQL)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "replay_timeframe" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN replay_timeframe TEXT NOT NULL DEFAULT '1m'")
+        conn.execute("UPDATE sessions SET replay_timeframe = timeframe WHERE replay_timeframe = '1m'")
+    if "chart_timeframe" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN chart_timeframe TEXT NOT NULL DEFAULT '1m'")
+        source_column = "replay_timeframe" if "replay_timeframe" in columns else "timeframe"
+        conn.execute(f"UPDATE sessions SET chart_timeframe = {source_column}")
+    if "current_bar_time" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN current_bar_time TEXT")
+    if "tick_size" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN tick_size REAL NOT NULL DEFAULT 1.0")
+    order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
+    if order_columns and "note" not in order_columns:
+        conn.execute("ALTER TABLE order_lines ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+    if order_columns and "active_from_bar_index" not in order_columns:
+        conn.execute("ALTER TABLE order_lines ADD COLUMN active_from_bar_index INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE order_lines SET active_from_bar_index = created_bar_index + 1 WHERE active_from_bar_index = 0")
+    conn.commit()

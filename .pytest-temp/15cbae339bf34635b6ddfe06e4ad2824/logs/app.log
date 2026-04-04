@@ -1,0 +1,24 @@
+2026-04-04 22:52:36.044 | INFO     | 3700:19308 | barbybar.logging_config:setup_logging:82 | BarByBar starting version=0.1.0 python=3.12.12 db_path=C:\Users\admin\.barbybar\barbybar.db log_dir=C:\code\BarByBar\.pytest-temp\15cbae339bf34635b6ddfe06e4ad2824\logs
+2026-04-04 22:52:36.044 | WARNING  | 3700:19308 | barbybar.logging_config:_qt_message_handler:103 | Qt message: qt warning from test
+2026-04-04 22:52:36.094 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.132 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.173 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.235 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.276 | DEBUG    | 3700:19308 | barbybar.ui.main_window:show_busy_overlay:694 | event=show_busy_overlay title=正在加载案例...
+2026-04-04 22:52:36.279 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.279 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.311 | DEBUG    | 3700:19308 | barbybar.ui.main_window:_schedule_auto_save:928 | event=auto_save_scheduled
+2026-04-04 22:52:36.454 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.511 | DEBUG    | 3700:19308 | barbybar.ui.main_window:show_busy_overlay:694 | event=show_busy_overlay title=正在加载案例...
+2026-04-04 22:52:36.558 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.638 | DEBUG    | 3700:19308 | barbybar.ui.main_window:show_busy_overlay:694 | event=show_busy_overlay title=正在加载案例...
+2026-04-04 22:52:36.639 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.676 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.710 | INFO     | 3700:19308 | barbybar.ui.main_window:_import_csv_with_mapping:438 | event=import_success dataset_id=1 timeframe=1m
+2026-04-04 22:52:36.710 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.741 | WARNING  | 3700:19308 | barbybar.ui.main_window:_import_csv_with_mapping:417 | event=missing_columns missing_fields=volume
+2026-04-04 22:52:36.744 | INFO     | 3700:19308 | barbybar.ui.main_window:_import_csv_with_mapping:438 | event=import_success dataset_id=1 timeframe=1m
+2026-04-04 22:52:36.745 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay
+2026-04-04 22:52:36.773 | WARNING  | 3700:19308 | barbybar.ui.main_window:_import_csv_with_mapping:417 | event=missing_columns missing_fields=datetime,volume
+2026-04-04 22:52:36.774 | INFO     | 3700:19308 | barbybar.ui.main_window:_import_csv_with_mapping:426 | event=column_mapping_cancelled
+2026-04-04 22:52:36.774 | DEBUG    | 3700:19308 | barbybar.ui.main_window:hide_busy_overlay:710 | event=hide_busy_overlay

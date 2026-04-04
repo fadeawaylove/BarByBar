@@ -4,11 +4,13 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from barbybar.logging_config import setup_logging
 from barbybar.storage.repository import Repository
 from barbybar.ui.main_window import MainWindow
 
 
 def main() -> int:
+    setup_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("BarByBar")
     repo = Repository()
