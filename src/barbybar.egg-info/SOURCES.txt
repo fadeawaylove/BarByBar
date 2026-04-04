@@ -2,6 +2,7 @@ README.md
 pyproject.toml
 src/barbybar/__init__.py
 src/barbybar/app.py
+src/barbybar/logging_config.py
 src/barbybar.egg-info/PKG-INFO
 src/barbybar.egg-info/SOURCES.txt
 src/barbybar.egg-info/dependency_links.txt
@@ -9,6 +10,7 @@ src/barbybar.egg-info/requires.txt
 src/barbybar.egg-info/top_level.txt
 src/barbybar/data/__init__.py
 src/barbybar/data/csv_importer.py
+src/barbybar/data/timeframe.py
 src/barbybar/domain/__init__.py
 src/barbybar/domain/engine.py
 src/barbybar/domain/models.py
@@ -18,6 +20,9 @@ src/barbybar/storage/repository.py
 src/barbybar/ui/__init__.py
 src/barbybar/ui/chart_widget.py
 src/barbybar/ui/main_window.py
+tests/test_chart_widget.py
 tests/test_csv_importer.py
 tests/test_engine.py
+tests/test_logging_config.py
+tests/test_main_window.py
 tests/test_repository.py

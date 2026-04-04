@@ -6,7 +6,7 @@ BarByBar is a Windows desktop review trainer for stepping through futures bars o
 
 - Import minute-level OHLCV data from local CSV files
 - Create review sessions with hidden future bars
-- Step forward, auto-play, step backward, and jump to a target bar
+- Step forward, step backward, and jump to a target bar
 - Record trading decisions, notes, stop-loss, and take-profit rules
 - Save sessions and actions into a local SQLite case library
 - Review past sessions with basic performance statistics
@@ -26,6 +26,15 @@ The app stores its SQLite database under `%USERPROFILE%\.barbybar\barbybar.db`.
 uv run pytest -q
 uv run python -m barbybar.app
 ```
+
+## Logs
+
+The app stores runtime logs under `%USERPROFILE%\.barbybar\logs`.
+
+- `app.log`: all application logs at `DEBUG` and above
+- `error.log`: error and exception logs only
+
+When diagnosing slow loads, import failures, or background worker issues, check `app.log` first and then `error.log` for stack traces.
 
 ## CSV Format
 
