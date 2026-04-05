@@ -6,7 +6,7 @@ from uuid import uuid4
 from barbybar.data.tick_size import default_tick_size_for_symbol
 from barbybar.data.timeframe import aggregate_bars, find_bar_index_for_timestamp, normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, OrderLineType
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType
 from barbybar.storage.repository import Repository
 
 
@@ -29,17 +29,29 @@ def test_repository_roundtrip() -> None:
         engine.record_action(ActionType.CLOSE, quantity=1)
         engine.set_notes("Breakout failed after resistance retest")
         engine.set_tags(["breakout", "morning"])
-        repo.save_session(engine.session, engine.actions, engine.order_lines)
+        drawings = [
+            ChartDrawing(
+                tool_type=DrawingToolType.RAY,
+                anchors=[DrawingAnchor(1.0, bars[0].close), DrawingAnchor(3.0, bars[1].close)],
+                style={"color": "#3366ff", "width": 3, "line_style": "dash"},
+            )
+        ]
+        repo.save_session(engine.session, engine.actions, engine.order_lines, drawings)
 
         saved = repo.get_session(session.id or 0)
         actions = repo.get_session_actions(session.id or 0)
         order_lines = repo.get_order_lines(session.id or 0)
+        loaded_drawings = repo.get_drawings(session.id or 0)
         assert saved.notes.startswith("Breakout")
         assert saved.chart_timeframe == "5m"
         assert saved.tick_size == default_tick_size_for_symbol("IF")
         assert saved.stats.total_trades == 1
         assert len(actions) == 2
         assert len(order_lines) == 1
+        assert len(loaded_drawings) == 1
+        assert loaded_drawings[0].tool_type is DrawingToolType.RAY
+        assert loaded_drawings[0].style["color"] == "#3366ff"
+        assert loaded_drawings[0].style["width"] == 3
         assert order_lines[0].order_type is OrderLineType.STOP_LOSS
         assert order_lines[0].active_from_bar_index == 1
     finally:
@@ -230,6 +242,63 @@ def test_save_session_preserves_existing_order_line_ids() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_repository_roundtrip_fib_and_text_styles() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        drawings = [
+            ChartDrawing(
+                tool_type=DrawingToolType.FIB_RETRACEMENT,
+                anchors=[DrawingAnchor(1.0, 100.0), DrawingAnchor(3.0, 110.0)],
+                style={"fib_levels": [0.0, 0.5, 1.0, 2.0], "show_level_labels": True, "show_price_labels": True},
+            ),
+            ChartDrawing(
+                tool_type=DrawingToolType.TEXT,
+                anchors=[DrawingAnchor(2.0, 105.0)],
+                style={"text": "观察回撤", "font_size": 14, "text_color": "#3366ff"},
+            ),
+        ]
+        repo.save_session(session, [], [], drawings)
+
+        loaded = repo.get_drawings(session.id or 0)
+
+        assert loaded[0].tool_type is DrawingToolType.FIB_RETRACEMENT
+        assert loaded[0].style["fib_levels"] == [0.0, 0.5, 1.0, 2.0]
+        assert loaded[1].tool_type is DrawingToolType.TEXT
+        assert loaded[1].style["text"] == "观察回撤"
+        assert loaded[1].style["font_size"] == 14
+        assert loaded[1].style["text_color"] == "#3366ff"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_get_drawings_normalizes_legacy_empty_style_json() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        repo.conn.execute(
+            "INSERT INTO drawings(session_id, tool_type, anchors_json, style_json) VALUES (?, ?, ?, ?)",
+            (session.id, DrawingToolType.HORIZONTAL_LINE.value, '[{\"x\": 2.0, \"y\": 100.0}]', "{}"),
+        )
+        repo.conn.commit()
+
+        drawings = repo.get_drawings(session.id or 0)
+
+        assert drawings[0].style["color"] == "#ff9f1c"
+        assert drawings[0].style["line_style"] == "solid"
+        assert drawings[0].style["width"] == 2
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_delete_session_removes_actions_and_order_lines() -> None:
     temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -242,13 +311,19 @@ def test_delete_session_removes_actions_and_order_lines() -> None:
         engine = ReviewEngine(session, bars)
         engine.record_action(ActionType.OPEN_LONG, quantity=1)
         engine.place_order_line(OrderLineType.ENTRY_LONG, price=bars[2].close, quantity=1)
-        repo.save_session(engine.session, engine.actions, engine.order_lines)
+        repo.save_session(
+            engine.session,
+            engine.actions,
+            engine.order_lines,
+            [ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(2.0, bars[2].close)])],
+        )
 
         repo.delete_session(session.id or 0)
 
         assert repo.list_sessions() == []
         assert repo.conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
         assert repo.conn.execute("SELECT COUNT(*) FROM order_lines").fetchone()[0] == 0
+        assert repo.conn.execute("SELECT COUNT(*) FROM drawings").fetchone()[0] == 0
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -265,7 +340,12 @@ def test_delete_dataset_cascades_sessions_actions_and_order_lines() -> None:
         engine = ReviewEngine(session, bars)
         engine.record_action(ActionType.OPEN_LONG, quantity=1)
         engine.place_order_line(OrderLineType.ENTRY_LONG, price=bars[2].close, quantity=1)
-        repo.save_session(engine.session, engine.actions, engine.order_lines)
+        repo.save_session(
+            engine.session,
+            engine.actions,
+            engine.order_lines,
+            [ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(1.0, 100.0), DrawingAnchor(3.0, 110.0)])],
+        )
 
         repo.delete_dataset(dataset.id or 0)
 
@@ -274,5 +354,51 @@ def test_delete_dataset_cascades_sessions_actions_and_order_lines() -> None:
         assert repo.conn.execute("SELECT COUNT(*) FROM bars").fetchone()[0] == 0
         assert repo.conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
         assert repo.conn.execute("SELECT COUNT(*) FROM order_lines").fetchone()[0] == 0
+        assert repo.conn.execute("SELECT COUNT(*) FROM drawings").fetchone()[0] == 0
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_save_session_persists_drawings_by_session() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        first = repo.create_session(dataset.id or 0, start_index=1)
+        second = repo.create_session(dataset.id or 0, start_index=2)
+
+        first_drawings = [
+            ChartDrawing(
+                tool_type=DrawingToolType.PARALLEL_CHANNEL,
+                anchors=[DrawingAnchor(1.0, 100.0), DrawingAnchor(4.0, 103.0), DrawingAnchor(2.0, 98.0)],
+            ),
+            ChartDrawing(
+                tool_type=DrawingToolType.RECTANGLE,
+                anchors=[DrawingAnchor(5.0, 99.0), DrawingAnchor(8.0, 110.0)],
+            ),
+        ]
+        second_drawings = [
+            ChartDrawing(
+                tool_type=DrawingToolType.HORIZONTAL_LINE,
+                anchors=[DrawingAnchor(3.0, 105.0)],
+            )
+        ]
+
+        repo.save_session(first, [], [], first_drawings)
+        repo.save_session(second, [], [], second_drawings)
+
+        loaded_first = repo.get_drawings(first.id or 0)
+        loaded_second = repo.get_drawings(second.id or 0)
+
+        assert [drawing.tool_type for drawing in loaded_first] == [
+            DrawingToolType.PARALLEL_CHANNEL,
+            DrawingToolType.RECTANGLE,
+        ]
+        assert len(loaded_first[0].anchors) == 3
+        assert loaded_first[1].anchors[1].y == 110.0
+        assert [drawing.tool_type for drawing in loaded_second] == [DrawingToolType.HORIZONTAL_LINE]
+        assert len(loaded_second[0].anchors) == 1
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -27,9 +28,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QColorDialog,
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +44,8 @@ from barbybar.data.timeframe import normalize_timeframe, supported_replay_timefr
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import (
     ActionType,
+    ChartDrawing,
+    DrawingToolType,
     DataSet,
     OrderLineType,
     PositionState,
@@ -48,6 +53,7 @@ from barbybar.domain.models import (
     SessionStats,
     SessionStatus,
     WindowBars,
+    normalize_drawing_style,
 )
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import ChartWidget
@@ -145,6 +151,9 @@ class SessionLoadWorker(QObject):
             order_step = perf_counter()
             order_lines = repo.get_order_lines(session.id or 0)
             log.debug("event=get_order_lines elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - order_step) * 1000)
+            drawing_step = perf_counter()
+            drawings = repo.get_drawings(session.id or 0)
+            log.debug("event=get_drawings elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - drawing_step) * 1000)
             timeframe = self.chart_timeframe or session.chart_timeframe
             window_step = perf_counter()
             window = repo.get_chart_window(
@@ -173,6 +182,7 @@ class SessionLoadWorker(QObject):
                     "dataset": dataset,
                     "actions": actions,
                     "order_lines": order_lines,
+                    "drawings": drawings,
                     "chart_timeframe": timeframe,
                     "anchor_time": self.anchor_time or session.current_bar_time,
                     "window": window,
@@ -237,6 +247,126 @@ class ColumnMappingDialog(QDialog):
             QMessageBox.warning(self, "映射不完整", f"请补齐以下字段: {', '.join(missing)}")
             return
         super().accept()
+
+
+class DrawingPropertiesDialog(QDialog):
+    def __init__(self, drawing: ChartDrawing, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("画线属性")
+        self._drawing = drawing
+        style = normalize_drawing_style(drawing.tool_type, drawing.style)
+        self._selected_color = str(style["color"])
+        self._selected_fill_color = str(style["fill_color"])
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.color_button = QPushButton(self._selected_color)
+        self.color_button.clicked.connect(self._pick_color)
+        self._apply_button_color(self.color_button, self._selected_color)
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(1, 8)
+        self.width_spin.setValue(int(style["width"]))
+        self.line_style_combo = QComboBox()
+        self.line_style_combo.addItem("实线", "solid")
+        self.line_style_combo.addItem("虚线", "dash")
+        self.line_style_combo.addItem("点线", "dot")
+        self.line_style_combo.setCurrentIndex(max(0, self.line_style_combo.findData(style["line_style"])))
+
+        self.extend_left_check = QCheckBox("向左延伸")
+        self.extend_left_check.setChecked(bool(style["extend_left"]))
+        self.extend_right_check = QCheckBox("向右延伸")
+        self.extend_right_check.setChecked(bool(style["extend_right"]))
+        if drawing.tool_type in {DrawingToolType.TREND_LINE, DrawingToolType.RAY, DrawingToolType.EXTENDED_LINE}:
+            form.addRow("", self.extend_left_check)
+            form.addRow("", self.extend_right_check)
+
+        self.fill_color_button = QPushButton(self._selected_fill_color)
+        self.fill_color_button.clicked.connect(self._pick_fill_color)
+        self._apply_button_color(self.fill_color_button, self._selected_fill_color)
+        self.fill_opacity_spin = QDoubleSpinBox()
+        self.fill_opacity_spin.setRange(0.0, 1.0)
+        self.fill_opacity_spin.setSingleStep(0.05)
+        self.fill_opacity_spin.setDecimals(2)
+        self.fill_opacity_spin.setValue(float(style["fill_opacity"]))
+
+        self.show_price_label_check = QCheckBox("显示价格标签")
+        self.show_price_label_check.setChecked(bool(style["show_price_label"]))
+        self.show_level_labels_check = QCheckBox("显示比例标签")
+        self.show_level_labels_check.setChecked(bool(style["show_level_labels"]))
+        self.show_price_labels_check = QCheckBox("显示价格标签")
+        self.show_price_labels_check.setChecked(bool(style["show_price_labels"]))
+        self.fib_levels_label = QLabel(", ".join(str(level).rstrip("0").rstrip(".") for level in style["fib_levels"]))
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlainText(str(style["text"]))
+        self.text_edit.setMinimumHeight(90)
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 48)
+        self.font_size_spin.setValue(int(style["font_size"]))
+
+        if drawing.tool_type is DrawingToolType.TEXT:
+            form.addRow("文字颜色", self.color_button)
+            form.addRow("字号", self.font_size_spin)
+            form.addRow("内容", self.text_edit)
+        else:
+            form.addRow("颜色", self.color_button)
+            form.addRow("线宽", self.width_spin)
+            form.addRow("线型", self.line_style_combo)
+            if drawing.tool_type in {DrawingToolType.RECTANGLE, DrawingToolType.PRICE_RANGE}:
+                form.addRow("填充色", self.fill_color_button)
+                form.addRow("填充透明度", self.fill_opacity_spin)
+            if drawing.tool_type is DrawingToolType.FIB_RETRACEMENT:
+                form.addRow("档位", self.fib_levels_label)
+                form.addRow("", self.show_level_labels_check)
+                form.addRow("", self.show_price_labels_check)
+            else:
+                form.addRow("", self.show_price_label_check)
+
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def style_payload(self) -> dict[str, object]:
+        payload = {
+            "color": self._selected_color,
+            "width": int(self.width_spin.value()),
+            "line_style": str(self.line_style_combo.currentData()),
+            "extend_left": bool(self.extend_left_check.isChecked()),
+            "extend_right": bool(self.extend_right_check.isChecked()),
+            "fill_color": self._selected_fill_color,
+            "fill_opacity": float(self.fill_opacity_spin.value()),
+            "show_price_label": bool(self.show_price_label_check.isChecked()),
+            "fib_levels": [0.0, 0.5, 1.0, 2.0],
+            "show_level_labels": bool(self.show_level_labels_check.isChecked()),
+            "show_price_labels": bool(self.show_price_labels_check.isChecked()),
+            "text": self.text_edit.toPlainText(),
+            "font_size": int(self.font_size_spin.value()),
+            "text_color": self._selected_color,
+            "anchor_mode": "free",
+        }
+        return normalize_drawing_style(self._drawing.tool_type, payload)
+
+    def _pick_color(self) -> None:
+        color = QColorDialog.getColor(parent=self)
+        if not color.isValid():
+            return
+        self._selected_color = color.name()
+        self.color_button.setText(self._selected_color)
+        self._apply_button_color(self.color_button, self._selected_color)
+
+    def _pick_fill_color(self) -> None:
+        color = QColorDialog.getColor(parent=self)
+        if not color.isValid():
+            return
+        self._selected_fill_color = color.name()
+        self.fill_color_button.setText(self._selected_fill_color)
+        self._apply_button_color(self.fill_color_button, self._selected_fill_color)
+
+    @staticmethod
+    def _apply_button_color(button: QPushButton, color: str) -> None:
+        button.setStyleSheet(f"background: {color}; color: #1f2933;")
 
 
 class DataSetManagerDialog(QDialog):
@@ -402,6 +532,9 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.timeout.connect(self._perform_auto_save)
         self._session_dirty = False
         self._draw_order_buttons: dict[OrderLineType, QPushButton] = {}
+        self._drawing_tool_buttons: dict[DrawingToolType, QPushButton] = {}
+        self._trade_markers_visible = True
+        self._trade_links_visible = True
 
         self._build_ui()
         self._autoload_recent_session()
@@ -455,10 +588,32 @@ class MainWindow(QMainWindow):
             self.timeframe_button_group.addButton(button)
             self.timeframe_buttons[timeframe] = button
             chart_toolbar.addWidget(button)
+        for label, tool in [
+            ("趋势线", DrawingToolType.TREND_LINE),
+            ("射线", DrawingToolType.RAY),
+            ("扩展线", DrawingToolType.EXTENDED_LINE),
+            ("斐波", DrawingToolType.FIB_RETRACEMENT),
+            ("水平线", DrawingToolType.HORIZONTAL_LINE),
+            ("水平射线", DrawingToolType.HORIZONTAL_RAY),
+            ("垂直线", DrawingToolType.VERTICAL_LINE),
+            ("矩形", DrawingToolType.RECTANGLE),
+            ("价格区间", DrawingToolType.PRICE_RANGE),
+            ("通道", DrawingToolType.PARALLEL_CHANNEL),
+            ("文字", DrawingToolType.TEXT),
+        ]:
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked, drawing_tool=tool: self._toggle_drawing_tool(drawing_tool, checked))
+            self._drawing_tool_buttons[tool] = button
+            chart_toolbar.addWidget(button)
         chart_toolbar.addStretch(1)
         layout.addLayout(chart_toolbar)
 
         self.chart_widget = ChartWidget()
+        self.chart_widget.drawingsChanged.connect(self._handle_chart_drawings_changed)
+        self.chart_widget.drawingToolChanged.connect(self._sync_drawing_tool_buttons)
+        self.chart_widget.drawingPropertiesRequested.connect(self._handle_drawing_properties_requested)
+        self.chart_widget.interactionModeChanged.connect(self._sync_chart_interaction_controls)
         self.chart_widget.orderLineCreated.connect(self._handle_chart_order_line_created)
         self.chart_widget.orderLineMoved.connect(self._handle_chart_order_line_moved)
         self.chart_widget.orderPreviewConfirmed.connect(self._handle_order_preview_confirmed)
@@ -484,13 +639,8 @@ class MainWindow(QMainWindow):
         self.reset_view_button.clicked.connect(lambda: self.chart_widget.reset_viewport(follow_latest=True))
         controls.addWidget(self.reset_view_button)
 
-        self.draw_button = QPushButton("画线模式")
-        self.draw_button.setCheckable(True)
-        self.draw_button.clicked.connect(lambda checked: self.chart_widget.set_draw_mode(checked))
-        controls.addWidget(self.draw_button)
-
         self.clear_lines_button = QPushButton("清除画线")
-        self.clear_lines_button.clicked.connect(self.chart_widget.clear_lines)
+        self.clear_lines_button.clicked.connect(self.confirm_clear_drawings)
         controls.addWidget(self.clear_lines_button)
 
         controls.addStretch(1)
@@ -598,6 +748,16 @@ class MainWindow(QMainWindow):
         self.stats_label = QLabel("方向 flat | 仓位 0 | 均价 0 | 已实现PnL 0")
         self.stats_label.setWordWrap(True)
         layout.addWidget(self.stats_label)
+
+        self.show_trade_markers_check = QCheckBox("显示成交点")
+        self.show_trade_markers_check.setChecked(True)
+        self.show_trade_markers_check.toggled.connect(self._handle_trade_markers_toggled)
+        layout.addWidget(self.show_trade_markers_check)
+
+        self.show_trade_links_check = QCheckBox("显示交易连线")
+        self.show_trade_links_check.setChecked(True)
+        self.show_trade_links_check.toggled.connect(self._handle_trade_links_toggled)
+        layout.addWidget(self.show_trade_links_check)
 
         save_button = QPushButton("保存会话")
         save_button.setFixedHeight(26)
@@ -727,6 +887,10 @@ class MainWindow(QMainWindow):
         self.engine = None
         self.current_session_id = None
         self.chart_widget.set_window_data([], -1, 0, 0)
+        self.chart_widget.set_drawings([])
+        self.chart_widget.set_trade_actions([])
+        self.chart_widget.set_active_drawing_tool(None)
+        self.cancel_draw_order_preview()
         self.progress_label.setText("未开始")
         self.jump_spin.blockSignals(True)
         self.jump_spin.setMaximum(0)
@@ -744,8 +908,12 @@ class MainWindow(QMainWindow):
         current = self.engine.session.current_index
         total = self.engine.total_count
         bar = self.engine.current_bar
+        self.chart_widget.set_tick_size(self.engine.session.tick_size)
         self.chart_widget.set_cursor(current)
         self.chart_widget.set_order_lines(self.engine.display_order_lines())
+        self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
+        self.chart_widget.set_trade_markers_visible(self._trade_markers_visible)
+        self.chart_widget.set_trade_links_visible(self._trade_links_visible)
         self.progress_label.setText(f"{current + 1}/{total} | {bar.timestamp:%Y-%m-%d %H:%M}")
         self.jump_spin.blockSignals(True)
         self.jump_spin.setValue(current)
@@ -772,7 +940,14 @@ class MainWindow(QMainWindow):
         self.tick_size_spin.blockSignals(True)
         self.tick_size_spin.setValue(self.engine.session.tick_size)
         self.tick_size_spin.blockSignals(False)
-        self.chart_widget.set_tick_size(self.engine.session.tick_size)
+
+    def _handle_trade_markers_toggled(self, checked: bool) -> None:
+        self._trade_markers_visible = checked
+        self.chart_widget.set_trade_markers_visible(checked)
+
+    def _handle_trade_links_toggled(self, checked: bool) -> None:
+        self._trade_links_visible = checked
+        self.chart_widget.set_trade_links_visible(checked)
 
     def step_forward(self) -> None:
         if not self.engine:
@@ -842,9 +1017,7 @@ class MainWindow(QMainWindow):
         if hover_price is not None:
             self._place_order_line(order_type, hover_price)
             return
-        if self.draw_button.isChecked():
-            self.draw_button.setChecked(False)
-            self.chart_widget.set_draw_mode(False)
+        self.chart_widget.set_active_drawing_tool(None)
         self.chart_widget.set_trade_line_mode(order_type.value)
         self.statusBar().showMessage(f"请在图上点击价格创建{self._order_type_label(order_type)}", 3000)
 
@@ -879,7 +1052,12 @@ class MainWindow(QMainWindow):
             return
         self._auto_save_timer.stop()
         self.engine.session.current_bar_time = self.engine.current_bar.timestamp
-        saved = self.repo.save_session(self.engine.session, self.engine.actions, self.engine.order_lines)
+        saved = self.repo.save_session(
+            self.engine.session,
+            self.engine.actions,
+            self.engine.order_lines,
+            self.chart_widget.drawings(),
+        )
         self.engine.session = saved
         self.engine.order_lines = self.repo.get_order_lines(saved.id or 0)
         self._session_dirty = False
@@ -1065,6 +1243,7 @@ class MainWindow(QMainWindow):
             session = payload["session"]
             actions = payload["actions"]
             order_lines = payload["order_lines"]
+            drawings = payload["drawings"]
             dataset = payload["dataset"]
             chart_timeframe = payload["chart_timeframe"]
             anchor_time = payload["anchor_time"]
@@ -1096,6 +1275,8 @@ class MainWindow(QMainWindow):
                 self.engine.total_count,
                 self.engine.window_start_index,
             )
+            self.chart_widget.set_drawings(drawings)
+            self._sync_chart_interaction_controls()
             log.bind(session_id=session.id, dataset_id=dataset.id).debug(
                 "event=set_window_data elapsed_ms={elapsed_ms:.3f} bars={bars} start={start} end={end}",
                 elapsed_ms=(perf_counter() - chart_step) * 1000,
@@ -1262,15 +1443,26 @@ class MainWindow(QMainWindow):
         if not self.engine:
             QMessageBox.information(self, "提示", "请先创建或打开一个复盘会话。")
             return
+        logger.bind(
+            component="chart_interaction",
+            requested_order_type=order_type.value,
+            checked=checked,
+            interaction_mode=self.chart_widget.interaction_mode.value,
+            active_drawing_tool=self.chart_widget.active_drawing_tool.value if self.chart_widget.active_drawing_tool else "",
+        ).debug("event=toggle_draw_order_preview")
         if not checked:
             if self.chart_widget.trade_line_mode is None and self.chart_widget.last_hover_price is not None:
                 self.chart_widget.cancel_order_preview()
             return
-        if self.draw_button.isChecked():
-            self.draw_button.setChecked(False)
-            self.chart_widget.set_draw_mode(False)
+        self.chart_widget.set_active_drawing_tool(None)
         self.chart_widget.begin_order_preview(order_type.value, float(self.draw_quantity_spin.value()))
         self._sync_draw_order_controls(active_order_type=order_type)
+        logger.bind(
+            component="chart_interaction",
+            requested_order_type=order_type.value,
+            interaction_mode=self.chart_widget.interaction_mode.value,
+            preview_order_type=self.chart_widget.preview_order_type or "",
+        ).debug("event=toggle_draw_order_preview_applied")
         self.statusBar().showMessage(f"移动鼠标选择价格，再点击图表创建{self._order_type_label(order_type)}", 3000)
 
     def cancel_draw_order_preview(self) -> None:
@@ -1285,6 +1477,63 @@ class MainWindow(QMainWindow):
             button.blockSignals(True)
             button.setChecked(active_order_type is order_type)
             button.blockSignals(False)
+
+    def _toggle_drawing_tool(self, tool: DrawingToolType, checked: bool) -> None:
+        logger.bind(
+            component="chart_interaction",
+            requested_drawing_tool=tool.value,
+            checked=checked,
+            interaction_mode=self.chart_widget.interaction_mode.value,
+            active_drawing_tool=self.chart_widget.active_drawing_tool.value if self.chart_widget.active_drawing_tool else "",
+        ).debug("event=toggle_drawing_tool")
+        if checked:
+            self.cancel_draw_order_preview()
+            self.chart_widget.set_active_drawing_tool(tool)
+            logger.bind(
+                component="chart_interaction",
+                requested_drawing_tool=tool.value,
+                interaction_mode=self.chart_widget.interaction_mode.value,
+                active_drawing_tool=self.chart_widget.active_drawing_tool.value if self.chart_widget.active_drawing_tool else "",
+                button_checked=self._drawing_tool_buttons[tool].isChecked(),
+            ).debug("event=toggle_drawing_tool_applied")
+            self.statusBar().showMessage(f"已切换到{self._drawing_tool_label(tool)}，完成一笔后自动回到 hover，Esc 可取消", 3000)
+            return
+        if self.chart_widget.active_drawing_tool is tool:
+            self.chart_widget.set_active_drawing_tool(None)
+
+    @Slot(object)
+    def _sync_drawing_tool_buttons(self, active_tool: object) -> None:
+        for tool, button in self._drawing_tool_buttons.items():
+            button.blockSignals(True)
+            button.setChecked(tool == active_tool)
+            button.blockSignals(False)
+        self._sync_chart_interaction_controls()
+
+    @Slot(object)
+    def _sync_chart_interaction_controls(self, *_args) -> None:
+        active_order_type: OrderLineType | None = None
+        if self.chart_widget.preview_order_type is not None:
+            active_order_type = OrderLineType(self.chart_widget.preview_order_type)
+        self._sync_draw_order_controls(active_order_type=active_order_type)
+
+    @Slot()
+    def _handle_chart_drawings_changed(self) -> None:
+        if not self.engine:
+            return
+        self._schedule_auto_save("drawings_changed")
+
+    def confirm_clear_drawings(self) -> None:
+        if not self.chart_widget.drawings():
+            return
+        choice = QMessageBox.warning(
+            self,
+            "确认清除画线",
+            "这会删除当前案例中的所有普通画线，且无法撤销。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice is QMessageBox.StandardButton.Yes:
+            self.chart_widget.clear_lines()
 
     def _handle_tick_size_changed(self, value: float) -> None:
         tick_size = max(round(float(value), 2), 0.01)
@@ -1410,6 +1659,22 @@ class MainWindow(QMainWindow):
         self._update_ui_from_engine()
         self.save_session(trigger=trigger)
 
+    @Slot(object, int)
+    def _handle_drawing_properties_requested(self, drawing: object, drawing_index: int) -> None:
+        if not isinstance(drawing, ChartDrawing):
+            return
+        dialog = DrawingPropertiesDialog(drawing, self)
+        result = dialog.exec()
+        if result != QDialog.DialogCode.Accepted:
+            if drawing.tool_type is DrawingToolType.TEXT and not drawing.style.get("text", "").strip():
+                self.chart_widget.delete_drawing(drawing.id, drawing_index)
+            return
+        style = dialog.style_payload()
+        if drawing.tool_type is DrawingToolType.TEXT and not str(style.get("text", "")).strip():
+            self.chart_widget.delete_drawing(drawing.id, drawing_index)
+            return
+        self.chart_widget.update_drawing_style(drawing.id, style, drawing_index)
+
     @staticmethod
     def _order_type_label(order_type: OrderLineType) -> str:
         labels = {
@@ -1421,3 +1686,20 @@ class MainWindow(QMainWindow):
             OrderLineType.TAKE_PROFIT: "止盈线",
         }
         return labels[order_type]
+
+    @staticmethod
+    def _drawing_tool_label(tool: DrawingToolType) -> str:
+        labels = {
+            DrawingToolType.TREND_LINE: "趋势线",
+            DrawingToolType.RAY: "射线",
+            DrawingToolType.EXTENDED_LINE: "扩展线",
+            DrawingToolType.FIB_RETRACEMENT: "斐波",
+            DrawingToolType.HORIZONTAL_LINE: "水平线",
+            DrawingToolType.HORIZONTAL_RAY: "水平射线",
+            DrawingToolType.VERTICAL_LINE: "垂直线",
+            DrawingToolType.PARALLEL_CHANNEL: "平行通道",
+            DrawingToolType.RECTANGLE: "矩形",
+            DrawingToolType.PRICE_RANGE: "价格区间",
+            DrawingToolType.TEXT: "文字",
+        }
+        return labels[tool]
