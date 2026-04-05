@@ -52,6 +52,7 @@ from barbybar.domain.models import (
     ReviewSession,
     SessionStats,
     SessionStatus,
+    TradeReviewItem,
     WindowBars,
     normalize_drawing_style,
 )
@@ -513,6 +514,87 @@ class SessionLibraryDialog(QDialog):
         self._refresh_sessions()
 
 
+class TradeHistoryDialog(QDialog):
+    def __init__(self, owner: MainWindow, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.owner = owner
+        self.setWindowTitle("历史交易")
+        self.resize(760, 540)
+
+        layout = QVBoxLayout(self)
+        self.trade_history_sort = QComboBox()
+        self.trade_history_sort.addItem("时间倒序", "time_desc")
+        self.trade_history_sort.addItem("时间正序", "time_asc")
+        self.trade_history_sort.addItem("盈亏从高到低", "pnl_desc")
+        self.trade_history_sort.addItem("盈亏从低到高", "pnl_asc")
+        self.trade_history_sort.addItem("方向分组", "direction")
+        self.trade_history_sort.currentIndexChanged.connect(self.refresh_items)
+        layout.addWidget(self.trade_history_sort)
+
+        self.trade_history_list = QListWidget()
+        self.trade_history_list.itemClicked.connect(self._handle_item_clicked)
+        self.trade_history_list.itemDoubleClicked.connect(self._handle_item_double_clicked)
+        layout.addWidget(self.trade_history_list)
+
+        self.trade_history_toggle_button = QPushButton("切换到出场")
+        self.trade_history_toggle_button.setFixedHeight(28)
+        self.trade_history_toggle_button.clicked.connect(self._toggle_selected_trade_focus)
+        layout.addWidget(self.trade_history_toggle_button)
+
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+
+        self.refresh_items()
+
+    def refresh_items(self) -> None:
+        selected_trade_number = self.owner._selected_trade_number
+        self.trade_history_list.clear()
+        for item in self.owner._sorted_trade_review_items(self.trade_history_sort.currentData()):
+            quantity_text = int(item.quantity) if float(item.quantity).is_integer() else round(item.quantity, 2)
+            label = (
+                f"#{item.trade_number} {'多' if item.direction == 'long' else '空'} | "
+                f"{item.entry_time:%m-%d %H:%M} -> {item.exit_time:%H:%M} | "
+                f"PnL {item.pnl:.2f} | {quantity_text}手 | {item.holding_bars} bars | {item.exit_reason}"
+            )
+            widget_item = QListWidgetItem(label)
+            widget_item.setData(Qt.ItemDataRole.UserRole, item.trade_number)
+            widget_item.setToolTip(
+                "\n".join(
+                    [
+                        f"入场 {item.entry_time:%Y-%m-%d %H:%M} @ {item.entry_price:.2f}",
+                        f"出场 {item.exit_time:%Y-%m-%d %H:%M} @ {item.exit_price:.2f}",
+                        f"PnL {item.pnl:.2f}",
+                        f"止损保护 {'是' if item.had_stop_protection else '否'} | 亏损加仓 {'是' if item.had_adverse_add else '否'} | 按计划 {'是' if item.is_planned else '否'}",
+                    ]
+                )
+            )
+            self.trade_history_list.addItem(widget_item)
+            if item.trade_number == selected_trade_number:
+                self.trade_history_list.setCurrentItem(widget_item)
+        self.trade_history_toggle_button.setEnabled(self.trade_history_list.count() > 0 and selected_trade_number is not None)
+        self.trade_history_toggle_button.setText("切换到出场" if self.owner._selected_trade_view == "entry" else "切换到入场")
+
+    def _handle_item_clicked(self, item: QListWidgetItem) -> None:
+        trade_number = item.data(Qt.ItemDataRole.UserRole)
+        if trade_number is None:
+            return
+        self.owner.select_trade_history_item(int(trade_number), focus_view="entry")
+        self.refresh_items()
+
+    def _handle_item_double_clicked(self, item: QListWidgetItem) -> None:
+        trade_number = item.data(Qt.ItemDataRole.UserRole)
+        if trade_number is None:
+            return
+        self.owner.select_trade_history_item(int(trade_number), focus_view="entry")
+        self.owner.toggle_selected_trade_focus()
+        self.refresh_items()
+
+    def _toggle_selected_trade_focus(self) -> None:
+        self.owner.toggle_selected_trade_focus()
+        self.refresh_items()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, repo: Repository) -> None:
         super().__init__()
@@ -535,6 +617,10 @@ class MainWindow(QMainWindow):
         self._drawing_tool_buttons: dict[DrawingToolType, QPushButton] = {}
         self._trade_markers_visible = True
         self._trade_links_visible = True
+        self._trade_review_items: list[TradeReviewItem] = []
+        self._selected_trade_number: int | None = None
+        self._selected_trade_view: str = "entry"
+        self._trade_history_dialog: TradeHistoryDialog | None = None
 
         self._build_ui()
         self._autoload_recent_session()
@@ -616,6 +702,7 @@ class MainWindow(QMainWindow):
         self.chart_widget.interactionModeChanged.connect(self._sync_chart_interaction_controls)
         self.chart_widget.orderLineCreated.connect(self._handle_chart_order_line_created)
         self.chart_widget.orderLineMoved.connect(self._handle_chart_order_line_moved)
+        self.chart_widget.protectiveOrderCreated.connect(self._handle_chart_protective_order_created)
         self.chart_widget.orderPreviewConfirmed.connect(self._handle_order_preview_confirmed)
         self.chart_widget.orderLineActionRequested.connect(self._handle_order_line_action_requested)
         layout.addWidget(self.chart_widget)
@@ -749,6 +836,19 @@ class MainWindow(QMainWindow):
         self.stats_label.setWordWrap(True)
         layout.addWidget(self.stats_label)
 
+        stats_box = QGroupBox("训练统计")
+        stats_layout = QVBoxLayout(stats_box)
+        stats_layout.setContentsMargins(8, 12, 8, 8)
+        stats_layout.setSpacing(4)
+        self.training_stats_label = QLabel("暂无交易统计")
+        self.training_stats_label.setWordWrap(True)
+        stats_layout.addWidget(self.training_stats_label)
+        layout.addWidget(stats_box)
+        self.open_trade_history_button = QPushButton("历史交易")
+        self.open_trade_history_button.setFixedHeight(26)
+        self.open_trade_history_button.clicked.connect(self.open_trade_history_dialog)
+        layout.addWidget(self.open_trade_history_button)
+
         self.show_trade_markers_check = QCheckBox("显示成交点")
         self.show_trade_markers_check.setChecked(True)
         self.show_trade_markers_check.toggled.connect(self._handle_trade_markers_toggled)
@@ -834,8 +934,22 @@ class MainWindow(QMainWindow):
         dialog = SessionLibraryDialog(self.repo, self, self)
         dialog.exec()
 
+    def open_trade_history_dialog(self) -> None:
+        if self._trade_history_dialog is None:
+            self._trade_history_dialog = TradeHistoryDialog(self, self)
+            self._trade_history_dialog.finished.connect(self._handle_trade_history_dialog_closed)
+        self._trade_history_dialog.refresh_items()
+        self._trade_history_dialog.show()
+        self._trade_history_dialog.raise_()
+        self._trade_history_dialog.activateWindow()
+
     def open_session_by_id(self, session_id: int) -> None:
         self._load_session(session_id)
+
+    def _handle_trade_history_dialog_closed(self) -> None:
+        if self._trade_history_dialog is not None:
+            self._trade_history_dialog.deleteLater()
+            self._trade_history_dialog = None
 
     def delete_dataset_by_id(self, dataset_id: int) -> None:
         active_uses_dataset = False
@@ -886,9 +1000,14 @@ class MainWindow(QMainWindow):
     def _clear_current_session(self) -> None:
         self.engine = None
         self.current_session_id = None
+        self._trade_review_items = []
+        self._selected_trade_number = None
+        self._selected_trade_view = "entry"
         self.chart_widget.set_window_data([], -1, 0, 0)
         self.chart_widget.set_drawings([])
         self.chart_widget.set_trade_actions([])
+        self.chart_widget.set_position_direction(None)
+        self.chart_widget.set_trade_focus(None)
         self.chart_widget.set_active_drawing_tool(None)
         self.cancel_draw_order_preview()
         self.progress_label.setText("未开始")
@@ -897,6 +1016,10 @@ class MainWindow(QMainWindow):
         self.jump_spin.setValue(0)
         self.jump_spin.blockSignals(False)
         self.stats_label.setText("方向 flat | 仓位 0 | 均价 0 | 已实现PnL 0")
+        self.training_stats_label.setText("暂无交易统计")
+        self.open_trade_history_button.setEnabled(False)
+        if self._trade_history_dialog is not None:
+            self._trade_history_dialog.refresh_items()
         self.price_spin.blockSignals(True)
         self.price_spin.setValue(0.0)
         self.price_spin.blockSignals(False)
@@ -909,11 +1032,13 @@ class MainWindow(QMainWindow):
         total = self.engine.total_count
         bar = self.engine.current_bar
         self.chart_widget.set_tick_size(self.engine.session.tick_size)
+        self.chart_widget.set_position_direction(self.engine.session.position.direction)
         self.chart_widget.set_cursor(current)
         self.chart_widget.set_order_lines(self.engine.display_order_lines())
         self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
         self.chart_widget.set_trade_markers_visible(self._trade_markers_visible)
         self.chart_widget.set_trade_links_visible(self._trade_links_visible)
+        self._trade_review_items = self.engine.trade_review_items()
         self.progress_label.setText(f"{current + 1}/{total} | {bar.timestamp:%Y-%m-%d %H:%M}")
         self.jump_spin.blockSignals(True)
         self.jump_spin.setValue(current)
@@ -940,6 +1065,11 @@ class MainWindow(QMainWindow):
         self.tick_size_spin.blockSignals(True)
         self.tick_size_spin.setValue(self.engine.session.tick_size)
         self.tick_size_spin.blockSignals(False)
+        self._update_training_stats()
+        self._sync_selected_trade_focus()
+        self.open_trade_history_button.setEnabled(bool(self._trade_review_items))
+        if self._trade_history_dialog is not None:
+            self._trade_history_dialog.refresh_items()
 
     def _handle_trade_markers_toggled(self, checked: bool) -> None:
         self._trade_markers_visible = checked
@@ -948,6 +1078,92 @@ class MainWindow(QMainWindow):
     def _handle_trade_links_toggled(self, checked: bool) -> None:
         self._trade_links_visible = checked
         self.chart_widget.set_trade_links_visible(checked)
+
+    def _update_training_stats(self) -> None:
+        if not self.engine:
+            self.training_stats_label.setText("暂无交易统计")
+            return
+        stats = self.engine.session.stats
+        planned_rate = (stats.planned_trades / stats.total_trades) if stats.total_trades else 0.0
+        auto_rate = (stats.auto_trades / stats.total_trades) if stats.total_trades else 0.0
+        self.training_stats_label.setText(
+            "\n".join(
+                [
+                    f"胜率 {stats.win_rate:.0%} | 盈亏比 {stats.payoff_ratio:.2f} | Expectancy {stats.expectancy:.2f}",
+                    f"均赢 {stats.average_win:.2f} | 均亏 {stats.average_loss:.2f} | 最大回撤 {stats.max_drawdown:.2f}",
+                    f"平均持仓 {stats.avg_holding_bars:.1f} bars | 连赢 {stats.max_win_streak} | 连亏 {stats.max_loss_streak}",
+                    f"有止损 {stats.trades_with_stop_rate:.0%} | 按计划 {planned_rate:.0%} | 自动平仓 {auto_rate:.0%}",
+                ]
+            )
+        )
+
+    def _sorted_trade_review_items(self, sort_key: str | None) -> list[TradeReviewItem]:
+        items = list(self._trade_review_items)
+        if sort_key == "time_asc":
+            items.sort(key=lambda item: (item.entry_time, item.trade_number))
+        elif sort_key == "pnl_desc":
+            items.sort(key=lambda item: (-item.pnl, item.exit_time, item.trade_number))
+        elif sort_key == "pnl_asc":
+            items.sort(key=lambda item: (item.pnl, item.exit_time, item.trade_number))
+        elif sort_key == "direction":
+            items.sort(key=lambda item: (item.direction, item.entry_time, item.trade_number))
+        else:
+            items.sort(key=lambda item: (item.entry_time, item.trade_number), reverse=True)
+        return items
+
+    def _selected_trade_review_item(self) -> TradeReviewItem | None:
+        if self._selected_trade_number is None:
+            return None
+        return next((item for item in self._trade_review_items if item.trade_number == self._selected_trade_number), None)
+
+    def _sync_selected_trade_focus(self) -> None:
+        item = self._selected_trade_review_item()
+        if item is None:
+            self.chart_widget.set_trade_focus(None)
+            return
+        self.chart_widget.set_trade_focus(
+            item.trade_number,
+            (item.entry_bar_index, item.entry_price, item.exit_bar_index, item.exit_price),
+        )
+
+    def select_trade_history_item(self, trade_number: int, *, focus_view: str = "entry") -> None:
+        self._selected_trade_number = trade_number
+        self._selected_trade_view = focus_view
+        self._sync_selected_trade_focus()
+        self._focus_selected_trade_view()
+
+    def toggle_selected_trade_focus(self) -> None:
+        if self._selected_trade_number is None:
+            return
+        self._selected_trade_view = "exit" if self._selected_trade_view == "entry" else "entry"
+        self._sync_selected_trade_focus()
+        self._focus_selected_trade_view()
+
+    def _focus_selected_trade_view(self) -> None:
+        item = self._selected_trade_review_item()
+        if item is None:
+            return
+        target_index = item.entry_bar_index if self._selected_trade_view == "entry" else item.exit_bar_index
+        if not self.engine:
+            return
+        if target_index < self.engine.window_start_index or target_index > self.engine.window_end_index:
+            if not self.current_session_id:
+                return
+            anchor_time = self.repo.get_chart_bar_time(self.current_session_id, self.engine.session.chart_timeframe, target_index)
+            self._start_session_load(
+                self.current_session_id,
+                chart_timeframe=self.engine.session.chart_timeframe,
+                anchor_time=anchor_time,
+                title="正在定位交易...",
+                detail="正在加载目标交易附近的 K 线",
+            )
+            return
+        self.chart_widget.set_cursor(target_index)
+        self.chart_widget.reset_viewport(follow_latest=False)
+        local_index = target_index - self.engine.window_start_index
+        if 0 <= local_index < len(self.engine.bars):
+            timestamp = self.engine.bars[local_index].timestamp
+            self.progress_label.setText(f"查看交易 #{item.trade_number} | Bar {target_index + 1} | {timestamp:%Y-%m-%d %H:%M}")
 
     def step_forward(self) -> None:
         if not self.engine:
@@ -1321,6 +1537,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._flush_pending_auto_save("close_event")
         self.hide_busy_overlay()
+        if self._trade_history_dialog is not None:
+            self._trade_history_dialog.close()
         if self._active_loader_thread and self._active_loader_thread.isRunning():
             logger.bind(component="session_load").warning("event=close_waiting_for_loader_thread")
             self._active_loader_thread.quit()
@@ -1601,6 +1819,10 @@ class MainWindow(QMainWindow):
             return
         self._update_ui_from_engine()
         self.save_session(trigger="move_order_line")
+
+    @Slot(str, float)
+    def _handle_chart_protective_order_created(self, order_type_value: str, price: float) -> None:
+        self._place_order_line(OrderLineType(order_type_value), price)
 
     @Slot(int, str)
     def _handle_order_line_action_requested(self, order_id: int, action: str) -> None:

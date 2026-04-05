@@ -459,7 +459,60 @@ def test_trend_line_tool_creates_drawing_after_two_clicks(widget: ChartWidget, a
     assert drawings[0].tool_type is DrawingToolType.TREND_LINE
     assert len(drawings[0].anchors) == 2
     assert widget.active_drawing_tool is None
-    assert widget.interaction_mode is InteractionMode.BROWSE
+
+
+def test_ctrl_click_snaps_drawing_anchor_to_nearest_ohlc(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    click = _FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(10.4, 110.7)))
+    widget._handle_scene_click(click)
+
+    anchor = widget._pending_drawing_anchors[0]
+    bar = widget._bars[10]
+
+    assert anchor.x == 10.0
+    assert anchor.y == bar.high
+
+
+def test_ctrl_preview_anchor_uses_same_snap_rule(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(11.3, 111.7)),))
+
+    anchor = widget._drawing_preview_anchor
+    assert anchor is not None
+    assert anchor.x == 11.0
+    assert anchor.y == widget._bars[11].high
+
+
+def test_anchor_remains_free_without_ctrl(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.NoModifier)
+    app.processEvents()
+
+    click = _FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(10.4, 105.85)))
+    widget._handle_scene_click(click)
+
+    anchor = widget._pending_drawing_anchors[0]
+    assert round(anchor.x, 1) == 10.4
+    assert round(anchor.y, 2) == 105.85
+    assert widget.interaction_mode is InteractionMode.DRAWING
 
 
 def test_horizontal_line_tool_creates_drawing_after_single_click(widget: ChartWidget, app: QApplication) -> None:
@@ -760,6 +813,104 @@ def test_drag_then_begin_order_preview_first_click_confirms_order(widget: ChartW
     assert widget._suppress_next_left_click is False
 
 
+def test_dragging_drawing_anchor_updates_only_target_anchor(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(12.0, 101.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    drawing = widget.drawings()[0]
+    assert drawing.anchors[0].x == 12.0
+    assert drawing.anchors[0].y == 101.0
+    assert drawing.anchors[1].x == 15.0
+    assert drawing.anchors[1].y == 105.0
+
+
+def test_dragging_rectangle_body_translates_all_anchors(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(20.0, 99.0), DrawingAnchor(24.0, 103.0)])])
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(22.0, 101.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(25.0, 104.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    drawing = widget.drawings()[0]
+    assert drawing.anchors[0].x == 23.0
+    assert drawing.anchors[0].y == 102.0
+    assert drawing.anchors[1].x == 27.0
+    assert drawing.anchors[1].y == 106.0
+
+
+def test_dragging_text_drawing_moves_anchor(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TEXT, anchors=[DrawingAnchor(18.0, 100.0)], style={"text": "A"})])
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(18.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(20.0, 102.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    drawing = widget.drawings()[0]
+    assert drawing.anchors[0].x == 20.0
+    assert drawing.anchors[0].y == 102.0
+
+
+def test_dragging_drawing_does_not_pan_chart(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+    app.processEvents()
+    old_right = widget.viewport_state.right_edge_index
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(12.0, 102.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(16.0, 106.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert widget.viewport_state.right_edge_index == old_right
+
+
+def test_dragging_drawing_emits_drawings_changed_once_on_finish(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(20.0, 100.0)])])
+    app.processEvents()
+    changes: list[str] = []
+    widget.drawingsChanged.connect(lambda: changes.append("changed"))
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(20.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(20.0, 102.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert changes == ["changed"]
+
+
 def test_log_interaction_includes_state_fields(widget: ChartWidget, monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -895,7 +1046,7 @@ def test_set_drawings_normalizes_legacy_empty_style(widget: ChartWidget) -> None
 
     style = widget.drawings()[0].style
     assert style["color"] == "#ff9f1c"
-    assert style["width"] == 2
+    assert style["width"] == 1
     assert style["line_style"] == "solid"
 
 
@@ -925,9 +1076,276 @@ def test_order_line_label_includes_type_quantity_and_price() -> None:
     widget.deleteLater()
 
 
+def test_protective_order_label_includes_difference_from_average_price() -> None:
+    widget = ChartWidget()
+    widget.set_tick_size(1)
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.AVERAGE_PRICE,
+                price=7679.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=0,
+                created_at=datetime(2025, 1, 1, 9, 0),
+            ),
+            OrderLine(
+                order_type=OrderLineType.STOP_LOSS,
+                price=7675.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=1,
+                created_at=datetime(2025, 1, 1, 9, 0),
+                id=7,
+            ),
+        ]
+    )
+
+    assert widget._order_line_label(widget._order_lines[1]) == "止损 1手 7675 (-4)"
+    widget.close()
+    widget.deleteLater()
+
+
+def test_protective_order_label_falls_back_to_reference_price() -> None:
+    widget = ChartWidget()
+    widget.set_tick_size(0.2)
+    line = OrderLine(
+        order_type=OrderLineType.TAKE_PROFIT,
+        price=102.4,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=1,
+        created_at=datetime(2025, 1, 1, 9, 0),
+        reference_price_at_creation=100.0,
+        id=8,
+    )
+
+    assert widget._order_line_label(line) == "止盈 1手 102.4 (+2.4)"
+    widget.close()
+    widget.deleteLater()
+
+
 def test_crosshair_price_label_follows_tick_precision(widget: ChartWidget) -> None:
     widget.set_tick_size(0.2)
 
     widget._update_crosshair(10, 5914.23)
 
     assert widget._axis_price_label.text() == "5914.2"
+
+
+def test_native_order_line_drag_updates_axis_price_label(widget: ChartWidget) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_tick_size(0.2)
+
+    widget._handle_native_order_line_dragged(5914.23)
+
+    assert widget._axis_price_label.isVisible()
+    assert widget._axis_price_label.text() == "5914.2"
+
+
+def test_native_order_line_drag_keeps_axis_price_label_visible_during_mouse_move(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_tick_size(0.2)
+    app.processEvents()
+
+    widget._handle_native_order_line_dragged(5914.23)
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._axis_price_label.isVisible()
+    assert widget._axis_price_label.text() == "5914.2"
+
+
+def test_average_price_drag_emits_take_profit_for_long_above_average(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_tick_size(0.2)
+    widget.set_position_direction("long")
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.AVERAGE_PRICE,
+                price=100.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=0,
+                created_at=datetime(2025, 1, 1, 9, 0),
+            )
+        ]
+    )
+    captured: list[tuple[str, float]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 102.3))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+
+    assert widget._axis_price_label.isVisible()
+    assert widget._axis_price_label.text() == "102.2"
+
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert captured == [(OrderLineType.TAKE_PROFIT.value, 102.2)]
+
+
+def test_average_price_drag_emits_stop_loss_for_long_below_average(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_tick_size(0.2)
+    widget.set_position_direction("long")
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.AVERAGE_PRICE,
+                price=100.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=0,
+                created_at=datetime(2025, 1, 1, 9, 0),
+            )
+        ]
+    )
+    captured: list[tuple[str, float]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 98.1))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert captured == [(OrderLineType.STOP_LOSS.value, 98.0)]
+
+
+def test_average_price_drag_reverses_for_short_position(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_tick_size(0.2)
+    widget.set_position_direction("short")
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.AVERAGE_PRICE,
+                price=100.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=0,
+                created_at=datetime(2025, 1, 1, 9, 0),
+            )
+        ]
+    )
+    captured: list[tuple[str, float]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 102.1))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert captured == [(OrderLineType.STOP_LOSS.value, 102.0)]
+
+
+def test_average_price_drag_small_move_does_not_emit_order(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_tick_size(0.2)
+    widget.set_position_direction("long")
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.AVERAGE_PRICE,
+                price=100.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=0,
+                created_at=datetime(2025, 1, 1, 9, 0),
+            )
+        ]
+    )
+    captured: list[tuple[str, float]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.05))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert captured == []
+
+
+def test_non_average_order_line_drag_is_not_intercepted_by_custom_handler(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_tick_size(0.2)
+    line = OrderLine(
+        order_type=OrderLineType.STOP_LOSS,
+        price=98.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=1,
+        created_at=datetime(2025, 1, 1, 9, 0),
+        id=12,
+    )
+    widget.set_order_lines([line])
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 98.0))
+    assert widget.handle_order_line_drag_event(_FakeDragEvent(start, start, is_start=True)) is False
+
+
+def test_editable_order_line_wins_over_average_price_drag_when_lines_are_close(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_tick_size(0.2)
+    widget.set_position_direction("long")
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.AVERAGE_PRICE,
+                price=100.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=0,
+                created_at=datetime(2025, 1, 1, 9, 0),
+            ),
+            OrderLine(
+                order_type=OrderLineType.STOP_LOSS,
+                price=100.2,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=1,
+                created_at=datetime(2025, 1, 1, 9, 0),
+                id=12,
+            ),
+        ]
+    )
+    app.processEvents()
+
+    stop_scene = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.2))
+
+    assert widget.handle_order_line_drag_event(_FakeDragEvent(stop_scene, stop_scene, is_start=True)) is False

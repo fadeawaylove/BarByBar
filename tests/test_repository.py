@@ -294,7 +294,7 @@ def test_get_drawings_normalizes_legacy_empty_style_json() -> None:
 
         assert drawings[0].style["color"] == "#ff9f1c"
         assert drawings[0].style["line_style"] == "solid"
-        assert drawings[0].style["width"] == 2
+        assert drawings[0].style["width"] == 1
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

@@ -1,0 +1,2 @@
+2026-04-05 21:36:22.518 | INFO     | 2980:7640 | barbybar.logging_config:setup_logging:82 | BarByBar starting version=0.1.0 python=3.12.12 db_path=C:\Users\admin\.barbybar\barbybar.db log_dir=C:\code\BarByBar\.pytest-temp\c892e55fee2347daad6241b0ad6d5129\logs
+2026-04-05 21:36:22.518 | INFO     | 2980:7640 | test_logging_config:test_setup_logging_creates_log_files:25 | hello loguru

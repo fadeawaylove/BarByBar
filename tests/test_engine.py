@@ -43,6 +43,10 @@ def test_stop_loss_auto_close() -> None:
     engine.step_forward()
     assert engine.session.position.is_open is False
     assert engine.session.stats.total_trades == 1
+    review_item = engine.trade_review_items()[0]
+    assert review_item.exit_reason == "stop_loss"
+    assert review_item.is_manual is False
+    assert review_item.had_stop_protection is True
 
 
 def test_step_back_restores_state() -> None:
@@ -183,3 +187,77 @@ def test_updating_order_line_quantity_restarts_effect_from_next_bar() -> None:
     engine.step_forward()
     assert engine.session.position.direction == "long"
     assert engine.session.position.quantity == 3
+
+
+def test_trade_review_items_include_entry_exit_bars_and_planned_execution() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.record_action(ActionType.SET_STOP_LOSS, price=97)
+    engine.step_forward()
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=1, price=103)
+
+    review_item = engine.trade_review_items()[0]
+
+    assert review_item.entry_bar_index == 0
+    assert review_item.exit_bar_index == 2
+    assert review_item.holding_bars == 2
+    assert review_item.exit_reason == "manual_close"
+    assert review_item.had_stop_protection is True
+    assert review_item.had_adverse_add is False
+    assert review_item.is_planned is True
+
+
+def test_refresh_stats_populates_training_metrics() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.record_action(ActionType.SET_STOP_LOSS, price=95)
+    engine.step_forward()
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=1, price=103)
+
+    engine.record_action(ActionType.OPEN_SHORT, quantity=1, price=103)
+    engine.record_action(ActionType.SET_STOP_LOSS, price=110)
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=1, price=96)
+
+    stats = engine.session.stats
+
+    assert stats.average_win == 5.0
+    assert stats.average_loss == 0.0
+    assert stats.payoff_ratio == 5.0
+    assert stats.expectancy == 5.0
+    assert stats.long_trades == 1
+    assert stats.short_trades == 1
+    assert stats.avg_holding_bars == 1.5
+    assert stats.max_win_streak == 2
+    assert stats.max_loss_streak == 0
+    assert stats.trades_with_stop_rate == 1.0
+    assert stats.manual_trades == 2
+    assert stats.auto_trades == 0
+    assert stats.planned_trades == 2
+
+
+def test_trade_review_marks_adverse_add_only_when_adding_into_loss() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100, high=100, low=97, close=98, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=98, high=99, low=95, close=96, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.step_forward()
+    engine.record_action(ActionType.ADD, quantity=1, price=98)
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=2, price=96)
+
+    review_item = engine.trade_review_items()[0]
+
+    assert review_item.had_adverse_add is True
+    assert review_item.is_planned is False
