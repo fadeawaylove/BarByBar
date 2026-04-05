@@ -89,6 +89,17 @@ CREATE TABLE IF NOT EXISTS order_lines (
     note TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS drawings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    tool_type TEXT NOT NULL,
+    anchors_json TEXT NOT NULL DEFAULT '[]',
+    style_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
 """
 
 
@@ -127,4 +138,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
     order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
     if order_columns and "reference_price_at_creation" not in order_columns:
         conn.execute("ALTER TABLE order_lines ADD COLUMN reference_price_at_creation REAL")
+    drawing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(drawings)").fetchall()}
+    if not drawing_columns:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS drawings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                tool_type TEXT NOT NULL,
+                anchors_json TEXT NOT NULL DEFAULT '[]',
+                style_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+            """
+        )
     conn.commit()

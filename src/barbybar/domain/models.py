@@ -41,6 +41,91 @@ class OrderTriggerMode(StrEnum):
     SELL_LIMIT = "sell_limit"
 
 
+class DrawingToolType(StrEnum):
+    TREND_LINE = "trend_line"
+    RAY = "ray"
+    EXTENDED_LINE = "extended_line"
+    FIB_RETRACEMENT = "fib_retracement"
+    HORIZONTAL_LINE = "horizontal_line"
+    HORIZONTAL_RAY = "horizontal_ray"
+    VERTICAL_LINE = "vertical_line"
+    PARALLEL_CHANNEL = "parallel_channel"
+    RECTANGLE = "rectangle"
+    PRICE_RANGE = "price_range"
+    TEXT = "text"
+
+
+DEFAULT_DRAWING_COLOR = "#ff9f1c"
+DEFAULT_DRAWING_FILL_COLOR = "#ff9f1c"
+DEFAULT_DRAWING_STYLE: dict[str, Any] = {
+    "color": DEFAULT_DRAWING_COLOR,
+    "width": 2,
+    "line_style": "solid",
+    "extend_left": False,
+    "extend_right": False,
+    "fill_color": DEFAULT_DRAWING_FILL_COLOR,
+    "fill_opacity": 0.15,
+    "show_price_label": False,
+    "fib_levels": [0.0, 0.5, 1.0, 2.0],
+    "show_level_labels": True,
+    "show_price_labels": True,
+    "text": "",
+    "font_size": 12,
+    "text_color": DEFAULT_DRAWING_COLOR,
+    "anchor_mode": "free",
+}
+
+
+def normalize_drawing_style(tool_type: DrawingToolType, style: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(DEFAULT_DRAWING_STYLE)
+    if style:
+        payload.update(style)
+    payload["color"] = str(payload.get("color") or DEFAULT_DRAWING_COLOR)
+    payload["fill_color"] = str(payload.get("fill_color") or payload["color"] or DEFAULT_DRAWING_FILL_COLOR)
+    payload["width"] = max(1, int(payload.get("width", DEFAULT_DRAWING_STYLE["width"])))
+    line_style = str(payload.get("line_style") or "solid").lower()
+    payload["line_style"] = line_style if line_style in {"solid", "dash", "dot"} else "solid"
+    payload["extend_left"] = bool(payload.get("extend_left", False))
+    payload["extend_right"] = bool(payload.get("extend_right", False))
+    payload["fill_opacity"] = min(max(float(payload.get("fill_opacity", DEFAULT_DRAWING_STYLE["fill_opacity"])), 0.0), 1.0)
+    payload["show_price_label"] = bool(payload.get("show_price_label", False))
+    fib_levels = payload.get("fib_levels", DEFAULT_DRAWING_STYLE["fib_levels"])
+    if isinstance(fib_levels, list):
+        payload["fib_levels"] = [float(item) for item in fib_levels]
+    else:
+        payload["fib_levels"] = list(DEFAULT_DRAWING_STYLE["fib_levels"])
+    payload["show_level_labels"] = bool(payload.get("show_level_labels", True))
+    payload["show_price_labels"] = bool(payload.get("show_price_labels", True))
+    payload["text"] = str(payload.get("text", ""))
+    payload["font_size"] = max(8, int(payload.get("font_size", 12)))
+    payload["text_color"] = str(payload.get("text_color") or payload["color"])
+    payload["anchor_mode"] = str(payload.get("anchor_mode") or "free")
+    if tool_type is DrawingToolType.RAY:
+        payload["extend_left"] = False
+        payload["extend_right"] = True
+    elif tool_type is DrawingToolType.EXTENDED_LINE:
+        payload["extend_left"] = True
+        payload["extend_right"] = True
+    elif tool_type is DrawingToolType.HORIZONTAL_RAY:
+        payload["extend_left"] = False
+        payload["extend_right"] = True
+    elif tool_type not in {DrawingToolType.TREND_LINE, DrawingToolType.RAY, DrawingToolType.EXTENDED_LINE}:
+        payload["extend_left"] = False
+        payload["extend_right"] = False
+    if tool_type not in {DrawingToolType.RECTANGLE, DrawingToolType.PRICE_RANGE}:
+        payload["fill_opacity"] = 0.0
+    if tool_type is DrawingToolType.FIB_RETRACEMENT:
+        payload["extend_left"] = False
+        payload["extend_right"] = False
+        payload["show_price_label"] = False
+    if tool_type is DrawingToolType.TEXT:
+        payload["extend_left"] = False
+        payload["extend_right"] = False
+        payload["fill_opacity"] = 0.0
+        payload["show_price_label"] = False
+    return payload
+
+
 class SessionStatus(StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
@@ -126,6 +211,44 @@ class OrderLine:
     @property
     def is_reference(self) -> bool:
         return self.order_type is OrderLineType.AVERAGE_PRICE
+
+
+@dataclass(slots=True)
+class DrawingAnchor:
+    x: float
+    y: float
+
+    def to_dict(self) -> dict[str, float]:
+        return {"x": float(self.x), "y": float(self.y)}
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DrawingAnchor":
+        return cls(x=float(payload["x"]), y=float(payload["y"]))
+
+
+@dataclass(slots=True)
+class ChartDrawing:
+    tool_type: DrawingToolType
+    anchors: list[DrawingAnchor]
+    style: dict[str, Any] = field(default_factory=dict)
+    id: int | None = None
+    session_id: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool_type": self.tool_type.value,
+            "anchors": [anchor.to_dict() for anchor in self.anchors],
+            "style": normalize_drawing_style(self.tool_type, self.style),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ChartDrawing":
+        tool_type = DrawingToolType(payload["tool_type"])
+        return cls(
+            tool_type=tool_type,
+            anchors=[DrawingAnchor.from_dict(item) for item in payload.get("anchors", [])],
+            style=normalize_drawing_style(tool_type, dict(payload.get("style", {}))),
+        )
 
 
 @dataclass(slots=True)

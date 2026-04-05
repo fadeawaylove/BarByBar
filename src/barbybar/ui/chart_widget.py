@@ -3,16 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import time
 from enum import Enum
-from math import ceil, floor
+from math import ceil, floor, hypot
 
 import pyqtgraph as pg
+from loguru import logger
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor
-from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter, QPicture
-from PySide6.QtWidgets import QFrame, QLabel, QLayout, QMenu, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QBrush, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPicture
+from PySide6.QtWidgets import QApplication, QFrame, QGraphicsPathItem, QLabel, QLayout, QMenu, QVBoxLayout, QWidget
 
 from barbybar.data.tick_size import format_price
-from barbybar.domain.models import Bar, OrderLine, OrderLineType
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, normalize_drawing_style
 
 UP_CANDLE_COLOR = "#d84a4a"
 DOWN_CANDLE_COLOR = "#1f8b24"
@@ -24,12 +24,33 @@ ENTRY_SHORT_LINE_COLOR = "#ff9f1c"
 STOP_LOSS_LINE_COLOR = "#d84a4a"
 TAKE_PROFIT_LINE_COLOR = "#1f8b24"
 AVERAGE_PRICE_LINE_COLOR = "#5f6b7a"
+DRAWING_HIT_DISTANCE_PX = 10.0
+TRADE_MARKER_HIT_DISTANCE_PX = 12.0
+TRADE_LINK_WIN_COLOR = "#1f8b24"
+TRADE_LINK_LOSS_COLOR = "#d84a4a"
+TRADE_CLOSE_MARKER_COLOR = "#5f6b7a"
 
 
 @dataclass(slots=True)
-class DrawnLine:
-    start: QPointF
-    end: QPointF
+class TradeMarker:
+    action: SessionAction
+    direction: str
+    x: float
+    y: float
+    symbol: str
+    brush: str
+    size: float
+    detail_lines: list[str]
+
+
+@dataclass(slots=True)
+class TradeLink:
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    pnl: float
+    detail_lines: list[str]
 
 
 @dataclass(slots=True)
@@ -44,6 +65,12 @@ class ViewportState:
 class BrowseMode(str, Enum):
     CROSSHAIR = "crosshair"
     PAN = "pan"
+
+
+class InteractionMode(str, Enum):
+    BROWSE = "browse"
+    DRAWING = "drawing"
+    ORDER_PREVIEW = "order_preview"
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -132,17 +159,57 @@ class CandleViewBox(pg.ViewBox):
         ev.accept()
 
     def mouseDragEvent(self, ev, axis=None) -> None:  # noqa: ANN001
-        if self.chart.draw_mode or self.chart.browse_mode is not BrowseMode.PAN:
+        if self.chart.interaction_mode in {InteractionMode.DRAWING, InteractionMode.ORDER_PREVIEW}:
+            self.chart._log_interaction(
+                "mouse_drag_ignored_tool_mode",
+                button=str(ev.button()),
+                is_start=bool(ev.isStart()),
+                is_finish=bool(ev.isFinish()),
+            )
             ev.ignore()
             return
         if ev.button() != Qt.MouseButton.LeftButton:
             super().mouseDragEvent(ev, axis=axis)
             return
-        ev.accept()
         if ev.isFinish():
+            if self.chart.is_dragging:
+                self.chart._set_dragging(False)
+                self.chart._suppress_next_left_click = True
+                self.chart._log_interaction("mouse_drag_finished", suppress_next_left_click=True)
+            ev.accept()
             return
-        current = self.mapSceneToView(ev.scenePos())
-        last = self.mapSceneToView(ev.lastScenePos())
+        current_pos = ev.scenePos()
+        last_pos = ev.lastScenePos()
+        delta_x = float(current_pos.x() - last_pos.x())
+        delta_y = float(current_pos.y() - last_pos.y())
+        if not self.chart.is_dragging:
+            distance = hypot(delta_x, delta_y)
+            if distance < self.chart._drag_threshold_px:
+                self.chart._log_interaction(
+                    "mouse_drag_below_threshold",
+                    distance=round(distance, 3),
+                    threshold=self.chart._drag_threshold_px,
+                )
+                ev.ignore()
+                return
+            self.chart._set_dragging(True)
+            self.chart._log_interaction(
+                "mouse_drag_started",
+                distance=round(distance, 3),
+                delta_x=round(delta_x, 3),
+                delta_y=round(delta_y, 3),
+            )
+        ev.accept()
+        if ev.isStart():
+            return
+        current = self.mapSceneToView(current_pos)
+        last = self.mapSceneToView(last_pos)
+        self.chart._log_interaction(
+            "mouse_drag_pan",
+            current_x=round(float(current.x()), 3),
+            last_x=round(float(last.x()), 3),
+            delta_bars=round(float(last.x() - current.x()), 3),
+        )
         self.chart.pan_x(last.x() - current.x())
 
     def mouseDoubleClickEvent(self, ev: QMouseEvent) -> None:
@@ -155,6 +222,10 @@ class CandleViewBox(pg.ViewBox):
 
 class ChartWidget(QWidget):
     lineAdded = Signal()
+    drawingsChanged = Signal()
+    drawingToolChanged = Signal(object)
+    drawingPropertiesRequested = Signal(object, int)
+    interactionModeChanged = Signal(object)
     viewportChanged = Signal()
     orderLineCreated = Signal(str, float)
     orderLineMoved = Signal(int, float)
@@ -167,9 +238,10 @@ class ChartWidget(QWidget):
         self._cursor = -1
         self._total_count = 0
         self._global_start_index = 0
-        self._draw_mode = False
-        self._line_start: QPointF | None = None
-        self._drawn_lines: list[DrawnLine] = []
+        self._active_drawing_tool: DrawingToolType | None = None
+        self._pending_drawing_anchors: list[DrawingAnchor] = []
+        self._drawings: list[ChartDrawing] = []
+        self._drawing_preview_anchor: DrawingAnchor | None = None
         self._viewport = ViewportState()
         self._right_padding = 3.0
         self._left_padding = 3.0
@@ -180,10 +252,18 @@ class ChartWidget(QWidget):
         self._last_hover_price: float | None = None
         self._order_lines: list[OrderLine] = []
         self._order_line_scene_positions: dict[int, float] = {}
+        self._trade_actions: list[SessionAction] = []
+        self._trade_links: list[TradeLink] = []
+        self._trade_markers: list[TradeMarker] = []
+        self._trade_markers_visible = True
+        self._trade_links_visible = True
         self._preview_order_type: str | None = None
         self._preview_quantity = 1.0
         self._tick_size = 1.0
-        self._browse_mode = BrowseMode.CROSSHAIR
+        self._interaction_mode = InteractionMode.BROWSE
+        self._is_dragging = False
+        self._drag_threshold_px = 4.0
+        self._suppress_next_left_click = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -237,7 +317,11 @@ class ChartWidget(QWidget):
 
     @property
     def draw_mode(self) -> bool:
-        return self._draw_mode
+        return self._interaction_mode is InteractionMode.DRAWING
+
+    @property
+    def active_drawing_tool(self) -> DrawingToolType | None:
+        return self._active_drawing_tool
 
     @property
     def trade_line_mode(self) -> str | None:
@@ -245,11 +329,27 @@ class ChartWidget(QWidget):
 
     @property
     def browse_mode(self) -> BrowseMode:
-        return self._browse_mode
+        return BrowseMode.PAN if self._is_dragging else BrowseMode.CROSSHAIR
+
+    @property
+    def interaction_mode(self) -> InteractionMode:
+        return self._interaction_mode
 
     @property
     def last_hover_price(self) -> float | None:
         return self._last_hover_price
+
+    @property
+    def is_order_preview_active(self) -> bool:
+        return self._interaction_mode is InteractionMode.ORDER_PREVIEW and self._preview_order_type is not None
+
+    @property
+    def preview_order_type(self) -> str | None:
+        return self._preview_order_type
+
+    @property
+    def is_dragging(self) -> bool:
+        return self._is_dragging
 
     @property
     def viewport_state(self) -> ViewportState:
@@ -261,23 +361,76 @@ class ChartWidget(QWidget):
             self._hide_crosshair()
 
     def toggle_browse_mode(self) -> None:
-        self._browse_mode = BrowseMode.PAN if self._browse_mode is BrowseMode.CROSSHAIR else BrowseMode.CROSSHAIR
-        if self._browse_mode is BrowseMode.PAN:
-            self._hide_crosshair()
+        self._set_interaction_mode(InteractionMode.BROWSE)
 
     def set_draw_mode(self, enabled: bool) -> None:
-        self._draw_mode = enabled
-        self._line_start = None
-        if enabled:
+        self.set_active_drawing_tool(DrawingToolType.TREND_LINE if enabled else None)
+
+    def set_active_drawing_tool(self, tool: DrawingToolType | None) -> None:
+        self._log_interaction("set_active_drawing_tool_start", requested_tool=tool.value if tool else None)
+        self._active_drawing_tool = tool
+        self._pending_drawing_anchors = []
+        self._drawing_preview_anchor = None
+        self._suppress_next_left_click = False
+        if tool is not None:
             self._trade_line_mode = None
             self.cancel_order_preview()
-        if enabled:
-            self._hide_crosshair()
+            self._set_dragging(False)
+            self._set_interaction_mode(InteractionMode.DRAWING)
+        elif self._interaction_mode is InteractionMode.DRAWING:
+            self._set_interaction_mode(InteractionMode.BROWSE)
+        self._rebuild_line_items()
+        self.drawingToolChanged.emit(tool)
+        self._log_interaction("set_active_drawing_tool_done", active_tool=tool.value if tool else None)
+
+    def set_drawings(self, drawings: list[ChartDrawing]) -> None:
+        self._drawings = [
+            ChartDrawing(
+                id=drawing.id,
+                session_id=drawing.session_id,
+                tool_type=drawing.tool_type,
+                anchors=[DrawingAnchor(anchor.x, anchor.y) for anchor in drawing.anchors],
+                style=normalize_drawing_style(drawing.tool_type, dict(drawing.style)),
+            )
+            for drawing in drawings
+        ]
+        self._pending_drawing_anchors = []
+        self._drawing_preview_anchor = None
+        self._rebuild_line_items()
+
+    def drawings(self) -> list[ChartDrawing]:
+        return [
+            ChartDrawing(
+                id=drawing.id,
+                session_id=drawing.session_id,
+                tool_type=drawing.tool_type,
+                anchors=[DrawingAnchor(anchor.x, anchor.y) for anchor in drawing.anchors],
+                style=normalize_drawing_style(drawing.tool_type, dict(drawing.style)),
+            )
+            for drawing in self._drawings
+        ]
+
+    def delete_drawing(self, drawing_id: int | None, fallback_index: int | None = None) -> None:
+        index = self._resolve_drawing_index(drawing_id, fallback_index)
+        if index is None:
+            return
+        del self._drawings[index]
+        self._rebuild_line_items()
+        self.drawingsChanged.emit()
+
+    def update_drawing_style(self, drawing_id: int | None, style: dict[str, object], fallback_index: int | None = None) -> None:
+        index = self._resolve_drawing_index(drawing_id, fallback_index)
+        if index is None:
+            return
+        drawing = self._drawings[index]
+        drawing.style = normalize_drawing_style(drawing.tool_type, {**drawing.style, **style})
+        self._rebuild_line_items()
+        self.drawingsChanged.emit()
 
     def set_trade_line_mode(self, mode: str | None) -> None:
         self._trade_line_mode = mode
         if mode is not None:
-            self._draw_mode = False
+            self.set_active_drawing_tool(None)
         else:
             self.cancel_order_preview()
 
@@ -285,22 +438,43 @@ class ChartWidget(QWidget):
         self._tick_size = max(float(tick_size), 0.0001)
 
     def begin_order_preview(self, order_type: str, quantity: float) -> None:
+        self._log_interaction("begin_order_preview_start", order_type=order_type, quantity=quantity)
         self._preview_order_type = order_type
         self._preview_quantity = max(float(quantity), 1.0)
-        self._draw_mode = False
+        self.set_active_drawing_tool(None)
         self._trade_line_mode = None
-        self._browse_mode = BrowseMode.CROSSHAIR
+        self._set_dragging(False)
+        self._suppress_next_left_click = False
+        self._set_interaction_mode(InteractionMode.ORDER_PREVIEW)
         if self._last_hover_price is not None:
             self._preview_line.setPos(self._snap_price(self._last_hover_price))
         self._preview_line.show()
+        self._log_interaction("begin_order_preview_done", order_type=order_type, quantity=self._preview_quantity)
 
     def cancel_order_preview(self) -> None:
+        self._log_interaction("cancel_order_preview_start")
         self._preview_order_type = None
         self._preview_line.hide()
+        if self._interaction_mode is InteractionMode.ORDER_PREVIEW:
+            self._set_interaction_mode(InteractionMode.BROWSE)
+        self._log_interaction("cancel_order_preview_done")
 
     def set_order_lines(self, order_lines: list[OrderLine]) -> None:
         self._order_lines = list(order_lines)
         self._rebuild_order_line_items()
+
+    def set_trade_actions(self, actions: list[SessionAction], trades: list[Trade] | None = None) -> None:
+        self._trade_actions = list(actions)
+        self._rebuild_trade_geometry(trades)
+        self._rebuild_trade_marker_items()
+
+    def set_trade_markers_visible(self, visible: bool) -> None:
+        self._trade_markers_visible = bool(visible)
+        self._rebuild_trade_marker_items()
+
+    def set_trade_links_visible(self, visible: bool) -> None:
+        self._trade_links_visible = bool(visible)
+        self._rebuild_trade_marker_items()
 
     def set_full_data(self, bars: list[Bar]) -> None:
         self.set_window_data(bars, len(bars) - 1 if bars else -1, len(bars), 0)
@@ -321,7 +495,14 @@ class ChartWidget(QWidget):
         self._viewport.max_bars_in_view = max(200, self._total_count or len(self._bars))
         self._viewport.bars_in_view = min(max(120, self._viewport.min_bars_in_view), self._viewport.max_bars_in_view)
         if not preserve_viewport:
-            self._drawn_lines.clear()
+            self._pending_drawing_anchors = []
+            self._drawing_preview_anchor = None
+            self._active_drawing_tool = None
+            self._trade_line_mode = None
+            self._preview_order_type = None
+            self._preview_line.hide()
+            self._set_dragging(False)
+            self._set_interaction_mode(InteractionMode.BROWSE)
         self._sync_plot_data()
         self._rebuild_order_line_items()
         self.cancel_order_preview()
@@ -374,9 +555,14 @@ class ChartWidget(QWidget):
         self._apply_viewport()
 
     def clear_lines(self) -> None:
-        self._drawn_lines.clear()
+        self._drawings.clear()
+        self._pending_drawing_anchors = []
+        self._drawing_preview_anchor = None
+        self._active_drawing_tool = None
         self._sync_plot_data()
         self._apply_viewport()
+        self.drawingsChanged.emit()
+        self.drawingToolChanged.emit(None)
 
     def current_x_range(self) -> tuple[float, float]:
         return self.price_plot.viewRange()[0]
@@ -391,9 +577,21 @@ class ChartWidget(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
-            self.cancel_order_preview()
-            event.accept()
-            return
+            if self._pending_drawing_anchors:
+                self._pending_drawing_anchors = []
+                self._drawing_preview_anchor = None
+                self._rebuild_line_items()
+                self.set_active_drawing_tool(None)
+                event.accept()
+                return
+            if self._active_drawing_tool is not None:
+                self.set_active_drawing_tool(None)
+                event.accept()
+                return
+            if self._preview_order_type:
+                self.cancel_order_preview()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def _sync_plot_data(self) -> None:
@@ -449,14 +647,42 @@ class ChartWidget(QWidget):
         for item in list(self.price_plot.items):
             if getattr(item, "_barbybar_line", False):
                 self.price_plot.removeItem(item)
-        for line in self._drawn_lines:
-            item = pg.PlotCurveItem(
-                [line.start.x(), line.end.x()],
-                [line.start.y(), line.end.y()],
-                pen=pg.mkPen("#ff9f1c", width=2),
-            )
-            item._barbybar_line = True
-            self.price_plot.addItem(item)
+        for drawing in self._drawings:
+            self._add_drawing_items(drawing, preview=False)
+        preview = self._current_preview_drawing()
+        if preview is not None:
+            self._add_drawing_items(preview, preview=True)
+
+    def _rebuild_trade_marker_items(self) -> None:
+        for item in list(self.price_plot.items):
+            if getattr(item, "_barbybar_trade_marker", False):
+                self.price_plot.removeItem(item)
+        if not self._bars or self._cursor < 0:
+            return
+        if self._trade_links_visible:
+            for link in self._trade_links:
+                item = pg.PlotCurveItem(
+                    [link.x1, link.x2],
+                    [link.y1, link.y2],
+                    pen=pg.mkPen(TRADE_LINK_WIN_COLOR if link.pnl >= 0 else TRADE_LINK_LOSS_COLOR, width=1, style=Qt.PenStyle.SolidLine),
+                )
+                item.setOpacity(0.55)
+                item._barbybar_trade_marker = True
+                item.setZValue(13)
+                self.price_plot.addItem(item)
+        if self._trade_markers_visible:
+            for marker in self._trade_markers:
+                item = pg.ScatterPlotItem(
+                    [marker.x],
+                    [marker.y],
+                    symbol=marker.symbol,
+                    size=marker.size,
+                    brush=pg.mkBrush(marker.brush),
+                    pen=pg.mkPen(marker.brush, width=1),
+                )
+                item._barbybar_trade_marker = True
+                item.setZValue(14)
+                self.price_plot.addItem(item)
 
     def _rebuild_order_line_items(self) -> None:
         for item in list(self.price_plot.items):
@@ -496,6 +722,8 @@ class ChartWidget(QWidget):
             self.price_plot.setXRange(left, right, padding=0)
             self._apply_y_range(left, self._viewport.right_edge_index)
             self._rebuild_order_line_items()
+            self._rebuild_trade_geometry(None)
+            self._rebuild_trade_marker_items()
         finally:
             self._is_applying_viewport = False
         self.viewportChanged.emit()
@@ -531,84 +759,146 @@ class ChartWidget(QWidget):
         return result
 
     def _handle_scene_click(self, event) -> None:  # noqa: ANN001
+        scene_pos = event.scenePos()
+        in_chart = bool(self.price_plot.sceneBoundingRect().contains(scene_pos))
+        self._log_interaction(
+            "scene_click_received",
+            button=str(event.button()),
+            in_chart=in_chart,
+            scene_x=round(float(scene_pos.x()), 3),
+            scene_y=round(float(scene_pos.y()), 3),
+            pending_anchors=len(self._pending_drawing_anchors),
+        )
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._suppress_next_left_click
+            and self._interaction_mode is InteractionMode.BROWSE
+        ):
+            self._log_interaction("scene_click_suppressed")
+            self._suppress_next_left_click = False
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.RightButton:
             if self._preview_order_type:
+                self._log_interaction("scene_click_cancel_order_preview")
                 self.cancel_order_preview()
                 event.accept()
                 return
-            pos = event.scenePos()
-            if self.price_plot.sceneBoundingRect().contains(pos):
-                order_id = self._editable_order_id_at_scene_pos(float(pos.y()))
+            if in_chart:
+                drawing_hit = self._drawing_at_scene_pos(scene_pos)
+                if drawing_hit is not None:
+                    self._log_interaction("scene_click_open_drawing_context_menu", drawing_index=drawing_hit[0])
+                    self._show_drawing_context_menu(drawing_hit[0], scene_pos)
+                    event.accept()
+                    return
+                order_id = self._editable_order_id_at_scene_pos(float(scene_pos.y()))
                 if order_id is not None:
-                    self._show_order_line_context_menu(order_id, pos)
+                    self._log_interaction("scene_click_open_order_context_menu", order_id=order_id)
+                    self._show_order_line_context_menu(order_id, scene_pos)
                     event.accept()
                     return
         if self._preview_order_type and self._cursor >= 0:
-            pos = event.scenePos()
-            if not self.price_plot.sceneBoundingRect().contains(pos):
+            if not in_chart:
+                self._log_interaction("scene_click_order_preview_outside_chart")
                 return
-            point = self.price_plot.vb.mapSceneToView(pos)
+            point = self.price_plot.vb.mapSceneToView(scene_pos)
+            self._log_interaction(
+                "scene_click_order_preview_confirm",
+                mapped_x=round(float(point.x()), 3),
+                mapped_y=round(float(point.y()), 3),
+            )
             self.orderPreviewConfirmed.emit(self._preview_order_type, self._snap_price(float(point.y())), self._preview_quantity)
             self.cancel_order_preview()
             event.accept()
             return
         if self._trade_line_mode and self._cursor >= 0:
-            pos = event.scenePos()
-            if not self.price_plot.sceneBoundingRect().contains(pos):
+            if not in_chart:
+                self._log_interaction("scene_click_trade_line_outside_chart")
                 return
-            point = self.price_plot.vb.mapSceneToView(pos)
+            point = self.price_plot.vb.mapSceneToView(scene_pos)
+            self._log_interaction("scene_click_trade_line_create", trade_line_mode=self._trade_line_mode)
             self.orderLineCreated.emit(self._trade_line_mode, float(point.y()))
             self._trade_line_mode = None
             return
-        if not self._draw_mode or self._cursor < 0:
-            if (
-                event.button() == Qt.MouseButton.LeftButton
-                and self._cursor >= 0
-                and self._trade_line_mode is None
-                and self._preview_order_type is None
-            ):
-                pos = event.scenePos()
-                if self.price_plot.sceneBoundingRect().contains(pos):
-                    self.toggle_browse_mode()
-                    event.accept()
+        if self._active_drawing_tool is None or self._cursor < 0:
             return
-        pos = event.scenePos()
-        if not self.price_plot.sceneBoundingRect().contains(pos):
+        if not in_chart:
+            self._log_interaction("scene_click_drawing_outside_chart")
             return
-        point = self.price_plot.vb.mapSceneToView(pos)
-        if self._line_start is None:
-            self._line_start = point
-            return
-        self._drawn_lines.append(DrawnLine(start=self._line_start, end=point))
-        self._line_start = None
-        self._sync_plot_data()
-        self._apply_viewport()
-        self.lineAdded.emit()
+        point = self.price_plot.vb.mapSceneToView(scene_pos)
+        self._log_interaction(
+            "scene_click_consume_drawing",
+            mapped_x=round(float(point.x()), 3),
+            mapped_y=round(float(point.y()), 3),
+            pending_anchors=len(self._pending_drawing_anchors),
+            needed_anchors=self._anchors_required(self._active_drawing_tool),
+        )
+        self._consume_drawing_click(DrawingAnchor(float(point.x()), float(point.y())))
+        event.accept()
 
     def _handle_mouse_moved(self, event) -> None:  # noqa: ANN001
-        if not self._crosshair_enabled or self._draw_mode or self._cursor < 0:
+        if (
+            not self._crosshair_enabled
+            or self._cursor < 0
+            or self._is_dragging
+            or self._interaction_mode not in {InteractionMode.BROWSE, InteractionMode.ORDER_PREVIEW}
+        ):
             self._hide_crosshair()
-            return
         pos = event[0]
+        if self._active_drawing_tool is not None:
+            if self.price_plot.sceneBoundingRect().contains(pos):
+                point = self.price_plot.vb.mapSceneToView(pos)
+                self._drawing_preview_anchor = DrawingAnchor(float(point.x()), float(point.y()))
+                self._log_interaction(
+                    "mouse_move_drawing_preview",
+                    mapped_x=round(float(point.x()), 3),
+                    mapped_y=round(float(point.y()), 3),
+                    pending_anchors=len(self._pending_drawing_anchors),
+                )
+                self._rebuild_line_items()
+            else:
+                self._log_interaction("mouse_move_drawing_preview_outside_chart")
+                self._drawing_preview_anchor = None
+                self._rebuild_line_items()
+        if (
+            not self._crosshair_enabled
+            or self._cursor < 0
+            or self._is_dragging
+            or self._interaction_mode not in {InteractionMode.BROWSE, InteractionMode.ORDER_PREVIEW}
+        ):
+            return
         if not self.price_plot.sceneBoundingRect().contains(pos):
             self._hide_crosshair()
             return
         point = self.price_plot.vb.mapSceneToView(pos)
         self._last_hover_price = self._snap_price(float(point.y()))
+        if self._interaction_mode is InteractionMode.BROWSE:
+            trade_hover = self._trade_marker_at_scene_pos(pos)
+            if trade_hover is not None:
+                marker, link = trade_hover
+                hover_price = marker.y if marker is not None else link.y2
+                hover_x = int(round(marker.x if marker is not None else link.x2))
+                self._update_crosshair(hover_x, hover_price)
+                self._update_trade_hover_info(marker.detail_lines if marker is not None else link.detail_lines)
+                return
         if self._preview_order_type:
+            self._log_interaction(
+                "mouse_move_order_preview",
+                mapped_x=round(float(point.x()), 3),
+                mapped_y=round(float(point.y()), 3),
+                snapped_price=self._last_hover_price,
+            )
             self._preview_line.setPos(self._last_hover_price)
             self._preview_line.show()
-        if self._browse_mode is BrowseMode.PAN:
-            self._v_line.hide()
-            self._h_line.hide()
-            self._axis_price_label.hide()
-            self._hover_card.hide()
+        if self._interaction_mode is InteractionMode.ORDER_PREVIEW:
+            self._hide_crosshair()
             return
         hover = self._hover_bar_at(point.x())
         if hover is None:
             self._hide_crosshair()
             return
         index, bar = hover
+        self._log_interaction("hover_active", hover_index=index, hover_price=round(float(point.y()), 3))
         self._update_crosshair(index, point.y())
         self._update_hover_info(bar, point.y())
 
@@ -646,6 +936,23 @@ class ChartWidget(QWidget):
             "color: #1f8b24; font-size: 12px; font-weight: 600;" if not bullish else neutral_style
         )
         self._hover_close_label.setStyleSheet(neutral_style)
+        self._hover_card.layout().activate()
+        self._hover_card.adjustSize()
+        self._position_hover_card()
+        self._hover_card.raise_()
+        self._hover_card.show()
+
+    def _update_trade_hover_info(self, detail_lines: list[str]) -> None:
+        labels = [
+            self._hover_time_label,
+            self._hover_open_label,
+            self._hover_high_label,
+            self._hover_low_label,
+            self._hover_close_label,
+        ]
+        for label, text in zip(labels, detail_lines + [""] * max(0, len(labels) - len(detail_lines))):
+            label.setText(text)
+            label.setStyleSheet("color: #2c2c2c; font-size: 12px;")
         self._hover_card.layout().activate()
         self._hover_card.adjustSize()
         self._position_hover_card()
@@ -747,6 +1054,122 @@ class ChartWidget(QWidget):
         elif chosen is delete_action:
             self.orderLineActionRequested.emit(order_id, "delete")
 
+    def _show_drawing_context_menu(self, drawing_index: int, scene_pos) -> None:  # noqa: ANN001
+        if not (0 <= drawing_index < len(self._drawings)):
+            return
+        drawing = self._drawings[drawing_index]
+        local_pos = self.graphics.mapFromScene(scene_pos)
+        menu = QMenu(self)
+        properties_action = menu.addAction("属性...")
+        delete_action = menu.addAction("删除画线")
+        chosen = menu.exec(self.graphics.mapToGlobal(local_pos))
+        if chosen is properties_action:
+            self.drawingPropertiesRequested.emit(self.drawings()[drawing_index], drawing_index)
+        elif chosen is delete_action:
+            self.delete_drawing(drawing.id, drawing_index)
+
+    def _drawing_at_scene_pos(self, scene_pos) -> tuple[int, ChartDrawing] | None:  # noqa: ANN001
+        hit_index: int | None = None
+        hit_priority = 99.0
+        hit_distance = float("inf")
+        for index, drawing in enumerate(self._drawings):
+            border_distance, inside = self._drawing_hit_test(drawing, scene_pos)
+            if border_distance is None and not inside:
+                continue
+            priority = 0.0 if border_distance is not None else 1.0
+            distance = border_distance if border_distance is not None else 0.0
+            if priority < hit_priority or (priority == hit_priority and distance < hit_distance):
+                hit_index = index
+                hit_priority = priority
+                hit_distance = distance
+        if hit_index is None:
+            return None
+        return hit_index, self._drawings[hit_index]
+
+    def _drawing_hit_test(self, drawing: ChartDrawing, scene_pos) -> tuple[float | None, bool]:
+        if drawing.tool_type is DrawingToolType.TEXT and drawing.anchors:
+            rect = self._text_scene_rect(drawing)
+            return (0.0 if rect.contains(scene_pos) else None), False
+        segments = self._drawing_segments(drawing)
+        min_distance: float | None = None
+        for x_values, y_values in segments:
+            for start in range(len(x_values) - 1):
+                distance = self._segment_distance_to_scene_pos(
+                    DrawingAnchor(x_values[start], y_values[start]),
+                    DrawingAnchor(x_values[start + 1], y_values[start + 1]),
+                    scene_pos,
+                )
+                if distance <= DRAWING_HIT_DISTANCE_PX and (min_distance is None or distance < min_distance):
+                    min_distance = distance
+        inside = False
+        if drawing.tool_type in {DrawingToolType.RECTANGLE, DrawingToolType.PRICE_RANGE} and len(drawing.anchors) >= 2:
+            first, second = drawing.anchors[:2]
+            top_left = self.price_plot.vb.mapViewToScene(QPointF(min(first.x, second.x), max(first.y, second.y)))
+            bottom_right = self.price_plot.vb.mapViewToScene(QPointF(max(first.x, second.x), min(first.y, second.y)))
+            rect = pg.QtCore.QRectF(top_left, bottom_right).normalized()
+            inside = rect.contains(scene_pos)
+        return min_distance, inside
+
+    def _text_scene_rect(self, drawing: ChartDrawing):
+        style = normalize_drawing_style(drawing.tool_type, drawing.style)
+        text = str(style.get("text", "")) or "文字"
+        font = QApplication.font()
+        font.setPointSize(int(style.get("font_size", 12)))
+        metrics = pg.QtGui.QFontMetrics(font)
+        lines = text.splitlines() or [text]
+        width = max(metrics.horizontalAdvance(line) for line in lines) + 8
+        height = metrics.lineSpacing() * max(len(lines), 1) + 6
+        scene_top_left = self.price_plot.vb.mapViewToScene(QPointF(drawing.anchors[0].x, drawing.anchors[0].y))
+        return pg.QtCore.QRectF(float(scene_top_left.x()), float(scene_top_left.y()), float(width), float(height))
+
+    def _segment_distance_to_scene_pos(self, first: DrawingAnchor, second: DrawingAnchor, scene_pos) -> float:
+        start = self.price_plot.vb.mapViewToScene(QPointF(first.x, first.y))
+        end = self.price_plot.vb.mapViewToScene(QPointF(second.x, second.y))
+        return self._point_to_segment_distance(float(scene_pos.x()), float(scene_pos.y()), float(start.x()), float(start.y()), float(end.x()), float(end.y()))
+
+    @staticmethod
+    def _point_to_segment_distance(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
+        dx = bx - ax
+        dy = by - ay
+        if abs(dx) <= 0.0001 and abs(dy) <= 0.0001:
+            return hypot(px - ax, py - ay)
+        t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+        t = min(max(t, 0.0), 1.0)
+        closest_x = ax + dx * t
+        closest_y = ay + dy * t
+        return hypot(px - closest_x, py - closest_y)
+
+    def _resolve_drawing_index(self, drawing_id: int | None, fallback_index: int | None) -> int | None:
+        if drawing_id is not None:
+            for index, drawing in enumerate(self._drawings):
+                if drawing.id == drawing_id:
+                    return index
+        if fallback_index is not None and 0 <= fallback_index < len(self._drawings):
+            return fallback_index
+        return None
+
+    def _trade_marker_at_scene_pos(self, scene_pos) -> tuple[TradeMarker | None, TradeLink | None] | None:  # noqa: ANN001
+        if self._trade_markers_visible:
+            for marker in self._trade_markers:
+                marker_scene = self.price_plot.vb.mapViewToScene(QPointF(marker.x, marker.y))
+                if hypot(float(scene_pos.x()) - float(marker_scene.x()), float(scene_pos.y()) - float(marker_scene.y())) <= TRADE_MARKER_HIT_DISTANCE_PX:
+                    return marker, None
+        if self._trade_links_visible:
+            for link in self._trade_links:
+                start = self.price_plot.vb.mapViewToScene(QPointF(link.x1, link.y1))
+                end = self.price_plot.vb.mapViewToScene(QPointF(link.x2, link.y2))
+                distance = self._point_to_segment_distance(
+                    float(scene_pos.x()),
+                    float(scene_pos.y()),
+                    float(start.x()),
+                    float(start.y()),
+                    float(end.x()),
+                    float(end.y()),
+                )
+                if distance <= TRADE_MARKER_HIT_DISTANCE_PX:
+                    return None, link
+        return None
+
     def _order_line_style(self, line: OrderLine) -> tuple[pg.QtGui.QPen, str, bool]:
         if line.order_type is OrderLineType.ENTRY_LONG:
             return pg.mkPen(ENTRY_LONG_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine), ENTRY_LONG_LINE_COLOR, True
@@ -774,6 +1197,445 @@ class ChartWidget(QWidget):
         }
         quantity = int(round(line.quantity))
         return f"{labels[line.order_type]} {quantity}手 {format_price(line.price, self._tick_size)}"
+
+    def _consume_drawing_click(self, anchor: DrawingAnchor) -> None:
+        tool = self._active_drawing_tool
+        if tool is None:
+            self._log_interaction("consume_drawing_click_ignored_no_tool")
+            return
+        self._pending_drawing_anchors.append(anchor)
+        needed = self._anchors_required(tool)
+        self._log_interaction(
+            "consume_drawing_click_anchor_added",
+            tool=tool.value,
+            anchor_x=round(anchor.x, 3),
+            anchor_y=round(anchor.y, 3),
+            pending_anchors=len(self._pending_drawing_anchors),
+            needed_anchors=needed,
+        )
+        if len(self._pending_drawing_anchors) < needed:
+            self._drawing_preview_anchor = anchor
+            self._rebuild_line_items()
+            return
+        drawing = ChartDrawing(
+            tool_type=tool,
+            anchors=[DrawingAnchor(item.x, item.y) for item in self._pending_drawing_anchors[:needed]],
+            style=normalize_drawing_style(tool),
+        )
+        self._drawings.append(drawing)
+        self._pending_drawing_anchors = []
+        self._drawing_preview_anchor = None
+        self._active_drawing_tool = None
+        self._sync_plot_data()
+        self._apply_viewport()
+        self.lineAdded.emit()
+        self.drawingsChanged.emit()
+        self.drawingToolChanged.emit(None)
+        self._log_interaction("consume_drawing_click_completed", tool=tool.value, anchor_count=needed)
+        self._set_interaction_mode(InteractionMode.BROWSE)
+        if tool is DrawingToolType.TEXT:
+            self.drawingPropertiesRequested.emit(self.drawings()[-1], len(self._drawings) - 1)
+
+    def _current_preview_drawing(self) -> ChartDrawing | None:
+        tool = self._active_drawing_tool
+        if tool is None or not self._pending_drawing_anchors:
+            return None
+        preview_anchor = self._drawing_preview_anchor or self._pending_drawing_anchors[-1]
+        anchors = [DrawingAnchor(item.x, item.y) for item in self._pending_drawing_anchors]
+        needed = self._anchors_required(tool)
+        while len(anchors) < needed:
+            anchors.append(DrawingAnchor(preview_anchor.x, preview_anchor.y))
+        return ChartDrawing(tool_type=tool, anchors=anchors[:needed], style=normalize_drawing_style(tool))
+
+    @staticmethod
+    def _anchors_required(tool: DrawingToolType) -> int:
+        if tool in {DrawingToolType.HORIZONTAL_LINE, DrawingToolType.HORIZONTAL_RAY, DrawingToolType.VERTICAL_LINE, DrawingToolType.TEXT}:
+            return 1
+        if tool is DrawingToolType.PARALLEL_CHANNEL:
+            return 3
+        return 2
+
+    def _add_drawing_items(self, drawing: ChartDrawing, *, preview: bool) -> None:
+        style = normalize_drawing_style(drawing.tool_type, drawing.style)
+        if drawing.tool_type is DrawingToolType.TEXT:
+            text_item = self._drawing_text_item(drawing, style, preview=preview)
+            if text_item is not None:
+                text_item._barbybar_line = True
+                text_item._barbybar_drawing_id = drawing.id
+                text_item._barbybar_drawing_tool = drawing.tool_type.value
+                text_item.setZValue(19 if preview else 18)
+                self.price_plot.addItem(text_item)
+            return
+        pen = self._drawing_pen(style, preview=preview)
+        fill_item = self._drawing_fill_item(drawing, style, preview=preview)
+        if fill_item is not None:
+            fill_item._barbybar_line = True
+            fill_item._barbybar_drawing_id = drawing.id
+            fill_item._barbybar_drawing_tool = drawing.tool_type.value
+            self.price_plot.addItem(fill_item)
+        for x_values, y_values in self._drawing_segments(drawing):
+            item = pg.PlotCurveItem(x_values, y_values, pen=pen)
+            item._barbybar_line = True
+            item._barbybar_drawing_id = drawing.id
+            item._barbybar_drawing_tool = drawing.tool_type.value
+            item.setZValue(18 if preview else 17)
+            self.price_plot.addItem(item)
+        if not preview:
+            for label_item in self._drawing_label_items(drawing, style):
+                label_item._barbybar_line = True
+                label_item._barbybar_drawing_id = drawing.id
+                label_item._barbybar_drawing_tool = drawing.tool_type.value
+                label_item.setZValue(19)
+                self.price_plot.addItem(label_item)
+
+    def _drawing_segments(self, drawing: ChartDrawing) -> list[tuple[list[float], list[float]]]:
+        anchors = drawing.anchors
+        style = normalize_drawing_style(drawing.tool_type, drawing.style)
+        if drawing.tool_type in {DrawingToolType.TREND_LINE, DrawingToolType.RAY, DrawingToolType.EXTENDED_LINE} and len(anchors) >= 2:
+            return [self._line_points_with_extension(anchors[0], anchors[1], style["extend_left"], style["extend_right"])]
+        if drawing.tool_type is DrawingToolType.FIB_RETRACEMENT and len(anchors) >= 2:
+            return self._fib_segments(drawing)
+        if drawing.tool_type is DrawingToolType.HORIZONTAL_LINE and anchors:
+            left = self._global_start_index - self._left_padding
+            right = max(self._cursor + 1 + self._right_padding, self.window_end_index + self._right_padding if self._bars else left + 1)
+            return [([left, right], [anchors[0].y, anchors[0].y])]
+        if drawing.tool_type is DrawingToolType.HORIZONTAL_RAY and anchors:
+            right = max(self._cursor + 1 + self._right_padding, self.window_end_index + self._right_padding if self._bars else anchors[0].x + 1)
+            return [([anchors[0].x, right], [anchors[0].y, anchors[0].y])]
+        if drawing.tool_type is DrawingToolType.VERTICAL_LINE and anchors:
+            low, high = self.price_plot.viewRange()[1]
+            return [([anchors[0].x, anchors[0].x], [low, high])]
+        if drawing.tool_type is DrawingToolType.RECTANGLE and len(anchors) >= 2:
+            first = anchors[0]
+            second = anchors[1]
+            return [(
+                [first.x, second.x, second.x, first.x, first.x],
+                [first.y, first.y, second.y, second.y, first.y],
+            )]
+        if drawing.tool_type is DrawingToolType.PRICE_RANGE and len(anchors) >= 2:
+            first = anchors[0]
+            second = anchors[1]
+            left = min(first.x, second.x)
+            right = max(first.x, second.x)
+            return [([left, right, right, left, left], [first.y, first.y, second.y, second.y, first.y])]
+        if drawing.tool_type is DrawingToolType.PARALLEL_CHANNEL and len(anchors) >= 3:
+            return self._parallel_channel_segments(anchors[0], anchors[1], anchors[2])
+        return []
+
+    def _drawing_label_items(self, drawing: ChartDrawing, style: dict[str, object]) -> list[pg.TextItem]:
+        if drawing.tool_type is not DrawingToolType.FIB_RETRACEMENT or len(drawing.anchors) < 2:
+            return []
+        first, second = drawing.anchors[:2]
+        left = min(first.x, second.x)
+        right = max(first.x, second.x)
+        y_start = first.y
+        y_end = second.y
+        items: list[pg.TextItem] = []
+        for level in style["fib_levels"]:
+            level_value = float(level)
+            price = y_start + (y_end - y_start) * level_value
+            parts: list[str] = []
+            if style["show_level_labels"]:
+                parts.append(f"{level_value:g}")
+            if style["show_price_labels"]:
+                parts.append(format_price(self._snap_price(price), self._tick_size))
+            if not parts:
+                continue
+            item = pg.TextItem("  ".join(parts), color=str(style["color"]), fill=pg.mkBrush(255, 255, 255, 220), anchor=(1, 0.5))
+            item.setPos(right, price)
+            items.append(item)
+        return items
+
+    def _drawing_text_item(self, drawing: ChartDrawing, style: dict[str, object], *, preview: bool) -> pg.TextItem | None:
+        if not drawing.anchors:
+            return None
+        text = str(style.get("text", ""))
+        if not text and not preview:
+            return None
+        content = text if text else "文字"
+        item = pg.TextItem(content, color=str(style.get("text_color", style.get("color", "#ff9f1c"))), anchor=(0, 0))
+        font = item.textItem.font()
+        font.setPointSize(int(style.get("font_size", 12)))
+        item.textItem.setFont(font)
+        item.setPos(drawing.anchors[0].x, drawing.anchors[0].y)
+        return item
+
+    def _fib_segments(self, drawing: ChartDrawing) -> list[tuple[list[float], list[float]]]:
+        if len(drawing.anchors) < 2:
+            return []
+        first, second = drawing.anchors[:2]
+        left = min(first.x, second.x)
+        right = max(first.x, second.x)
+        style = normalize_drawing_style(drawing.tool_type, drawing.style)
+        start_y = first.y
+        end_y = second.y
+        segments: list[tuple[list[float], list[float]]] = []
+        for level in style["fib_levels"]:
+            level_value = float(level)
+            price = start_y + (end_y - start_y) * level_value
+            segments.append(([left, right], [price, price]))
+        return segments
+
+    def _drawing_pen(self, style: dict[str, object], *, preview: bool):
+        pen_style = {
+            "solid": Qt.PenStyle.SolidLine,
+            "dash": Qt.PenStyle.DashLine,
+            "dot": Qt.PenStyle.DotLine,
+        }.get(str(style.get("line_style", "solid")), Qt.PenStyle.SolidLine)
+        if preview:
+            pen_style = Qt.PenStyle.DashLine
+        return pg.mkPen(str(style.get("color", "#ff9f1c")), width=int(style.get("width", 2)), style=pen_style)
+
+    def _drawing_fill_item(self, drawing: ChartDrawing, style: dict[str, object], *, preview: bool) -> QGraphicsPathItem | None:
+        if drawing.tool_type not in {DrawingToolType.RECTANGLE, DrawingToolType.PRICE_RANGE} or len(drawing.anchors) < 2:
+            return None
+        fill_color = QColor(str(style.get("fill_color", style.get("color", "#ff9f1c"))))
+        opacity = float(style.get("fill_opacity", 0.0))
+        if opacity <= 0:
+            return None
+        fill_color.setAlphaF(min(max(opacity * (0.6 if preview else 1.0), 0.0), 1.0))
+        first, second = drawing.anchors[:2]
+        rect = pg.QtCore.QRectF(
+            min(first.x, second.x),
+            min(first.y, second.y),
+            abs(second.x - first.x),
+            abs(second.y - first.y),
+        )
+        path = QPainterPath()
+        path.addRect(rect)
+        item = QGraphicsPathItem(path)
+        item.setBrush(QBrush(fill_color))
+        item.setPen(QPen(Qt.PenStyle.NoPen))
+        item.setZValue(16 if not preview else 17)
+        return item
+
+    def _line_points_with_extension(
+        self,
+        first: DrawingAnchor,
+        second: DrawingAnchor,
+        extend_left: bool,
+        extend_right: bool,
+    ) -> tuple[list[float], list[float]]:
+        left_bound = self._global_start_index - self._left_padding
+        right_bound = max(self.window_end_index + self._right_padding, self._cursor + 1 + self._right_padding if self._cursor >= 0 else left_bound + 1)
+        x1, y1 = float(first.x), float(first.y)
+        x2, y2 = float(second.x), float(second.y)
+        if abs(x2 - x1) <= 0.0001:
+            low, high = self.price_plot.viewRange()[1]
+            return ([x1, x1], [low, high])
+        slope = (y2 - y1) / (x2 - x1)
+        start_x = left_bound if extend_left else x1
+        end_x = right_bound if extend_right else x2
+        start_y = y1 + slope * (start_x - x1)
+        end_y = y1 + slope * (end_x - x1)
+        return ([start_x, end_x], [start_y, end_y])
+
+    def _rebuild_trade_geometry(self, trades: list[Trade] | None) -> None:
+        if not self._bars or self._cursor < 0:
+            self._trade_markers = []
+            self._trade_links = []
+            return
+        visible_actions = [
+            action
+            for action in self._trade_actions
+            if self._global_start_index <= action.bar_index <= self._cursor
+            and action.action_type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT, ActionType.CLOSE, ActionType.ADD, ActionType.REDUCE}
+        ]
+        y_min, y_max = self.price_plot.viewRange()[1]
+        y_span = max(y_max - y_min, 1.0)
+        offset_unit = y_span * 0.018
+        marker_offsets: dict[int, int] = {}
+        markers: list[TradeMarker] = []
+        for action in visible_actions:
+            local_index = action.bar_index - self._global_start_index
+            if not (0 <= local_index < len(self._bars)):
+                continue
+            bar = self._bars[local_index]
+            stack = marker_offsets.get(action.bar_index, 0)
+            marker_offsets[action.bar_index] = stack + 1
+            x = self._trade_marker_x(action, stack)
+            y = self._trade_marker_y(action, bar)
+            symbol, color, size, direction = self._trade_marker_visual(action)
+            markers.append(
+                TradeMarker(
+                    action=action,
+                    direction=direction,
+                    x=x,
+                    y=y,
+                    symbol=symbol,
+                    brush=color,
+                    size=size,
+                    detail_lines=self._trade_action_detail_lines(action),
+                )
+            )
+        links = self._trade_link_segments(visible_actions, markers)
+        self._trade_markers = markers
+        self._trade_links = links
+
+    def _trade_marker_visual(self, action: SessionAction) -> tuple[str, str, float, str]:
+        if action.action_type is ActionType.OPEN_LONG:
+            return "o", "#d84a4a", 8.0, "long"
+        if action.action_type is ActionType.OPEN_SHORT:
+            return "o", "#1f8b24", 8.0, "short"
+        if action.action_type is ActionType.CLOSE:
+            return "d", TRADE_CLOSE_MARKER_COLOR, 9.0, "flat"
+        if action.action_type is ActionType.ADD:
+            return "o", "#d84a4a", 7.0, "add"
+        return "o", "#1f8b24", 7.0, "reduce"
+
+    def _trade_marker_x(self, action: SessionAction, stack: int) -> float:
+        if stack == 0:
+            return float(action.bar_index)
+        direction = -1.0 if stack % 2 else 1.0
+        magnitude = 0.12 * ((stack + 1) // 2)
+        return float(action.bar_index) + direction * magnitude
+
+    @staticmethod
+    def _trade_marker_y(action: SessionAction, bar: Bar) -> float:
+        return float(action.price if action.price is not None else bar.close)
+
+    def _trade_action_detail_lines(self, action: SessionAction) -> list[str]:
+        action_label = {
+            ActionType.OPEN_LONG: "开多",
+            ActionType.OPEN_SHORT: "开空",
+            ActionType.CLOSE: "平仓",
+            ActionType.ADD: "加仓",
+            ActionType.REDUCE: "减仓",
+        }.get(action.action_type, action.action_type.value)
+        quantity = int(action.quantity) if float(action.quantity).is_integer() else round(float(action.quantity), 2)
+        return [
+            f"{action_label} | {action.timestamp:%Y-%m-%d %H:%M}",
+            f"价格 {format_price(float(action.price or 0.0), self._tick_size)}",
+            f"手数 {quantity}",
+            f"Bar {action.bar_index + 1}",
+            "自动触发" if action.extra.get("auto") else "手动成交",
+        ]
+
+    def _trade_link_segments(self, actions: list[SessionAction], markers: list[TradeMarker]) -> list[TradeLink]:
+        marker_lookup: dict[tuple[int, ActionType, float], list[TradeMarker]] = {}
+        for marker in markers:
+            marker_lookup.setdefault((marker.action.bar_index, marker.action.action_type, float(marker.action.quantity)), []).append(marker)
+        open_lots: list[dict[str, object]] = []
+        links: list[TradeLink] = []
+        for action in actions:
+            price = float(action.price or 0.0)
+            if action.action_type is ActionType.OPEN_LONG:
+                open_lots.append({"direction": "long", "quantity": float(action.quantity), "bar_index": action.bar_index, "price": price, "timestamp": action.timestamp})
+                continue
+            if action.action_type is ActionType.OPEN_SHORT:
+                open_lots.append({"direction": "short", "quantity": float(action.quantity), "bar_index": action.bar_index, "price": price, "timestamp": action.timestamp})
+                continue
+            if action.action_type is ActionType.ADD and open_lots:
+                direction = str(open_lots[-1]["direction"])
+                open_lots.append({"direction": direction, "quantity": float(action.quantity), "bar_index": action.bar_index, "price": price, "timestamp": action.timestamp})
+                continue
+            if action.action_type not in {ActionType.CLOSE, ActionType.REDUCE}:
+                continue
+            remaining = float(action.quantity)
+            while remaining > 0 and open_lots:
+                lot = open_lots[0]
+                matched_qty = min(remaining, float(lot["quantity"]))
+                remaining -= matched_qty
+                lot["quantity"] = float(lot["quantity"]) - matched_qty
+                direction = str(lot["direction"])
+                entry_price = float(lot["price"])
+                pnl = (price - entry_price) * matched_qty * (1 if direction == "long" else -1)
+                entry_marker = self._find_trade_marker(markers, int(lot["bar_index"]), entry_price)
+                exit_marker = self._find_trade_marker(markers, action.bar_index, price, preferred_action=action.action_type)
+                if entry_marker is not None and exit_marker is not None:
+                    qty_text = int(matched_qty) if float(matched_qty).is_integer() else round(matched_qty, 2)
+                    links.append(
+                        TradeLink(
+                            x1=entry_marker.x,
+                            y1=entry_marker.y,
+                            x2=exit_marker.x,
+                            y2=exit_marker.y,
+                            pnl=pnl,
+                            detail_lines=[
+                                f"{'多单' if direction == 'long' else '空单'} | {lot['timestamp']:%Y-%m-%d %H:%M} -> {action.timestamp:%Y-%m-%d %H:%M}",
+                                f"开 {format_price(entry_price, self._tick_size)} -> 平 {format_price(price, self._tick_size)}",
+                                f"手数 {qty_text}",
+                                f"PnL {pnl:.2f}",
+                                "交易连线",
+                            ],
+                        )
+                    )
+                if float(lot["quantity"]) <= 0.0001:
+                    open_lots.pop(0)
+        return links
+
+    @staticmethod
+    def _find_trade_marker(markers: list[TradeMarker], bar_index: int, price: float, preferred_action: ActionType | None = None) -> TradeMarker | None:
+        candidates = [
+            marker for marker in markers
+            if marker.action.bar_index == bar_index and (preferred_action is None or marker.action.action_type is preferred_action)
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: abs(float(item.action.price or 0.0) - price))
+
+    def _parallel_channel_segments(
+        self,
+        first: DrawingAnchor,
+        second: DrawingAnchor,
+        offset_anchor: DrawingAnchor,
+    ) -> list[tuple[list[float], list[float]]]:
+        dx = second.x - first.x
+        dy = second.y - first.y
+        length = hypot(dx, dy)
+        if length <= 0.0001:
+            return [([first.x, offset_anchor.x], [first.y, offset_anchor.y])]
+        normal_x = -dy / length
+        normal_y = dx / length
+        offset = (offset_anchor.x - first.x) * normal_x + (offset_anchor.y - first.y) * normal_y
+        shifted_first = DrawingAnchor(first.x + normal_x * offset, first.y + normal_y * offset)
+        shifted_second = DrawingAnchor(second.x + normal_x * offset, second.y + normal_y * offset)
+        return [
+            ([first.x, second.x], [first.y, second.y]),
+            ([shifted_first.x, shifted_second.x], [shifted_first.y, shifted_second.y]),
+            ([first.x, shifted_first.x], [first.y, shifted_first.y]),
+            ([second.x, shifted_second.x], [second.y, shifted_second.y]),
+        ]
+
+    def _set_dragging(self, dragging: bool) -> None:
+        if self._is_dragging == dragging:
+            return
+        self._is_dragging = dragging
+        if dragging:
+            self._log_interaction("hover_hidden_dragging")
+            self._hide_crosshair()
+        else:
+            self._hide_crosshair()
+            if self._interaction_mode is InteractionMode.BROWSE:
+                self._log_interaction("hover_resume_after_drag")
+        self._log_interaction("set_dragging", dragging=dragging)
+        self.interactionModeChanged.emit(self._interaction_mode)
+
+    def _set_interaction_mode(self, mode: InteractionMode) -> None:
+        if self._interaction_mode == mode:
+            return
+        previous_mode = self._interaction_mode
+        self._interaction_mode = mode
+        if mode is not InteractionMode.DRAWING:
+            self._drawing_preview_anchor = None
+        if mode is InteractionMode.DRAWING:
+            self._set_dragging(False)
+            self._suppress_next_left_click = False
+        if mode is InteractionMode.BROWSE:
+            self._hide_crosshair()
+        self._log_interaction("set_interaction_mode", previous_mode=previous_mode.value, mode=mode.value)
+        self.interactionModeChanged.emit(mode)
+
+    def _log_interaction(self, event: str, **fields) -> None:
+        payload = {
+            "interaction_mode": self._interaction_mode.value,
+            "active_drawing_tool": self._active_drawing_tool.value if self._active_drawing_tool else "",
+            "preview_order_type": self._preview_order_type or "",
+            "is_dragging": self._is_dragging,
+            "suppress_next_left_click": self._suppress_next_left_click,
+        }
+        payload.update(fields)
+        logger.bind(component="chart_interaction", **payload).debug("event={event}", event=event)
 
     def _is_near_latest(self, right_edge_index: float) -> bool:
         return abs((self._cursor + 1) - right_edge_index) <= max(1.0, self._right_padding)

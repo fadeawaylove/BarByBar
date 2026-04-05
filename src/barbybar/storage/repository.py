@@ -20,7 +20,11 @@ from barbybar.data.timeframe import (
 from barbybar.domain.models import (
     ActionType,
     Bar,
+    ChartDrawing,
     DataSet,
+    DrawingAnchor,
+    DrawingToolType,
+    normalize_drawing_style,
     OrderLine,
     OrderLineType,
     OrderStatus,
@@ -211,6 +215,7 @@ class Repository:
         session: ReviewSession,
         actions: list[SessionAction],
         order_lines: list[OrderLine] | None = None,
+        drawings: list[ChartDrawing] | None = None,
     ) -> ReviewSession:
         if session.id is None:
             raise ValueError("Session must have an id before it can be saved.")
@@ -318,6 +323,38 @@ class Repository:
                         session.id,
                     ),
                 )
+        if drawings is not None:
+            incoming_ids = {drawing.id for drawing in drawings if drawing.id is not None}
+            existing_ids = {
+                row["id"]
+                for row in self.conn.execute("SELECT id FROM drawings WHERE session_id = ?", (session.id,)).fetchall()
+            }
+            stale_ids = existing_ids - incoming_ids
+            if stale_ids:
+                self.conn.executemany("DELETE FROM drawings WHERE id = ?", [(drawing_id,) for drawing_id in stale_ids])
+
+            for drawing in drawings:
+                anchors_json = json.dumps([anchor.to_dict() for anchor in drawing.anchors], ensure_ascii=False)
+                style_json = json.dumps(drawing.style, ensure_ascii=False)
+                if drawing.id is None:
+                    cursor = self.conn.execute(
+                        """
+                        INSERT INTO drawings(session_id, tool_type, anchors_json, style_json)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (session.id, drawing.tool_type.value, anchors_json, style_json),
+                    )
+                    drawing.id = int(cursor.lastrowid)
+                    drawing.session_id = session.id
+                    continue
+                self.conn.execute(
+                    """
+                    UPDATE drawings
+                    SET tool_type = ?, anchors_json = ?, style_json = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND session_id = ?
+                    """,
+                    (drawing.tool_type.value, anchors_json, style_json, drawing.id, session.id),
+                )
         self.conn.commit()
         return self.get_session(session.id)
 
@@ -402,6 +439,19 @@ class Repository:
                 triggered_bar_index=row["triggered_bar_index"],
                 triggered_at=_dt(row["triggered_at"]),
                 note=row["note"],
+            )
+            for row in rows
+        ]
+
+    def get_drawings(self, session_id: int) -> list[ChartDrawing]:
+        rows = self.conn.execute("SELECT * FROM drawings WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()
+        return [
+            ChartDrawing(
+                id=row["id"],
+                session_id=row["session_id"],
+                tool_type=DrawingToolType(row["tool_type"]),
+                anchors=[DrawingAnchor.from_dict(item) for item in json.loads(row["anchors_json"])],
+                style=normalize_drawing_style(DrawingToolType(row["tool_type"]), json.loads(row["style_json"])),
             )
             for row in rows
         ]

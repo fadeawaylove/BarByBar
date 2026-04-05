@@ -4,13 +4,14 @@ from time import perf_counter
 from uuid import uuid4
 
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QMessageBox, QPushButton, QVBoxLayout
 
 from barbybar.data.csv_importer import MissingColumnsError
 from barbybar.data.tick_size import default_tick_size_for_symbol, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, WindowBars
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, WindowBars
 from barbybar.storage.repository import Repository
+from barbybar.ui.chart_widget import InteractionMode
 from barbybar.ui.main_window import DataSetManagerDialog, MainWindow, SessionLibraryDialog
 
 
@@ -94,6 +95,22 @@ def test_main_window_uses_timeframe_shortcut_buttons(window: MainWindow) -> None
     assert set(window.timeframe_buttons) == {"1m", "5m", "15m", "30m", "60m"}
 
 
+def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None:
+    assert set(window._drawing_tool_buttons) == {
+        DrawingToolType.TREND_LINE,
+        DrawingToolType.RAY,
+        DrawingToolType.EXTENDED_LINE,
+        DrawingToolType.FIB_RETRACEMENT,
+        DrawingToolType.HORIZONTAL_LINE,
+        DrawingToolType.HORIZONTAL_RAY,
+        DrawingToolType.VERTICAL_LINE,
+        DrawingToolType.PARALLEL_CHANNEL,
+        DrawingToolType.RECTANGLE,
+        DrawingToolType.PRICE_RANGE,
+        DrawingToolType.TEXT,
+    }
+
+
 def test_main_window_has_no_autoplay_controls(window: MainWindow) -> None:
     button_texts = {button.text() for button in window.findChildren(QPushButton)}
     assert "自动播放" not in button_texts
@@ -139,12 +156,23 @@ def test_main_window_removes_session_info_panel(window: MainWindow) -> None:
 def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
     button_texts = {button.text() for button in window.findChildren(QPushButton)}
 
-    assert "画线下单" not in button_texts
+    assert "画线模式" not in button_texts
     assert "买" in button_texts
     assert "卖" in button_texts
     assert "平" in button_texts
     assert "反" in button_texts
     assert "取消画线下单" in button_texts
+    assert "趋势线" in button_texts
+    assert "射线" in button_texts
+    assert "扩展线" in button_texts
+    assert "斐波" in button_texts
+    assert "水平线" in button_texts
+    assert "水平射线" in button_texts
+    assert "垂直线" in button_texts
+    assert "通道" in button_texts
+    assert "矩形" in button_texts
+    assert "价格区间" in button_texts
+    assert "文字" in button_texts
     assert "图上开多线" not in button_texts
     assert "图上开空线" not in button_texts
     assert "加仓" not in button_texts
@@ -224,6 +252,33 @@ def test_draw_order_controls_sync_position_state(window: MainWindow) -> None:
     assert window._draw_order_buttons[OrderLineType.REVERSE].isEnabled() is True
 
 
+def test_update_ui_from_engine_syncs_trade_markers(window: MainWindow) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=101)
+    window.engine.record_action(ActionType.CLOSE, quantity=1, price=103)
+
+    window._update_ui_from_engine()
+
+    assert len(window.chart_widget._trade_markers) == 2
+    assert len(window.chart_widget._trade_links) == 1
+
+
+def test_trade_marker_visibility_toggle_updates_chart_widget(window: MainWindow) -> None:
+    _seed_engine(window)
+
+    window.show_trade_markers_check.setChecked(False)
+    window.show_trade_links_check.setChecked(False)
+
+    assert window.chart_widget._trade_markers_visible is False
+    assert window.chart_widget._trade_links_visible is False
+
+
 def test_order_preview_confirmed_uses_selected_quantity(window: MainWindow, monkeypatch) -> None:
     _seed_engine(window)
     captured: list[tuple[object, float, float]] = []
@@ -236,6 +291,153 @@ def test_order_preview_confirmed_uses_selected_quantity(window: MainWindow, monk
     window._handle_order_preview_confirmed("entry_long", 102.5, 3.0)
 
     assert captured == [(OrderLineType.ENTRY_LONG, 102.5, 3.0)]
+
+
+def test_clicking_drawing_tool_updates_chart_widget(window: MainWindow) -> None:
+    window._toggle_drawing_tool(DrawingToolType.HORIZONTAL_LINE, True)
+
+    assert window.chart_widget.active_drawing_tool is DrawingToolType.HORIZONTAL_LINE
+    assert window._drawing_tool_buttons[DrawingToolType.HORIZONTAL_LINE].isChecked() is True
+    assert window.chart_widget.interaction_mode is InteractionMode.DRAWING
+
+
+def test_completed_drawing_unchecks_toolbar_button(window: MainWindow) -> None:
+    window._toggle_drawing_tool(DrawingToolType.HORIZONTAL_LINE, True)
+
+    window.chart_widget._consume_drawing_click(DrawingAnchor(10.0, 100.0))
+
+    assert window.chart_widget.active_drawing_tool is None
+    assert window._drawing_tool_buttons[DrawingToolType.HORIZONTAL_LINE].isChecked() is False
+    assert window.chart_widget.interaction_mode is InteractionMode.BROWSE
+
+
+def test_clear_lines_schedules_auto_save(window: MainWindow) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_drawings([])
+    window.chart_widget.set_active_drawing_tool(DrawingToolType.HORIZONTAL_LINE)
+    window.chart_widget._consume_drawing_click(DrawingAnchor(10.0, 100.0))
+    window._session_dirty = False
+    window._auto_save_timer.stop()
+
+    window.chart_widget.clear_lines()
+
+    assert window._session_dirty is True
+    assert window._auto_save_timer.isActive()
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_confirm_clear_drawings_cancels_without_side_effect(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 100.0)])])
+    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.warning", lambda *args, **kwargs: QMessageBox.StandardButton.No)
+    window._session_dirty = False
+    window._auto_save_timer.stop()
+
+    window.confirm_clear_drawings()
+
+    assert len(window.chart_widget.drawings()) == 1
+    assert window._session_dirty is False
+    assert window._auto_save_timer.isActive() is False
+
+
+def test_confirm_clear_drawings_confirms_and_clears(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 100.0)])])
+    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.warning", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    window._session_dirty = False
+    window._auto_save_timer.stop()
+
+    window.confirm_clear_drawings()
+
+    assert window.chart_widget.drawings() == []
+    assert window._session_dirty is True
+    assert window._auto_save_timer.isActive() is True
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_order_preview_cancel_resets_button_state(window: MainWindow) -> None:
+    _seed_engine(window)
+
+    window._toggle_draw_order_preview(OrderLineType.ENTRY_LONG, True)
+    assert window._draw_order_buttons[OrderLineType.ENTRY_LONG].isChecked() is True
+
+    window.chart_widget.cancel_order_preview()
+
+    assert window._draw_order_buttons[OrderLineType.ENTRY_LONG].isChecked() is False
+    assert window.chart_widget.interaction_mode is InteractionMode.BROWSE
+
+
+def test_order_preview_activation_clears_active_drawing_tool(window: MainWindow) -> None:
+    _seed_engine(window)
+    window._toggle_drawing_tool(DrawingToolType.TREND_LINE, True)
+
+    window._toggle_draw_order_preview(OrderLineType.ENTRY_LONG, True)
+
+    assert window.chart_widget.active_drawing_tool is None
+    assert window._drawing_tool_buttons[DrawingToolType.TREND_LINE].isChecked() is False
+    assert window.chart_widget.interaction_mode is InteractionMode.ORDER_PREVIEW
+
+
+def test_drawing_properties_request_updates_style_and_marks_session_dirty(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(12.0, 101.0)])])
+    window._session_dirty = False
+    window._auto_save_timer.stop()
+
+    class _FakeDialog:
+        def __init__(self, drawing, parent):
+            self.drawing = drawing
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def style_payload(self):
+            return {"color": "#3366ff", "width": 3, "line_style": "dash"}
+
+    monkeypatch.setattr("barbybar.ui.main_window.DrawingPropertiesDialog", _FakeDialog)
+
+    window._handle_drawing_properties_requested(window.chart_widget.drawings()[0], 0)
+
+    assert window.chart_widget.drawings()[0].style["color"] == "#3366ff"
+    assert window.chart_widget.drawings()[0].style["width"] == 3
+    assert window._session_dirty is True
+    assert window._auto_save_timer.isActive() is True
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_text_drawing_cancel_with_empty_text_deletes_placeholder(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TEXT, anchors=[DrawingAnchor(10.0, 100.0)], style={"text": ""})])
+    window._session_dirty = False
+    window._auto_save_timer.stop()
+
+    class _FakeDialog:
+        def __init__(self, drawing, parent):
+            self.drawing = drawing
+
+        def exec(self):
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr("barbybar.ui.main_window.DrawingPropertiesDialog", _FakeDialog)
+
+    window._handle_drawing_properties_requested(window.chart_widget.drawings()[0], 0)
+
+    assert window.chart_widget.drawings() == []
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_clear_current_session_resets_to_browse_mode(window: MainWindow) -> None:
+    window._toggle_drawing_tool(DrawingToolType.TREND_LINE, True)
+
+    window._clear_current_session()
+
+    assert window.chart_widget.interaction_mode is InteractionMode.BROWSE
+    assert all(button.isChecked() is False for button in window._drawing_tool_buttons.values())
+    assert all(button.isChecked() is False for button in window._draw_order_buttons.values())
 
 
 def test_tick_size_defaults_from_symbol(window: MainWindow) -> None:
