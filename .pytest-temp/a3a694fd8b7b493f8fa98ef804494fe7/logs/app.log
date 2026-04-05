@@ -1,0 +1,60 @@
+2026-04-05 11:47:57.428 | INFO     | 8396:6056 | barbybar.logging_config:setup_logging:82 | BarByBar starting version=0.1.0 python=3.12.12 db_path=C:\Users\admin\.barbybar\barbybar.db log_dir=C:\code\BarByBar\.pytest-temp\a3a694fd8b7b493f8fa98ef804494fe7\logs
+2026-04-05 11:47:57.428 | WARNING  | 8396:6056 | barbybar.logging_config:_qt_message_handler:103 | Qt message: qt warning from test
+2026-04-05 11:47:57.459 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.489 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.520 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.551 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.584 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.615 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.631 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.670 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.703 | INFO     | 8396:6056 | barbybar.ui.main_window:_autoload_recent_session:652 | event=autoload_recent_session
+2026-04-05 11:47:57.703 | INFO     | 8396:6056 | barbybar.ui.main_window:_start_session_load:961 | event=start_load title=正在恢复最近训练...
+2026-04-05 11:47:57.703 | DEBUG    | 8396:6056 | barbybar.ui.main_window:show_busy_overlay:919 | event=show_busy_overlay title=正在恢复最近训练...
+2026-04-05 11:47:57.705 | DEBUG    | 8396:15928 | barbybar.ui.main_window:run:137 | event=get_session elapsed_ms=0.079
+2026-04-05 11:47:57.705 | DEBUG    | 8396:15928 | barbybar.ui.main_window:run:141 | event=get_dataset elapsed_ms=0.053
+2026-04-05 11:47:57.705 | DEBUG    | 8396:15928 | barbybar.ui.main_window:run:144 | event=get_session_actions elapsed_ms=0.142
+2026-04-05 11:47:57.705 | DEBUG    | 8396:15928 | barbybar.ui.main_window:run:147 | event=get_order_lines elapsed_ms=0.055
+2026-04-05 11:47:57.706 | DEBUG    | 8396:15928 | barbybar.ui.main_window:run:157 | event=get_chart_window elapsed_ms=0.798 bars=43 start=0 end=42 total=180
+2026-04-05 11:47:57.706 | INFO     | 8396:15928 | barbybar.ui.main_window:run:165 | event=session_load_complete elapsed_ms=2.344
+2026-04-05 11:47:57.706 | DEBUG    | 8396:6056 | barbybar.ui.main_window:_handle_loaded_session:1003 | event=set_timeframe_choices elapsed_ms=0.028
+2026-04-05 11:47:57.706 | DEBUG    | 8396:6056 | barbybar.ui.main_window:_handle_loaded_session:1009 | event=build_engine elapsed_ms=0.022
+2026-04-05 11:47:57.708 | DEBUG    | 8396:6056 | barbybar.ui.main_window:_handle_loaded_session:1024 | event=set_window_data elapsed_ms=1.426 bars=43 start=0 end=42
+2026-04-05 11:47:57.709 | DEBUG    | 8396:6056 | barbybar.ui.main_window:_handle_loaded_session:1033 | event=update_ui elapsed_ms=1.112
+2026-04-05 11:47:57.709 | INFO     | 8396:6056 | barbybar.ui.main_window:_handle_loaded_session:1041 | event=load_applied elapsed_ms=2.832
+2026-04-05 11:47:57.709 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.709 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.709 | WARNING  | 8396:6056 | barbybar.ui.main_window:closeEvent:1069 | event=close_waiting_for_loader_thread
+2026-04-05 11:47:57.711 | DEBUG    | 8396:6056 | barbybar.ui.main_window:_handle_loader_thread_finished:1063 | event=loader_thread_finished
+2026-04-05 11:47:57.739 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.768 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.799 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.830 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.857 | DEBUG    | 8396:6056 | barbybar.ui.main_window:_schedule_auto_save:1154 | event=auto_save_scheduled
+2026-04-05 11:47:57.857 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.886 | DEBUG    | 8396:6056 | barbybar.ui.main_window:_schedule_auto_save:1154 | event=auto_save_scheduled
+2026-04-05 11:47:57.886 | DEBUG    | 8396:6056 | barbybar.ui.main_window:_schedule_auto_save:1154 | event=auto_save_scheduled
+2026-04-05 11:47:57.886 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.912 | DEBUG    | 8396:6056 | barbybar.ui.main_window:show_busy_overlay:919 | event=show_busy_overlay title=正在加载案例...
+2026-04-05 11:47:57.912 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.912 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.945 | DEBUG    | 8396:6056 | barbybar.ui.main_window:_schedule_auto_save:1154 | event=auto_save_scheduled
+2026-04-05 11:47:57.947 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:57.971 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.001 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.028 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.051 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.092 | DEBUG    | 8396:6056 | barbybar.ui.main_window:show_busy_overlay:919 | event=show_busy_overlay title=正在加载案例...
+2026-04-05 11:47:58.103 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.139 | DEBUG    | 8396:6056 | barbybar.ui.main_window:show_busy_overlay:919 | event=show_busy_overlay title=正在加载案例...
+2026-04-05 11:47:58.139 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.176 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.206 | INFO     | 8396:6056 | barbybar.ui.main_window:_import_csv_with_mapping:613 | event=import_success dataset_id=1 timeframe=1m
+2026-04-05 11:47:58.206 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.232 | WARNING  | 8396:6056 | barbybar.ui.main_window:_import_csv_with_mapping:592 | event=missing_columns missing_fields=volume
+2026-04-05 11:47:58.235 | INFO     | 8396:6056 | barbybar.ui.main_window:_import_csv_with_mapping:613 | event=import_success dataset_id=1 timeframe=1m
+2026-04-05 11:47:58.235 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.257 | WARNING  | 8396:6056 | barbybar.ui.main_window:_import_csv_with_mapping:592 | event=missing_columns missing_fields=datetime,volume
+2026-04-05 11:47:58.257 | INFO     | 8396:6056 | barbybar.ui.main_window:_import_csv_with_mapping:601 | event=column_mapping_cancelled
+2026-04-05 11:47:58.258 | DEBUG    | 8396:6056 | barbybar.ui.main_window:hide_busy_overlay:935 | event=hide_busy_overlay
+2026-04-05 11:47:58.329 | WARNING  | 8396:6056 | barbybar.storage.repository:_session_from_row:420 | event=deprecated_chart_timeframe_fallback

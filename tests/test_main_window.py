@@ -1,16 +1,17 @@
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 from uuid import uuid4
 
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QPushButton, QVBoxLayout
 
 from barbybar.data.csv_importer import MissingColumnsError
-from barbybar.data.tick_size import default_tick_size_for_symbol
+from barbybar.data.tick_size import default_tick_size_for_symbol, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, WindowBars
 from barbybar.storage.repository import Repository
-from barbybar.ui.main_window import MainWindow
+from barbybar.ui.main_window import DataSetManagerDialog, MainWindow, SessionLibraryDialog
 
 
 def _app() -> QApplication:
@@ -80,6 +81,15 @@ def _seed_engine(window: MainWindow) -> None:
     window.current_session_id = 1
 
 
+def _wait_for_loaded_session(app: QApplication, window: MainWindow, timeout_s: float = 5.0) -> None:
+    started = perf_counter()
+    while perf_counter() - started < timeout_s:
+        app.processEvents()
+        if window.engine is not None and window.current_session_id is not None:
+            return
+    raise AssertionError("session did not load in time")
+
+
 def test_main_window_uses_timeframe_shortcut_buttons(window: MainWindow) -> None:
     assert set(window.timeframe_buttons) == {"1m", "5m", "15m", "30m", "60m"}
 
@@ -91,10 +101,39 @@ def test_main_window_has_no_autoplay_controls(window: MainWindow) -> None:
     assert not hasattr(window, "speed_combo")
 
 
+def test_main_window_uses_manager_buttons_instead_of_left_lists(window: MainWindow) -> None:
+    button_texts = {button.text() for button in window.findChildren(QPushButton)}
+
+    assert "导入 CSV" in button_texts
+    assert "数据集" in button_texts
+    assert "案例库" in button_texts
+    assert not hasattr(window, "dataset_list")
+    assert not hasattr(window, "session_list")
+
+
+def test_manager_dialogs_include_delete_actions(window: MainWindow) -> None:
+    dataset_dialog = DataSetManagerDialog(window.repo, window)
+    session_dialog = SessionLibraryDialog(window.repo, window)
+    try:
+        dataset_buttons = {button.text() for button in dataset_dialog.findChildren(QPushButton)}
+        session_buttons = {button.text() for button in session_dialog.findChildren(QPushButton)}
+
+        assert "删除所选数据集" in dataset_buttons
+        assert "删除所选案例" in session_buttons
+    finally:
+        dataset_dialog.close()
+        dataset_dialog.deleteLater()
+        session_dialog.close()
+        session_dialog.deleteLater()
+
+
 def test_main_window_removes_session_info_panel(window: MainWindow) -> None:
     group_titles = {group.title() for group in window.findChildren(QGroupBox)}
     assert "会话信息" not in group_titles
-    assert group_titles >= {"交易动作", "统计"}
+    assert "交易" in group_titles
+    assert "交易动作" not in group_titles
+    assert "画线下单" not in group_titles
+    assert "统计" not in group_titles
 
 
 def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
@@ -112,12 +151,62 @@ def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
     assert "减仓" not in button_texts
 
 
+def test_right_panel_uses_compact_trade_layout(window: MainWindow) -> None:
+    assert window.splitter.count() == 2
+    assert window.splitter.sizes()[1] <= 260
+    assert window.stats_label.text().startswith("方向 ")
+
+
+def test_right_panel_uses_vertical_trade_layout(window: MainWindow) -> None:
+    trade_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "交易")
+    trade_layout = trade_group.layout()
+
+    assert isinstance(trade_layout, QVBoxLayout)
+    assert window.splitter.widget(1).maximumWidth() <= 260
+
+    button_texts = [button.text() for button in trade_group.findChildren(QPushButton)]
+    for label in ["开多", "开空", "立即平仓", "买", "卖", "平", "反", "取消画线下单"]:
+        assert label in button_texts
+
+
 def test_timeframe_buttons_render_above_chart(window: MainWindow) -> None:
-    center_panel = window.splitter.widget(1)
+    center_panel = window.splitter.widget(0)
     layout = center_panel.layout()
 
     assert layout.itemAt(0).layout() is not None
     assert layout.itemAt(1).widget() is window.chart_widget
+
+
+def test_main_window_autoloads_most_recent_session(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(180):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    dataset = repo.import_csv(csv_path, "IF", "1m")
+    session = repo.create_session(dataset.id or 0, start_index=10)
+    session.current_index = 12
+    session.current_bar_time = start + timedelta(minutes=12)
+    repo.save_session(session, [], [])
+
+    main_window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, main_window)
+        assert main_window.current_session_id == session.id
+        assert main_window.engine is not None
+        assert main_window.engine.session.current_index == 12
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
 
 
 def test_draw_order_controls_sync_position_state(window: MainWindow) -> None:
@@ -159,15 +248,45 @@ def test_tick_size_defaults_from_symbol(window: MainWindow) -> None:
     assert window.tick_size_spin.value() == 0.2
 
 
+def test_trade_action_price_defaults_to_latest_close(window: MainWindow) -> None:
+    _seed_engine(window)
+
+    window._update_ui_from_engine()
+
+    assert window.price_spin.value() == 126.0
+
+
 def test_tick_size_change_snaps_price_input(window: MainWindow) -> None:
     _seed_engine(window)
     window.price_spin.setValue(5914.62)
 
     window._handle_tick_size_changed(1.0)
 
-    assert window.price_spin.value() == 5915.0
+    assert window.price_spin.value() == 126.0
+    assert window.price_spin.decimals() == 0
     window._session_dirty = False
     window._auto_save_timer.stop()
+
+
+def test_tick_size_decimals_follow_tick_size(window: MainWindow) -> None:
+    _seed_engine(window)
+
+    window._handle_tick_size_changed(0.2)
+    assert window.price_spin.decimals() == 1
+
+    window._handle_tick_size_changed(0.02)
+    assert window.price_spin.decimals() == 2
+    window._session_dirty = False
+    window._auto_save_timer.stop()
+
+
+def test_tick_format_helpers_cap_at_two_decimals() -> None:
+    assert price_decimals_for_tick(1) == 0
+    assert price_decimals_for_tick(0.2) == 1
+    assert price_decimals_for_tick(0.02) == 2
+    assert format_price(5915, 1) == "5915"
+    assert format_price(5914.2, 0.2) == "5914.2"
+    assert format_price(5914.02, 0.02) == "5914.02"
 
 
 def test_busy_overlay_show_and_hide(window: MainWindow) -> None:

@@ -94,3 +94,17 @@ def snap_price(price: float, tick_size: float) -> float:
     tick_text = f"{valid_tick:.8f}".rstrip("0").rstrip(".")
     decimals = len(tick_text.split(".")[1]) if "." in tick_text else 0
     return round(snapped, decimals)
+
+
+def price_decimals_for_tick(tick_size: float) -> int:
+    valid_tick = max(float(tick_size), 0.0001)
+    tick_text = f"{valid_tick:.8f}".rstrip("0").rstrip(".")
+    decimals = len(tick_text.split(".")[1]) if "." in tick_text else 0
+    return min(decimals, 2)
+
+
+def format_price(price: float | int | None, tick_size: float) -> str:
+    if price is None:
+        return "-"
+    decimals = price_decimals_for_tick(tick_size)
+    return f"{float(price):.{decimals}f}"

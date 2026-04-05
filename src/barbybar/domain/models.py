@@ -33,6 +33,14 @@ class OrderStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class OrderTriggerMode(StrEnum):
+    TOUCH = "touch"
+    BUY_STOP = "buy_stop"
+    BUY_LIMIT = "buy_limit"
+    SELL_STOP = "sell_stop"
+    SELL_LIMIT = "sell_limit"
+
+
 class SessionStatus(StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
@@ -90,6 +98,8 @@ class OrderLine:
     created_bar_index: int
     active_from_bar_index: int
     created_at: datetime
+    trigger_mode: OrderTriggerMode = OrderTriggerMode.TOUCH
+    reference_price_at_creation: float | None = None
     status: OrderStatus = OrderStatus.ACTIVE
     triggered_bar_index: int | None = None
     triggered_at: datetime | None = None

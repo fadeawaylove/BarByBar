@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QCloseEvent
 
 from barbybar.data.csv_importer import MissingColumnsError
-from barbybar.data.tick_size import snap_price
+from barbybar.data.tick_size import format_price, price_decimals_for_tick, snap_price
 from barbybar.data.timeframe import normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import (
@@ -239,6 +239,150 @@ class ColumnMappingDialog(QDialog):
         super().accept()
 
 
+class DataSetManagerDialog(QDialog):
+    def __init__(self, repo: Repository, owner: MainWindow, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.repo = repo
+        self.owner = owner
+        self.setWindowTitle("数据集")
+        self.resize(560, 520)
+
+        layout = QVBoxLayout(self)
+        import_button = QPushButton("导入 CSV")
+        import_button.clicked.connect(self._import_csv)
+        layout.addWidget(import_button)
+
+        layout.addWidget(QLabel("数据集"))
+        self.dataset_list = QListWidget()
+        self.dataset_list.itemDoubleClicked.connect(lambda _: self._create_session())
+        layout.addWidget(self.dataset_list)
+
+        create_button = QPushButton("基于所选数据创建复盘")
+        create_button.clicked.connect(self._create_session)
+        layout.addWidget(create_button)
+
+        delete_button = QPushButton("删除所选数据集")
+        delete_button.clicked.connect(self._delete_dataset)
+        layout.addWidget(delete_button)
+
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(self.reject)
+        layout.addWidget(close_button)
+
+        self._refresh_datasets()
+
+    def _refresh_datasets(self) -> None:
+        self.dataset_list.clear()
+        for dataset in self.repo.list_datasets():
+            item = QListWidgetItem(
+                f"{dataset.symbol} {dataset.timeframe} | "
+                f"{dataset.start_time:%m-%d %H:%M} -> {dataset.end_time:%m-%d %H:%M}"
+            )
+            item.setData(32, dataset.id)
+            self.dataset_list.addItem(item)
+
+    def _selected_dataset_id(self) -> int | None:
+        item = self.dataset_list.currentItem()
+        if item is None:
+            return None
+        value = item.data(32)
+        return int(value) if value is not None else None
+
+    def _import_csv(self) -> None:
+        self.owner.import_csv()
+        self._refresh_datasets()
+
+    def _create_session(self) -> None:
+        dataset_id = self._selected_dataset_id()
+        if dataset_id is None:
+            QMessageBox.information(self, "提示", "请先选择一个数据集。")
+            return
+        self.owner.create_session_for_dataset(dataset_id)
+        self.accept()
+
+    def _delete_dataset(self) -> None:
+        dataset_id = self._selected_dataset_id()
+        if dataset_id is None:
+            QMessageBox.information(self, "提示", "请先选择一个数据集。")
+            return
+        dataset = self.repo.get_dataset(dataset_id)
+        confirm = QMessageBox.question(
+            self,
+            "删除数据集",
+            f"删除数据集“{dataset.symbol} {dataset.timeframe}”会级联删除其下所有案例、动作和条件单，确定继续吗？",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self.owner.delete_dataset_by_id(dataset_id)
+        self._refresh_datasets()
+
+
+class SessionLibraryDialog(QDialog):
+    def __init__(self, repo: Repository, owner: MainWindow, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.repo = repo
+        self.owner = owner
+        self.setWindowTitle("案例库")
+        self.resize(620, 560)
+
+        layout = QVBoxLayout(self)
+        self.session_filter = QLineEdit()
+        self.session_filter.setPlaceholderText("按品种或标签筛选")
+        self.session_filter.textChanged.connect(self._refresh_sessions)
+        layout.addWidget(self.session_filter)
+
+        self.session_list = QListWidget()
+        self.session_list.itemDoubleClicked.connect(lambda _: self._open_session())
+        layout.addWidget(self.session_list)
+
+        open_button = QPushButton("打开所选案例")
+        open_button.clicked.connect(self._open_session)
+        layout.addWidget(open_button)
+
+        delete_button = QPushButton("删除所选案例")
+        delete_button.clicked.connect(self._delete_session)
+        layout.addWidget(delete_button)
+
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(self.reject)
+        layout.addWidget(close_button)
+
+        self._refresh_sessions()
+
+    def _refresh_sessions(self) -> None:
+        filter_text = self.session_filter.text().strip()
+        self.session_list.clear()
+        symbol = filter_text.upper() if filter_text.isalpha() else ""
+        tag = filter_text if filter_text and not filter_text.isalpha() else ""
+        for session in self.repo.list_sessions(symbol=symbol, tag=tag):
+            status_text = "完成" if session.status is SessionStatus.COMPLETED else "进行中"
+            item = QListWidgetItem(
+                f"{session.title} | {session.timeframe} | {status_text} | PnL {session.stats.total_pnl:.2f}"
+            )
+            item.setData(32, session.id)
+            self.session_list.addItem(item)
+
+    def _open_session(self) -> None:
+        item = self.session_list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "提示", "请先选择一个案例。")
+            return
+        self.owner.open_session_by_id(int(item.data(32)))
+        self.accept()
+
+    def _delete_session(self) -> None:
+        item = self.session_list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "提示", "请先选择一个案例。")
+            return
+        session_id = int(item.data(32))
+        confirm = QMessageBox.question(self, "删除案例", "确定删除所选案例吗？")
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self.owner.delete_session_by_id(session_id)
+        self._refresh_sessions()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, repo: Repository) -> None:
         super().__init__()
@@ -260,7 +404,7 @@ class MainWindow(QMainWindow):
         self._draw_order_buttons: dict[OrderLineType, QPushButton] = {}
 
         self._build_ui()
-        self._refresh_lists()
+        self._autoload_recent_session()
 
     def _build_ui(self) -> None:
         container = QWidget()
@@ -268,45 +412,35 @@ class MainWindow(QMainWindow):
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(8, 8, 8, 6)
+        top_bar.setSpacing(6)
+
+        import_button = QPushButton("导入 CSV")
+        import_button.clicked.connect(self.import_csv)
+        top_bar.addWidget(import_button)
+
+        dataset_button = QPushButton("数据集")
+        dataset_button.clicked.connect(self.open_dataset_manager)
+        top_bar.addWidget(dataset_button)
+
+        session_button = QPushButton("案例库")
+        session_button.clicked.connect(self.open_session_library)
+        top_bar.addWidget(session_button)
+        top_bar.addStretch(1)
+        container_layout.addLayout(top_bar)
+
         self.splitter = QSplitter()
-        self.splitter.addWidget(self._build_left_panel())
         self.splitter.addWidget(self._build_center_panel())
         self.splitter.addWidget(self._build_right_panel())
-        self.splitter.setStretchFactor(1, 2)
-        self.splitter.setSizes([280, 900, 360])
+        self.splitter.setStretchFactor(0, 2)
+        self.splitter.setSizes([1160, 240])
         container_layout.addWidget(self.splitter)
 
         self.setCentralWidget(container)
         self.setStatusBar(QStatusBar())
         self._busy_overlay = BusyOverlay(container)
         self._busy_overlay.setGeometry(container.rect())
-
-    def _build_left_panel(self) -> QWidget:
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        import_button = QPushButton("导入 CSV")
-        import_button.clicked.connect(self.import_csv)
-        layout.addWidget(import_button)
-
-        self.dataset_list = QListWidget()
-        self.dataset_list.itemSelectionChanged.connect(self._handle_dataset_selection)
-        layout.addWidget(QLabel("数据集"))
-        layout.addWidget(self.dataset_list)
-
-        create_session_button = QPushButton("基于所选数据创建复盘")
-        create_session_button.clicked.connect(self.create_session)
-        layout.addWidget(create_session_button)
-
-        layout.addWidget(QLabel("案例库"))
-        self.session_filter = QLineEdit()
-        self.session_filter.setPlaceholderText("按品种或标签筛选")
-        self.session_filter.textChanged.connect(self._refresh_session_list)
-        layout.addWidget(self.session_filter)
-
-        self.session_list = QListWidget()
-        self.session_list.itemDoubleClicked.connect(self._open_selected_session)
-        layout.addWidget(self.session_list)
-        return panel
 
     def _build_center_panel(self) -> QWidget:
         panel = QWidget()
@@ -367,115 +501,113 @@ class MainWindow(QMainWindow):
 
     def _build_right_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setMaximumWidth(260)
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
 
-        action_box = QGroupBox("交易动作")
-        action_layout = QFormLayout(action_box)
+        trade_box = QGroupBox("交易")
+        trade_layout = QVBoxLayout(trade_box)
+        trade_layout.setContentsMargins(8, 12, 8, 8)
+        trade_layout.setSpacing(4)
+
+        action_header = QLabel("即时")
+        trade_layout.addWidget(action_header)
+
+        quantity_row = QHBoxLayout()
+        quantity_row.setSpacing(6)
         self.quantity_spin = QSpinBox()
         self.quantity_spin.setRange(1, 9999)
         self.quantity_spin.setValue(1)
         self.quantity_spin.setSingleStep(1)
-        action_layout.addRow("数量", self.quantity_spin)
+        self.quantity_spin.setFixedHeight(26)
+        quantity_row.addWidget(QLabel("数量"))
+        quantity_row.addWidget(self.quantity_spin)
+        trade_layout.addLayout(quantity_row)
 
+        price_row = QHBoxLayout()
+        price_row.setSpacing(6)
         self.price_spin = QDoubleSpinBox()
-        self.price_spin.setDecimals(4)
+        self.price_spin.setDecimals(2)
         self.price_spin.setRange(-999999.0, 999999.0)
         self.price_spin.setValue(0.0)
-        action_layout.addRow("价格(0=悬停价/当前收盘)", self.price_spin)
+        self.price_spin.setFixedHeight(26)
+        price_row.addWidget(QLabel("价格"))
+        price_row.addWidget(self.price_spin)
+        trade_layout.addLayout(price_row)
 
-        grid = QGridLayout()
-        action_defs = [
+        for label, action_type in [
             ("开多", ActionType.OPEN_LONG),
             ("开空", ActionType.OPEN_SHORT),
             ("立即平仓", ActionType.CLOSE),
-        ]
-        for index, (label, action_type) in enumerate(action_defs):
+        ]:
             button = QPushButton(label)
+            button.setFixedHeight(26)
             button.clicked.connect(lambda _, kind=action_type: self.record_action(kind))
-            grid.addWidget(button, index // 2, index % 2)
-        action_layout.addRow(grid)
+            trade_layout.addWidget(button)
 
-        draw_box = QGroupBox("画线下单")
-        draw_layout = QFormLayout(draw_box)
+        divider = QLabel("画线")
+        trade_layout.addWidget(divider)
+
+        draw_quantity_row = QHBoxLayout()
+        draw_quantity_row.setSpacing(6)
 
         self.draw_quantity_spin = QSpinBox()
         self.draw_quantity_spin.setRange(1, 9999)
         self.draw_quantity_spin.setValue(1)
         self.draw_quantity_spin.setSingleStep(1)
+        self.draw_quantity_spin.setFixedHeight(26)
         self.draw_quantity_spin.valueChanged.connect(self.quantity_spin.setValue)
         self.quantity_spin.valueChanged.connect(self.draw_quantity_spin.setValue)
-        draw_layout.addRow("手数", self.draw_quantity_spin)
+        draw_quantity_row.addWidget(QLabel("手数"))
+        draw_quantity_row.addWidget(self.draw_quantity_spin)
+        trade_layout.addLayout(draw_quantity_row)
+
+        tick_size_row = QHBoxLayout()
+        tick_size_row.setSpacing(6)
 
         self.tick_size_spin = QDoubleSpinBox()
-        self.tick_size_spin.setDecimals(4)
-        self.tick_size_spin.setRange(0.0001, 999999.0)
+        self.tick_size_spin.setDecimals(2)
+        self.tick_size_spin.setRange(0.01, 999999.0)
         self.tick_size_spin.setValue(1.0)
-        self.tick_size_spin.setSingleStep(0.1)
+        self.tick_size_spin.setSingleStep(0.01)
+        self.tick_size_spin.setFixedHeight(26)
         self.tick_size_spin.valueChanged.connect(self._handle_tick_size_changed)
-        draw_layout.addRow("最小跳动", self.tick_size_spin)
+        tick_size_row.addWidget(QLabel("最小跳动"))
+        tick_size_row.addWidget(self.tick_size_spin)
+        trade_layout.addLayout(tick_size_row)
 
-        draw_grid = QGridLayout()
-        for index, (label, order_type) in enumerate(
-            [
-                ("买", OrderLineType.ENTRY_LONG),
-                ("卖", OrderLineType.ENTRY_SHORT),
-                ("平", OrderLineType.EXIT),
-                ("反", OrderLineType.REVERSE),
-            ]
-        ):
+        for label, order_type in [
+            ("买", OrderLineType.ENTRY_LONG),
+            ("卖", OrderLineType.ENTRY_SHORT),
+            ("平", OrderLineType.EXIT),
+            ("反", OrderLineType.REVERSE),
+        ]:
             button = QPushButton(label)
             button.setCheckable(True)
+            button.setFixedHeight(26)
             button.clicked.connect(lambda checked, kind=order_type: self._toggle_draw_order_preview(kind, checked))
             self._draw_order_buttons[order_type] = button
-            draw_grid.addWidget(button, index // 2, index % 2)
+            trade_layout.addWidget(button)
         cancel_draw_button = QPushButton("取消画线下单")
+        cancel_draw_button.setFixedHeight(26)
         cancel_draw_button.clicked.connect(self.cancel_draw_order_preview)
-        draw_grid.addWidget(cancel_draw_button, 2, 0, 1, 2)
-        draw_layout.addRow(draw_grid)
-        action_layout.addRow(draw_box)
+        trade_layout.addWidget(cancel_draw_button)
+        layout.addWidget(trade_box)
 
-        line_grid = QGridLayout()
-        line_defs = [
-            ("图上止损线", OrderLineType.STOP_LOSS),
-            ("图上止盈线", OrderLineType.TAKE_PROFIT),
-        ]
-        for index, (label, order_type) in enumerate(line_defs):
-            button = QPushButton(label)
-            button.clicked.connect(lambda _, kind=order_type: self.create_order_line(kind))
-            line_grid.addWidget(button, 1 + (index // 2), index % 2)
-        action_layout.addRow(line_grid)
-
-        manage_grid = QGridLayout()
-        cancel_entries_button = QPushButton("撤销条件单")
-        cancel_entries_button.clicked.connect(self.cancel_entry_order_lines)
-        manage_grid.addWidget(cancel_entries_button, 0, 0)
-
-        clear_protective_button = QPushButton("清除止损止盈")
-        clear_protective_button.clicked.connect(self.clear_protective_lines)
-        manage_grid.addWidget(clear_protective_button, 0, 1)
-
-        break_even_button = QPushButton("一键保本")
-        break_even_button.clicked.connect(self.move_stop_to_break_even)
-        manage_grid.addWidget(break_even_button, 1, 0, 1, 2)
-        action_layout.addRow(manage_grid)
-        layout.addWidget(action_box)
-
-        stats_box = QGroupBox("统计")
-        stats_layout = QVBoxLayout(stats_box)
-        self.stats_label = QLabel("暂无统计")
+        self.stats_label = QLabel("方向 flat | 仓位 0 | 均价 0 | 已实现PnL 0")
         self.stats_label.setWordWrap(True)
-        stats_layout.addWidget(self.stats_label)
-        layout.addWidget(stats_box)
+        layout.addWidget(self.stats_label)
 
-        session_actions = QHBoxLayout()
         save_button = QPushButton("保存会话")
+        save_button.setFixedHeight(26)
         save_button.clicked.connect(self.save_session)
-        session_actions.addWidget(save_button)
+        layout.addWidget(save_button)
 
         complete_button = QPushButton("标记完成")
+        complete_button.setFixedHeight(26)
         complete_button.clicked.connect(self.complete_session)
-        session_actions.addWidget(complete_button)
-        layout.addLayout(session_actions)
+        layout.addWidget(complete_button)
         layout.addStretch(1)
         return panel
 
@@ -516,19 +648,17 @@ class MainWindow(QMainWindow):
             return
         log.info("event=import_success dataset_id={} timeframe={}", dataset.id, dataset.timeframe)
         self.statusBar().showMessage(f"已导入 {dataset.symbol} 1m", 5000)
-        self._refresh_lists()
 
-    def create_session(self) -> None:
-        if not self.current_dataset:
-            QMessageBox.information(self, "提示", "请先选择一个数据集。")
-            return
-        bars = self.repo.get_bars(self.current_dataset.id or 0)
+    def create_session_for_dataset(self, dataset_id: int) -> None:
+        dataset = self.repo.get_dataset(dataset_id)
+        bars = self.repo.get_bars(dataset.id or 0)
         start_index = max(0, min(50, len(bars) - 1))
-        session = self.repo.create_session(self.current_dataset.id or 0, start_index=start_index)
-        logger.bind(component="session", session_id=session.id, dataset_id=self.current_dataset.id).info(
+        session = self.repo.create_session(dataset.id or 0, start_index=start_index)
+        logger.bind(component="session", session_id=session.id, dataset_id=dataset.id).info(
             "event=create_session start_index={start_index}",
             start_index=start_index,
         )
+        self.current_dataset = dataset
         self.statusBar().showMessage("正在创建并加载复盘会话", 4000)
         self._start_session_load(
             session.id or 0,
@@ -536,44 +666,77 @@ class MainWindow(QMainWindow):
             detail="正在初始化会话并构建图表",
         )
 
-    def _refresh_lists(self) -> None:
-        self.dataset_list.clear()
-        for dataset in self.repo.list_datasets():
-            item = QListWidgetItem(
-                f"{dataset.symbol} {dataset.timeframe} | "
-                f"{dataset.start_time:%m-%d %H:%M} -> {dataset.end_time:%m-%d %H:%M}"
-            )
-            item.setData(32, dataset.id)
-            self.dataset_list.addItem(item)
-        self._refresh_session_list()
+    def open_dataset_manager(self) -> None:
+        dialog = DataSetManagerDialog(self.repo, self, self)
+        dialog.exec()
 
-    def _refresh_session_list(self) -> None:
-        filter_text = self.session_filter.text().strip()
-        self.session_list.clear()
-        symbol = filter_text.upper() if filter_text.isalpha() else ""
-        tag = filter_text if filter_text and not filter_text.isalpha() else ""
-        for session in self.repo.list_sessions(symbol=symbol, tag=tag):
-            status_text = "完成" if session.status is SessionStatus.COMPLETED else "进行中"
-            item = QListWidgetItem(f"{session.title} | {session.timeframe} | {status_text} | PnL {session.stats.total_pnl:.2f}")
-            item.setData(32, session.id)
-            self.session_list.addItem(item)
+    def open_session_library(self) -> None:
+        dialog = SessionLibraryDialog(self.repo, self, self)
+        dialog.exec()
 
-    def _handle_dataset_selection(self) -> None:
-        item = self.dataset_list.currentItem()
-        if item is None:
+    def open_session_by_id(self, session_id: int) -> None:
+        self._load_session(session_id)
+
+    def delete_dataset_by_id(self, dataset_id: int) -> None:
+        active_uses_dataset = False
+        if self.current_session_id is not None:
+            try:
+                active_uses_dataset = self.repo.get_session(self.current_session_id).dataset_id == dataset_id
+            except KeyError:
+                active_uses_dataset = False
+        self.repo.delete_dataset(dataset_id)
+        if self.current_dataset and self.current_dataset.id == dataset_id:
+            self.current_dataset = None
+        self.statusBar().showMessage("数据集已删除", 3000)
+        if active_uses_dataset:
+            self._clear_current_session()
+            self._autoload_recent_session()
+
+    def delete_session_by_id(self, session_id: int) -> None:
+        deleting_current = self.current_session_id == session_id
+        self.repo.delete_session(session_id)
+        self.statusBar().showMessage("案例已删除", 3000)
+        if deleting_current:
+            self._clear_current_session()
+            self._autoload_recent_session()
+
+    def _autoload_recent_session(self) -> None:
+        sessions = self.repo.list_sessions()
+        if not sessions:
+            self._clear_current_session()
+            self.statusBar().showMessage("请先导入 CSV 或打开数据集/案例库", 5000)
             return
-        dataset_id = item.data(32)
-        self.current_dataset = self.repo.get_dataset(dataset_id)
+        session_id = sessions[0].id
+        if session_id is None:
+            return
+        logger.bind(component="startup", session_id=session_id).info("event=autoload_recent_session")
+        self._load_session(
+            session_id,
+            title="正在恢复最近训练...",
+            detail="正在读取最近一次训练会话并恢复图表",
+        )
 
-    def _open_selected_session(self, item: QListWidgetItem) -> None:
-        self._load_session(item.data(32))
-
-    def _load_session(self, session_id: int) -> None:
+    def _load_session(self, session_id: int, *, title: str = "正在加载案例...", detail: str = "正在读取数据并构建图表") -> None:
         self._start_session_load(
             session_id,
-            title="正在加载案例...",
-            detail="正在读取数据并构建图表",
+            title=title,
+            detail=detail,
         )
+
+    def _clear_current_session(self) -> None:
+        self.engine = None
+        self.current_session_id = None
+        self.chart_widget.set_window_data([], -1, 0, 0)
+        self.progress_label.setText("未开始")
+        self.jump_spin.blockSignals(True)
+        self.jump_spin.setMaximum(0)
+        self.jump_spin.setValue(0)
+        self.jump_spin.blockSignals(False)
+        self.stats_label.setText("方向 flat | 仓位 0 | 均价 0 | 已实现PnL 0")
+        self.price_spin.blockSignals(True)
+        self.price_spin.setValue(0.0)
+        self.price_spin.blockSignals(False)
+        self._sync_draw_order_controls()
 
     def _update_ui_from_engine(self) -> None:
         if not self.engine:
@@ -587,22 +750,21 @@ class MainWindow(QMainWindow):
         self.jump_spin.blockSignals(True)
         self.jump_spin.setValue(current)
         self.jump_spin.blockSignals(False)
+        self._sync_trade_price_to_current_bar()
         position = self.engine.session.position
-        stats = self.engine.session.stats
         direction = position.direction or "flat"
+        quantity_text = (
+            str(int(position.quantity))
+            if float(position.quantity).is_integer()
+            else f"{position.quantity:.2f}"
+        )
         self.stats_label.setText(
-            "\n".join(
+            " | ".join(
                 [
-                    f"方向: {direction}",
-                    f"周期: 原始 {self.engine.session.timeframe} / 当前 {self.engine.session.chart_timeframe}",
-                    f"仓位: {position.quantity:.2f}",
-                    f"均价: {position.average_price:.2f}",
-                    f"止损/止盈: {position.stop_loss or '-'} / {position.take_profit or '-'}",
-                    f"已实现 PnL: {position.realized_pnl:.2f}",
-                    f"总交易: {stats.total_trades}",
-                    f"胜率: {stats.win_rate:.1%}",
-                    f"盈亏比: {stats.profit_factor:.2f}",
-                    f"最大回撤: {stats.max_drawdown:.2f}",
+                    f"方向 {direction}",
+                    f"仓位 {quantity_text}",
+                    f"均价 {format_price(position.average_price, self.engine.session.tick_size)}",
+                    f"已实现PnL {position.realized_pnl:.2f}",
                 ]
             )
         )
@@ -728,7 +890,6 @@ class MainWindow(QMainWindow):
             current_index=saved.current_index,
             trigger=trigger,
         ).info("event=save_session")
-        self._refresh_session_list()
         self.statusBar().showMessage("会话已保存", 2500)
 
     def complete_session(self) -> None:
@@ -1081,7 +1242,7 @@ class MainWindow(QMainWindow):
         self.save_session(trigger="auto_timer")
 
     def _resolve_price(self, explicit_price: float | None) -> float | None:
-        if explicit_price not in (None, 0):
+        if explicit_price is not None:
             return self._snap_price(explicit_price)
         if self.chart_widget.last_hover_price is not None:
             return self._snap_price(self.chart_widget.last_hover_price)
@@ -1126,17 +1287,31 @@ class MainWindow(QMainWindow):
             button.blockSignals(False)
 
     def _handle_tick_size_changed(self, value: float) -> None:
-        tick_size = max(float(value), 0.0001)
+        tick_size = max(round(float(value), 2), 0.01)
         self.chart_widget.set_tick_size(tick_size)
         if self.engine:
             self.engine.session.tick_size = tick_size
-            self.price_spin.blockSignals(True)
-            self.price_spin.setValue(self._snap_price(self.price_spin.value()))
-            self.price_spin.blockSignals(False)
+            self._sync_price_spin_decimals()
+            self.tick_size_spin.blockSignals(True)
+            self.tick_size_spin.setValue(tick_size)
+            self.tick_size_spin.blockSignals(False)
+            self._sync_trade_price_to_current_bar()
             self._schedule_auto_save("tick_size_changed")
 
     def _place_order_line(self, order_type: OrderLineType, price: float) -> None:
         self._place_order_line_with_quantity(order_type, price, float(self.quantity_spin.value()))
+
+    def _sync_trade_price_to_current_bar(self) -> None:
+        if not self.engine:
+            return
+        self._sync_price_spin_decimals()
+        latest_price = self._snap_price(self.engine.current_bar.close)
+        self.price_spin.blockSignals(True)
+        self.price_spin.setValue(latest_price)
+        self.price_spin.blockSignals(False)
+
+    def _sync_price_spin_decimals(self) -> None:
+        self.price_spin.setDecimals(price_decimals_for_tick(self._current_tick_size()))
 
     def _place_order_line_with_quantity(self, order_type: OrderLineType, price: float, quantity: float) -> None:
         if not self.engine:

@@ -228,3 +228,51 @@ def test_save_session_preserves_existing_order_line_ids() -> None:
         assert second_saved[0].active_from_bar_index == line.active_from_bar_index
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_delete_session_removes_actions_and_order_lines() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        bars = repo.get_chart_bars(session.id or 0, "1m")
+        engine = ReviewEngine(session, bars)
+        engine.record_action(ActionType.OPEN_LONG, quantity=1)
+        engine.place_order_line(OrderLineType.ENTRY_LONG, price=bars[2].close, quantity=1)
+        repo.save_session(engine.session, engine.actions, engine.order_lines)
+
+        repo.delete_session(session.id or 0)
+
+        assert repo.list_sessions() == []
+        assert repo.conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
+        assert repo.conn.execute("SELECT COUNT(*) FROM order_lines").fetchone()[0] == 0
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_delete_dataset_cascades_sessions_actions_and_order_lines() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        bars = repo.get_chart_bars(session.id or 0, "1m")
+        engine = ReviewEngine(session, bars)
+        engine.record_action(ActionType.OPEN_LONG, quantity=1)
+        engine.place_order_line(OrderLineType.ENTRY_LONG, price=bars[2].close, quantity=1)
+        repo.save_session(engine.session, engine.actions, engine.order_lines)
+
+        repo.delete_dataset(dataset.id or 0)
+
+        assert repo.list_datasets() == []
+        assert repo.list_sessions() == []
+        assert repo.conn.execute("SELECT COUNT(*) FROM bars").fetchone()[0] == 0
+        assert repo.conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
+        assert repo.conn.execute("SELECT COUNT(*) FROM order_lines").fetchone()[0] == 0
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)

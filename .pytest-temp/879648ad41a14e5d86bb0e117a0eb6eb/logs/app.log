@@ -1,0 +1,39 @@
+2026-04-05 11:19:50.160 | INFO     | 504:9864 | barbybar.logging_config:setup_logging:82 | BarByBar starting version=0.1.0 python=3.12.12 db_path=C:\Users\admin\.barbybar\barbybar.db log_dir=C:\code\BarByBar\.pytest-temp\879648ad41a14e5d86bb0e117a0eb6eb\logs
+2026-04-05 11:19:50.160 | WARNING  | 504:9864 | barbybar.logging_config:_qt_message_handler:103 | Qt message: qt warning from test
+2026-04-05 11:19:50.194 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.233 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.263 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.294 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.324 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.353 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.382 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.411 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.441 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.468 | DEBUG    | 504:9864 | barbybar.ui.main_window:_schedule_auto_save:1051 | event=auto_save_scheduled
+2026-04-05 11:19:50.469 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.496 | DEBUG    | 504:9864 | barbybar.ui.main_window:_schedule_auto_save:1051 | event=auto_save_scheduled
+2026-04-05 11:19:50.497 | DEBUG    | 504:9864 | barbybar.ui.main_window:_schedule_auto_save:1051 | event=auto_save_scheduled
+2026-04-05 11:19:50.497 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.528 | DEBUG    | 504:9864 | barbybar.ui.main_window:show_busy_overlay:816 | event=show_busy_overlay title=正在加载案例...
+2026-04-05 11:19:50.528 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.528 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.558 | DEBUG    | 504:9864 | barbybar.ui.main_window:_schedule_auto_save:1051 | event=auto_save_scheduled
+2026-04-05 11:19:50.558 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.591 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.621 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.650 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.672 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.720 | DEBUG    | 504:9864 | barbybar.ui.main_window:show_busy_overlay:816 | event=show_busy_overlay title=正在加载案例...
+2026-04-05 11:19:50.735 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.782 | DEBUG    | 504:9864 | barbybar.ui.main_window:show_busy_overlay:816 | event=show_busy_overlay title=正在加载案例...
+2026-04-05 11:19:50.783 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.833 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.867 | INFO     | 504:9864 | barbybar.ui.main_window:_import_csv_with_mapping:499 | event=import_success dataset_id=1 timeframe=1m
+2026-04-05 11:19:50.868 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.890 | WARNING  | 504:9864 | barbybar.ui.main_window:_import_csv_with_mapping:478 | event=missing_columns missing_fields=volume
+2026-04-05 11:19:50.899 | INFO     | 504:9864 | barbybar.ui.main_window:_import_csv_with_mapping:499 | event=import_success dataset_id=1 timeframe=1m
+2026-04-05 11:19:50.899 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.923 | WARNING  | 504:9864 | barbybar.ui.main_window:_import_csv_with_mapping:478 | event=missing_columns missing_fields=datetime,volume
+2026-04-05 11:19:50.923 | INFO     | 504:9864 | barbybar.ui.main_window:_import_csv_with_mapping:487 | event=column_mapping_cancelled
+2026-04-05 11:19:50.923 | DEBUG    | 504:9864 | barbybar.ui.main_window:hide_busy_overlay:832 | event=hide_busy_overlay
+2026-04-05 11:19:50.993 | WARNING  | 504:9864 | barbybar.storage.repository:_session_from_row:420 | event=deprecated_chart_timeframe_fallback
