@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta
 
 import pytest
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication
 
-from barbybar.domain.models import Bar
-from barbybar.ui.chart_widget import ChartWidget, DOWN_CANDLE_COLOR, UP_CANDLE_COLOR
+from barbybar.domain.models import Bar, OrderLine, OrderLineType
+from barbybar.ui.chart_widget import BrowseMode, ChartWidget, DOWN_CANDLE_COLOR, UP_CANDLE_COLOR
 
 
 def _bars(count: int = 240) -> list[Bar]:
@@ -133,8 +134,12 @@ def test_session_open_markers_render_for_0900_and_2100(widget: ChartWidget) -> N
 
     markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_marker", False)]
 
-    assert len(markers) == 2
-    assert sorted(round(marker.value(), 2) for marker in markers) == [-0.5, 2.5]
+    line_markers = [item for item in markers if hasattr(item, "value")]
+    label_markers = [item for item in markers if hasattr(item, "toPlainText")]
+
+    assert len(line_markers) == 2
+    assert sorted(round(marker.value(), 2) for marker in line_markers) == [-0.5, 2.5]
+    assert sorted(item.toPlainText() for item in label_markers) == ["夜盘", "日盘"]
 
 
 def test_hover_bar_returns_none_for_future_blank_space(widget: ChartWidget) -> None:
@@ -148,15 +153,16 @@ def test_hover_info_contains_ohlc_and_mouse_price(widget: ChartWidget) -> None:
     bars = _bars()
     widget.set_full_data(bars)
     widget.set_cursor(10)
+    widget.set_tick_size(0.2)
 
     widget._update_hover_info(bars[5], 123.45)
 
     assert not widget._hover_card.isHidden()
     assert widget._hover_time_label.text() == "2025-01-01 09:05"
-    assert widget._hover_open_label.text().startswith("开 ")
-    assert widget._hover_high_label.text().startswith("高 ")
-    assert widget._hover_low_label.text().startswith("低 ")
-    assert widget._hover_close_label.text().startswith("收 ")
+    assert widget._hover_open_label.text() == "开 104.1"
+    assert widget._hover_high_label.text() == "高 106.1"
+    assert widget._hover_low_label.text() == "低 103.4"
+    assert widget._hover_close_label.text() == "收 104.9"
 
 
 def test_hover_info_highlights_extreme_by_direction(widget: ChartWidget) -> None:
@@ -195,6 +201,83 @@ def test_order_preview_uses_tick_size_for_preview_line(widget: ChartWidget) -> N
 
     assert widget._preview_line.isVisible()
     assert widget._preview_line.value() == 101.2
+
+
+def test_order_preview_forces_crosshair_mode_and_updates_in_pan_mode(widget: ChartWidget) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.toggle_browse_mode()
+
+    assert widget.browse_mode is BrowseMode.PAN
+
+    widget.begin_order_preview("entry_long", 2.0)
+
+    assert widget.browse_mode is BrowseMode.CROSSHAIR
+    assert widget._preview_line.isVisible()
+
+
+def test_price_label_is_positioned_on_right_axis_side(widget: ChartWidget) -> None:
+    bars = _bars()
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(bars)
+    widget.set_cursor(20)
+
+    widget._update_crosshair(10, 123.4)
+
+    assert widget._axis_price_label.isVisible()
+    assert widget._axis_price_label.x() >= widget.width() - widget._axis_price_label.width() - 8
+
+
+class _FakeSceneClick:
+    def __init__(self, scene_pos: QPointF, button: Qt.MouseButton = Qt.MouseButton.LeftButton) -> None:
+        self._scene_pos = scene_pos
+        self._button = button
+        self.accepted = False
+
+    def button(self):
+        return self._button
+
+    def scenePos(self):
+        return self._scene_pos
+
+    def accept(self) -> None:
+        self.accepted = True
+
+
+def test_single_click_toggles_browse_mode_only_in_normal_browse(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    app.processEvents()
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10, 100))
+
+    click = _FakeSceneClick(scene_pos)
+    widget._handle_scene_click(click)
+    assert widget.browse_mode is BrowseMode.PAN
+    assert click.accepted is True
+
+    click = _FakeSceneClick(scene_pos)
+    widget._handle_scene_click(click)
+    assert widget.browse_mode is BrowseMode.CROSSHAIR
+
+
+def test_single_click_does_not_toggle_browse_mode_while_drawing(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_draw_mode(True)
+    app.processEvents()
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10, 100))
+
+    click = _FakeSceneClick(scene_pos)
+    widget._handle_scene_click(click)
+
+    assert widget.browse_mode is BrowseMode.CROSSHAIR
 
 
 def test_cancel_order_preview_hides_preview_line(widget: ChartWidget) -> None:
@@ -252,3 +335,28 @@ def test_editable_order_id_at_scene_pos_returns_nearest_line(widget: ChartWidget
     assert widget._editable_order_id_at_scene_pos(124.0) == 11
     assert widget._editable_order_id_at_scene_pos(174.0) == 12
     assert widget._editable_order_id_at_scene_pos(250.0) is None
+
+
+def test_order_line_label_includes_type_quantity_and_price() -> None:
+    widget = ChartWidget()
+    widget.set_tick_size(1)
+    line = OrderLine(
+        order_type=OrderLineType.ENTRY_LONG,
+        price=5914.0,
+        quantity=2,
+        created_bar_index=0,
+        active_from_bar_index=1,
+        created_at=datetime(2025, 1, 1, 9, 0),
+    )
+
+    assert widget._order_line_label(line) == "买 2手 5914"
+    widget.close()
+    widget.deleteLater()
+
+
+def test_crosshair_price_label_follows_tick_precision(widget: ChartWidget) -> None:
+    widget.set_tick_size(0.2)
+
+    widget._update_crosshair(10, 5914.23)
+
+    assert widget._axis_price_label.text() == "5914.2"

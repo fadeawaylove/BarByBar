@@ -125,3 +125,61 @@ def test_reverse_order_line_flips_position_direction() -> None:
     assert engine.session.position.quantity == 1
     assert engine.actions[-2].action_type is ActionType.CLOSE
     assert engine.actions[-1].action_type is ActionType.OPEN_SHORT
+
+
+def test_entry_short_above_price_triggers_when_bar_range_covers_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100, high=100.5, low=95, close=96, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=96, high=103, low=95, close=102, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+
+    engine.place_order_line(OrderLineType.ENTRY_SHORT, price=102, quantity=1)
+    engine.step_forward()
+    assert engine.session.position.is_open is False
+
+    engine.step_forward()
+    assert engine.session.position.direction == "short"
+
+
+def test_updating_order_line_price_restarts_effect_from_next_bar() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=100, high=105, low=99, close=104, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 3), open=104, high=106, low=103, close=105, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    line = engine.place_order_line(OrderLineType.ENTRY_LONG, price=110, quantity=1)
+    line.id = 1
+
+    engine.step_forward()
+    engine.update_order_line(line.id, 104)
+
+    assert line.active_from_bar_index == 2
+    engine.step_forward()
+    assert engine.session.position.direction == "long"
+
+
+def test_updating_order_line_quantity_restarts_effect_from_next_bar() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=100, high=105, low=99, close=104, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 3), open=104, high=106, low=103, close=105, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    line = engine.place_order_line(OrderLineType.ENTRY_LONG, price=104, quantity=1)
+    line.id = 1
+
+    engine.step_forward()
+    engine.update_order_line_quantity(line.id, 3)
+
+    assert line.active_from_bar_index == 2
+    engine.step_forward()
+    assert engine.session.position.direction == "long"
+    assert engine.session.position.quantity == 3

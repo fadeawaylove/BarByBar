@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS order_lines (
     order_type TEXT NOT NULL,
     price REAL NOT NULL,
     quantity REAL NOT NULL,
+    trigger_mode TEXT NOT NULL DEFAULT 'touch',
+    reference_price_at_creation REAL,
     status TEXT NOT NULL,
     created_bar_index INTEGER NOT NULL,
     active_from_bar_index INTEGER NOT NULL DEFAULT 0,
@@ -119,4 +121,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if order_columns and "active_from_bar_index" not in order_columns:
         conn.execute("ALTER TABLE order_lines ADD COLUMN active_from_bar_index INTEGER NOT NULL DEFAULT 0")
         conn.execute("UPDATE order_lines SET active_from_bar_index = created_bar_index + 1 WHERE active_from_bar_index = 0")
+    order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
+    if order_columns and "trigger_mode" not in order_columns:
+        conn.execute("ALTER TABLE order_lines ADD COLUMN trigger_mode TEXT NOT NULL DEFAULT 'touch'")
+    order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
+    if order_columns and "reference_price_at_creation" not in order_columns:
+        conn.execute("ALTER TABLE order_lines ADD COLUMN reference_price_at_creation REAL")
     conn.commit()

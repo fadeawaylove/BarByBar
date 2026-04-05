@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import time
+from enum import Enum
 from math import ceil, floor
 
 import pyqtgraph as pg
@@ -10,6 +11,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter, QPicture
 from PySide6.QtWidgets import QFrame, QLabel, QLayout, QMenu, QVBoxLayout, QWidget
 
+from barbybar.data.tick_size import format_price
 from barbybar.domain.models import Bar, OrderLine, OrderLineType
 
 UP_CANDLE_COLOR = "#d84a4a"
@@ -37,6 +39,11 @@ class ViewportState:
     max_bars_in_view: int = 200
     right_edge_index: float = 0.0
     follow_latest: bool = True
+
+
+class BrowseMode(str, Enum):
+    CROSSHAIR = "crosshair"
+    PAN = "pan"
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -125,7 +132,7 @@ class CandleViewBox(pg.ViewBox):
         ev.accept()
 
     def mouseDragEvent(self, ev, axis=None) -> None:  # noqa: ANN001
-        if self.chart.draw_mode:
+        if self.chart.draw_mode or self.chart.browse_mode is not BrowseMode.PAN:
             ev.ignore()
             return
         if ev.button() != Qt.MouseButton.LeftButton:
@@ -176,6 +183,7 @@ class ChartWidget(QWidget):
         self._preview_order_type: str | None = None
         self._preview_quantity = 1.0
         self._tick_size = 1.0
+        self._browse_mode = BrowseMode.CROSSHAIR
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -188,6 +196,7 @@ class ChartWidget(QWidget):
         self.price_plot.showGrid(x=False, y=False, alpha=0.0)
         self.price_plot.setMenuEnabled(False)
         self.price_plot.setLabel("left", "Price")
+        self.price_plot.hideAxis("right")
         self.price_plot.setLabel("bottom", "Bar")
         self.price_plot.getAxis("bottom").setStyle(showValues=False)
         self.price_plot.hideButtons()
@@ -206,10 +215,8 @@ class ChartWidget(QWidget):
 
         self._v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#9aa1ab", width=1, style=Qt.PenStyle.DashLine))
         self._h_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen("#9aa1ab", width=1, style=Qt.PenStyle.DashLine))
-        self._price_label_item = pg.TextItem("", color="#2c2c2c", fill=pg.mkBrush(255, 255, 255, 230), anchor=(0, 0.5))
         self.price_plot.addItem(self._v_line)
         self.price_plot.addItem(self._h_line)
-        self.price_plot.addItem(self._price_label_item)
         self._preview_line = pg.InfiniteLine(
             angle=0,
             movable=False,
@@ -219,11 +226,11 @@ class ChartWidget(QWidget):
         self.price_plot.addItem(self._preview_line)
         self._v_line.hide()
         self._h_line.hide()
-        self._price_label_item.hide()
         self._preview_line.hide()
 
         layout.addWidget(self.graphics)
         self._build_hover_card()
+        self._build_axis_price_label()
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.graphics.scene().sigMouseClicked.connect(self._handle_scene_click)
         self._mouse_proxy = pg.SignalProxy(self.graphics.scene().sigMouseMoved, rateLimit=60, slot=self._handle_mouse_moved)
@@ -237,6 +244,10 @@ class ChartWidget(QWidget):
         return self._trade_line_mode
 
     @property
+    def browse_mode(self) -> BrowseMode:
+        return self._browse_mode
+
+    @property
     def last_hover_price(self) -> float | None:
         return self._last_hover_price
 
@@ -247,6 +258,11 @@ class ChartWidget(QWidget):
     def set_crosshair_enabled(self, enabled: bool) -> None:
         self._crosshair_enabled = enabled
         if not enabled:
+            self._hide_crosshair()
+
+    def toggle_browse_mode(self) -> None:
+        self._browse_mode = BrowseMode.PAN if self._browse_mode is BrowseMode.CROSSHAIR else BrowseMode.CROSSHAIR
+        if self._browse_mode is BrowseMode.PAN:
             self._hide_crosshair()
 
     def set_draw_mode(self, enabled: bool) -> None:
@@ -273,6 +289,7 @@ class ChartWidget(QWidget):
         self._preview_quantity = max(float(quantity), 1.0)
         self._draw_mode = False
         self._trade_line_mode = None
+        self._browse_mode = BrowseMode.CROSSHAIR
         if self._last_hover_price is not None:
             self._preview_line.setPos(self._snap_price(self._last_hover_price))
         self._preview_line.show()
@@ -402,9 +419,11 @@ class ChartWidget(QWidget):
         timeframe_minutes = self._infer_timeframe_minutes()
         local_cursor = self._cursor - self._global_start_index if self._cursor >= 0 else -1
         stop = min(len(self._bars), local_cursor + 1)
+        y_top = self.price_plot.viewRange()[1][1]
         for index in range(stop):
             bar = self._bars[index]
-            if not self._is_session_open_marker(bar.timestamp.time(), timeframe_minutes):
+            session_label = self._session_marker_label(bar.timestamp.time(), timeframe_minutes)
+            if session_label is None:
                 continue
             marker = pg.InfiniteLine(
                 pos=self._global_start_index + index - 0.5,
@@ -415,6 +434,16 @@ class ChartWidget(QWidget):
             marker.setZValue(-10)
             marker._barbybar_session_marker = True
             self.price_plot.addItem(marker)
+            label = pg.TextItem(
+                session_label,
+                color="#6b7280",
+                fill=pg.mkBrush(255, 255, 255, 220),
+                anchor=(0.5, 0),
+            )
+            label._barbybar_session_marker = True
+            label.setZValue(5)
+            label.setPos(self._global_start_index + index - 0.5, y_top)
+            self.price_plot.addItem(label)
 
     def _rebuild_line_items(self) -> None:
         for item in list(self.price_plot.items):
@@ -532,6 +561,16 @@ class ChartWidget(QWidget):
             self._trade_line_mode = None
             return
         if not self._draw_mode or self._cursor < 0:
+            if (
+                event.button() == Qt.MouseButton.LeftButton
+                and self._cursor >= 0
+                and self._trade_line_mode is None
+                and self._preview_order_type is None
+            ):
+                pos = event.scenePos()
+                if self.price_plot.sceneBoundingRect().contains(pos):
+                    self.toggle_browse_mode()
+                    event.accept()
             return
         pos = event.scenePos()
         if not self.price_plot.sceneBoundingRect().contains(pos):
@@ -559,6 +598,12 @@ class ChartWidget(QWidget):
         if self._preview_order_type:
             self._preview_line.setPos(self._last_hover_price)
             self._preview_line.show()
+        if self._browse_mode is BrowseMode.PAN:
+            self._v_line.hide()
+            self._h_line.hide()
+            self._axis_price_label.hide()
+            self._hover_card.hide()
+            return
         hover = self._hover_bar_at(point.x())
         if hover is None:
             self._hide_crosshair()
@@ -581,17 +626,16 @@ class ChartWidget(QWidget):
         self._h_line.setPos(price)
         self._v_line.show()
         self._h_line.show()
-        x_right = self.price_plot.viewRange()[0][1]
-        self._price_label_item.setText(f"{price:.2f}")
-        self._price_label_item.setPos(x_right - 0.2, price)
-        self._price_label_item.show()
+        self._axis_price_label.setText(format_price(price, self._tick_size))
+        self._position_axis_price_label(price)
+        self._axis_price_label.show()
 
     def _update_hover_info(self, bar: Bar, price: float) -> None:
         self._hover_time_label.setText(f"{bar.timestamp:%Y-%m-%d %H:%M}")
-        self._hover_open_label.setText(f"开 {bar.open:.2f}")
-        self._hover_high_label.setText(f"高 {bar.high:.2f}")
-        self._hover_low_label.setText(f"低 {bar.low:.2f}")
-        self._hover_close_label.setText(f"收 {bar.close:.2f}")
+        self._hover_open_label.setText(f"开 {format_price(bar.open, self._tick_size)}")
+        self._hover_high_label.setText(f"高 {format_price(bar.high, self._tick_size)}")
+        self._hover_low_label.setText(f"低 {format_price(bar.low, self._tick_size)}")
+        self._hover_close_label.setText(f"收 {format_price(bar.close, self._tick_size)}")
         neutral_style = "color: #2c2c2c; font-size: 12px;"
         bullish = bar.close >= bar.open
         self._hover_open_label.setStyleSheet(neutral_style)
@@ -611,7 +655,7 @@ class ChartWidget(QWidget):
     def _hide_crosshair(self) -> None:
         self._v_line.hide()
         self._h_line.hide()
-        self._price_label_item.hide()
+        self._axis_price_label.hide()
         self._hover_card.hide()
 
     def _build_hover_card(self) -> None:
@@ -653,6 +697,32 @@ class ChartWidget(QWidget):
         y = self._hover_card_margin
         self._hover_card.move(x, y)
 
+    def _build_axis_price_label(self) -> None:
+        self._axis_price_label = QLabel(self)
+        self._axis_price_label.setObjectName("axisPriceLabel")
+        self._axis_price_label.setStyleSheet(
+            "#axisPriceLabel {"
+            "background: rgba(255, 255, 255, 238);"
+            "border: 1px solid #d9e0e6;"
+            "border-radius: 4px;"
+            "padding: 2px 6px;"
+            "color: #2c2c2c;"
+            "font-size: 12px;"
+            "}"
+        )
+        self._axis_price_label.hide()
+
+    def _position_axis_price_label(self, price: float) -> None:
+        width = max(self._axis_price_label.sizeHint().width(), 52)
+        height = max(self._axis_price_label.sizeHint().height(), 22)
+        self._axis_price_label.resize(width, height)
+        scene_point = self.price_plot.vb.mapViewToScene(QPointF(self._cursor, price))
+        local_point = self.graphics.mapFromScene(scene_point)
+        x = self.width() - width - 6
+        y = int(local_point.y() - height / 2)
+        y = max(4, min(self.height() - height - 4, y))
+        self._axis_price_label.move(x, y)
+
     def _editable_order_id_at_scene_pos(self, scene_y: float) -> int | None:
         closest_id: int | None = None
         closest_delta = 9.0
@@ -692,18 +762,18 @@ class ChartWidget(QWidget):
             return pg.mkPen(TAKE_PROFIT_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine), TAKE_PROFIT_LINE_COLOR, True
         return pg.mkPen(AVERAGE_PRICE_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine), AVERAGE_PRICE_LINE_COLOR, False
 
-    @staticmethod
-    def _order_line_label(line: OrderLine) -> str:
+    def _order_line_label(self, line: OrderLine) -> str:
         labels = {
-            OrderLineType.ENTRY_LONG: "开多线",
-            OrderLineType.ENTRY_SHORT: "开空线",
-            OrderLineType.EXIT: "平仓线",
-            OrderLineType.REVERSE: "反手线",
-            OrderLineType.STOP_LOSS: "止损线",
-            OrderLineType.TAKE_PROFIT: "止盈线",
-            OrderLineType.AVERAGE_PRICE: "成本线",
+            OrderLineType.ENTRY_LONG: "买",
+            OrderLineType.ENTRY_SHORT: "卖",
+            OrderLineType.EXIT: "平",
+            OrderLineType.REVERSE: "反",
+            OrderLineType.STOP_LOSS: "止损",
+            OrderLineType.TAKE_PROFIT: "止盈",
+            OrderLineType.AVERAGE_PRICE: "成本",
         }
-        return f"{labels[line.order_type]} {line.price:.2f}"
+        quantity = int(round(line.quantity))
+        return f"{labels[line.order_type]} {quantity}手 {format_price(line.price, self._tick_size)}"
 
     def _is_near_latest(self, right_edge_index: float) -> bool:
         return abs((self._cursor + 1) - right_edge_index) <= max(1.0, self._right_padding)
@@ -727,12 +797,16 @@ class ChartWidget(QWidget):
 
     @staticmethod
     def _is_session_open_marker(bar_time: time, timeframe_minutes: int) -> bool:
+        return ChartWidget._session_marker_label(bar_time, timeframe_minutes) is not None
+
+    @staticmethod
+    def _session_marker_label(bar_time: time, timeframe_minutes: int) -> str | None:
         current_minutes = bar_time.hour * 60 + bar_time.minute
-        for session_open in SESSION_OPEN_TIMES:
+        for session_open, label in zip(SESSION_OPEN_TIMES, ("日盘", "夜盘")):
             open_minutes = session_open.hour * 60 + session_open.minute
             if 0 <= current_minutes - open_minutes <= timeframe_minutes:
-                return True
-        return False
+                return label
+        return None
 
     @staticmethod
     def _ema(values: list[float], period: int) -> list[float]:

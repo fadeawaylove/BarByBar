@@ -36,6 +36,10 @@ The app stores runtime logs under `%USERPROFILE%\.barbybar\logs`.
 
 When diagnosing slow loads, import failures, or background worker issues, check `app.log` first and then `error.log` for stack traces.
 
+## Assets
+
+The application window icon is stored at [src/barbybar/assets/barbybar-icon.svg](/C:/code/BarByBar/src/barbybar/assets/barbybar-icon.svg).
+
 ## CSV Format
 
 The importer supports configurable column mapping, but the target schema is:

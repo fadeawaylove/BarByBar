@@ -24,6 +24,7 @@ from barbybar.domain.models import (
     OrderLine,
     OrderLineType,
     OrderStatus,
+    OrderTriggerMode,
     PositionState,
     ReviewSession,
     SessionAction,
@@ -79,6 +80,14 @@ class Repository:
     def list_datasets(self) -> list[DataSet]:
         rows = self.conn.execute("SELECT * FROM datasets ORDER BY created_at DESC, id DESC").fetchall()
         return [self._dataset_from_row(row) for row in rows]
+
+    def delete_dataset(self, dataset_id: int) -> None:
+        self.get_dataset(dataset_id)
+        self.conn.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
+        self.conn.commit()
+        self._window_meta_cache = {
+            key: value for key, value in self._window_meta_cache.items() if key[0] != dataset_id
+        }
 
     def get_dataset(self, dataset_id: int) -> DataSet:
         row = self.conn.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,)).fetchone()
@@ -261,16 +270,18 @@ class Repository:
                     cursor = self.conn.execute(
                         """
                         INSERT INTO order_lines(
-                            session_id, order_type, price, quantity, status, created_bar_index, created_at,
+                            session_id, order_type, price, quantity, trigger_mode, reference_price_at_creation, status, created_bar_index, created_at,
                             active_from_bar_index, triggered_bar_index, triggered_at, note
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             session.id,
                             order_line.order_type.value,
                             order_line.price,
                             order_line.quantity,
+                            order_line.trigger_mode.value,
+                            order_line.reference_price_at_creation,
                             order_line.status.value,
                             order_line.created_bar_index,
                             order_line.created_at.isoformat(),
@@ -286,7 +297,7 @@ class Repository:
                 self.conn.execute(
                     """
                     UPDATE order_lines
-                    SET order_type = ?, price = ?, quantity = ?, status = ?, created_bar_index = ?, created_at = ?,
+                    SET order_type = ?, price = ?, quantity = ?, trigger_mode = ?, reference_price_at_creation = ?, status = ?, created_bar_index = ?, created_at = ?,
                         active_from_bar_index = ?, triggered_bar_index = ?, triggered_at = ?, note = ?
                     WHERE id = ? AND session_id = ?
                     """,
@@ -294,6 +305,8 @@ class Repository:
                         order_line.order_type.value,
                         order_line.price,
                         order_line.quantity,
+                        order_line.trigger_mode.value,
+                        order_line.reference_price_at_creation,
                         order_line.status.value,
                         order_line.created_bar_index,
                         order_line.created_at.isoformat(),
@@ -349,6 +362,11 @@ class Repository:
             sessions = [session for session in sessions if session.position.direction == direction]
         return sessions
 
+    def delete_session(self, session_id: int) -> None:
+        self.get_session(session_id)
+        self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        self.conn.commit()
+
     def get_session_actions(self, session_id: int) -> list[SessionAction]:
         rows = self.conn.execute("SELECT * FROM actions WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()
         return [
@@ -375,6 +393,8 @@ class Repository:
                 order_type=OrderLineType(row["order_type"]),
                 price=row["price"],
                 quantity=row["quantity"],
+                trigger_mode=OrderTriggerMode(row["trigger_mode"]) if "trigger_mode" in row.keys() and row["trigger_mode"] else OrderTriggerMode.TOUCH,
+                reference_price_at_creation=row["reference_price_at_creation"] if "reference_price_at_creation" in row.keys() else None,
                 status=OrderStatus(row["status"]),
                 created_bar_index=row["created_bar_index"],
                 active_from_bar_index=row["active_from_bar_index"] if "active_from_bar_index" in row.keys() else row["created_bar_index"] + 1,

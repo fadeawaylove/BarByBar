@@ -9,6 +9,7 @@ from barbybar.domain.models import (
     OrderLine,
     OrderLineType,
     OrderStatus,
+    OrderTriggerMode,
     PositionState,
     ReviewSession,
     SessionAction,
@@ -94,6 +95,8 @@ class ReviewEngine:
                     created_bar_index=self.session.current_index,
                     active_from_bar_index=self.session.current_index,
                     created_at=self.current_bar.timestamp,
+                    trigger_mode=OrderTriggerMode.TOUCH,
+                    reference_price_at_creation=position.average_price,
                     note="成本线",
                     session_id=self.session.id,
                 )
@@ -217,6 +220,8 @@ class ReviewEngine:
             created_bar_index=self.session.current_index,
             active_from_bar_index=self.session.current_index + 1,
             created_at=self.current_bar.timestamp,
+            trigger_mode=OrderTriggerMode.TOUCH,
+            reference_price_at_creation=self.current_bar.close,
             note=note,
             session_id=self.session.id,
         )
@@ -232,6 +237,10 @@ class ReviewEngine:
             raise ValueError("Average price line cannot be modified.")
         self._save_snapshot()
         line.price = price
+        line.active_from_bar_index = self.session.current_index + 1
+        if line.is_entry:
+            line.reference_price_at_creation = self.current_bar.close
+            line.trigger_mode = OrderTriggerMode.TOUCH
         if line.order_type is OrderLineType.STOP_LOSS:
             self.session.position.stop_loss = price
         elif line.order_type is OrderLineType.TAKE_PROFIT:
@@ -247,6 +256,10 @@ class ReviewEngine:
             raise ValueError("Average price line cannot be modified.")
         self._save_snapshot()
         line.quantity = max(float(quantity), 1.0)
+        line.active_from_bar_index = self.session.current_index + 1
+        if line.is_entry:
+            line.reference_price_at_creation = self.current_bar.close
+            line.trigger_mode = OrderTriggerMode.TOUCH
         self._refresh_stats()
         return line
 
@@ -420,10 +433,7 @@ class ReviewEngine:
             return False
         hit_line: OrderLine | None = None
         for line in entry_lines:
-            if line.order_type is OrderLineType.ENTRY_LONG and bar.high >= line.price:
-                hit_line = line
-                break
-            if line.order_type is OrderLineType.ENTRY_SHORT and bar.low <= line.price:
+            if bar.low <= line.price <= bar.high:
                 hit_line = line
                 break
         if hit_line is None:
@@ -564,6 +574,8 @@ class ReviewEngine:
                 created_bar_index=self.session.current_index,
                 active_from_bar_index=self.session.current_index + 1,
                 created_at=self.current_bar.timestamp,
+                trigger_mode=OrderTriggerMode.TOUCH,
+                reference_price_at_creation=self.current_bar.close,
                 note=note,
                 session_id=self.session.id,
             )
@@ -578,6 +590,7 @@ class ReviewEngine:
             position.stop_loss = price
         elif order_type is OrderLineType.TAKE_PROFIT:
             position.take_profit = price
+
 
     def _remove_protective_lines(self) -> None:
         for line in self.order_lines:
