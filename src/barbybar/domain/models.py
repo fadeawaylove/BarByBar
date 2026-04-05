@@ -59,7 +59,7 @@ DEFAULT_DRAWING_COLOR = "#ff9f1c"
 DEFAULT_DRAWING_FILL_COLOR = "#ff9f1c"
 DEFAULT_DRAWING_STYLE: dict[str, Any] = {
     "color": DEFAULT_DRAWING_COLOR,
-    "width": 2,
+    "width": 1,
     "line_style": "solid",
     "extend_left": False,
     "extend_right": False,
@@ -318,6 +318,21 @@ class SessionStats:
     average_pnl: float = 0.0
     profit_factor: float = 0.0
     max_drawdown: float = 0.0
+    average_win: float = 0.0
+    average_loss: float = 0.0
+    payoff_ratio: float = 0.0
+    expectancy: float = 0.0
+    long_trades: int = 0
+    short_trades: int = 0
+    long_pnl: float = 0.0
+    short_pnl: float = 0.0
+    avg_holding_bars: float = 0.0
+    max_win_streak: int = 0
+    max_loss_streak: int = 0
+    trades_with_stop_rate: float = 0.0
+    manual_trades: int = 0
+    auto_trades: int = 0
+    planned_trades: int = 0
 
     @property
     def win_rate(self) -> float:
@@ -334,6 +349,21 @@ class SessionStats:
             "average_pnl": self.average_pnl,
             "profit_factor": self.profit_factor,
             "max_drawdown": self.max_drawdown,
+            "average_win": self.average_win,
+            "average_loss": self.average_loss,
+            "payoff_ratio": self.payoff_ratio,
+            "expectancy": self.expectancy,
+            "long_trades": self.long_trades,
+            "short_trades": self.short_trades,
+            "long_pnl": self.long_pnl,
+            "short_pnl": self.short_pnl,
+            "avg_holding_bars": self.avg_holding_bars,
+            "max_win_streak": self.max_win_streak,
+            "max_loss_streak": self.max_loss_streak,
+            "trades_with_stop_rate": self.trades_with_stop_rate,
+            "manual_trades": self.manual_trades,
+            "auto_trades": self.auto_trades,
+            "planned_trades": self.planned_trades,
         }
 
     @classmethod
@@ -348,7 +378,42 @@ class SessionStats:
             average_pnl=float(payload.get("average_pnl", 0.0)),
             profit_factor=float(payload.get("profit_factor", 0.0)),
             max_drawdown=float(payload.get("max_drawdown", 0.0)),
+            average_win=float(payload.get("average_win", 0.0)),
+            average_loss=float(payload.get("average_loss", 0.0)),
+            payoff_ratio=float(payload.get("payoff_ratio", 0.0)),
+            expectancy=float(payload.get("expectancy", 0.0)),
+            long_trades=int(payload.get("long_trades", 0)),
+            short_trades=int(payload.get("short_trades", 0)),
+            long_pnl=float(payload.get("long_pnl", 0.0)),
+            short_pnl=float(payload.get("short_pnl", 0.0)),
+            avg_holding_bars=float(payload.get("avg_holding_bars", 0.0)),
+            max_win_streak=int(payload.get("max_win_streak", 0)),
+            max_loss_streak=int(payload.get("max_loss_streak", 0)),
+            trades_with_stop_rate=float(payload.get("trades_with_stop_rate", 0.0)),
+            manual_trades=int(payload.get("manual_trades", 0)),
+            auto_trades=int(payload.get("auto_trades", 0)),
+            planned_trades=int(payload.get("planned_trades", 0)),
         )
+
+
+@dataclass(slots=True)
+class TradeReviewItem:
+    trade_number: int
+    entry_time: datetime
+    exit_time: datetime
+    direction: str
+    quantity: float
+    entry_price: float
+    exit_price: float
+    pnl: float
+    entry_bar_index: int
+    exit_bar_index: int
+    holding_bars: int
+    exit_reason: str
+    is_manual: bool
+    had_stop_protection: bool
+    had_adverse_add: bool
+    is_planned: bool
 
 
 @dataclass(slots=True)

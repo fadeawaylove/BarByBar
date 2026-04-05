@@ -4,6 +4,7 @@ from time import perf_counter
 from uuid import uuid4
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QMessageBox, QPushButton, QVBoxLayout
 
 from barbybar.data.csv_importer import MissingColumnsError
@@ -148,9 +149,8 @@ def test_main_window_removes_session_info_panel(window: MainWindow) -> None:
     group_titles = {group.title() for group in window.findChildren(QGroupBox)}
     assert "会话信息" not in group_titles
     assert "交易" in group_titles
-    assert "交易动作" not in group_titles
-    assert "画线下单" not in group_titles
-    assert "统计" not in group_titles
+    assert "训练统计" in group_titles
+    assert "历史交易" not in group_titles
 
 
 def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
@@ -458,6 +458,64 @@ def test_trade_action_price_defaults_to_latest_close(window: MainWindow) -> None
     assert window.price_spin.value() == 126.0
 
 
+def test_update_ui_populates_training_stats_and_trade_history(window: MainWindow) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=125.5)
+    window.engine.record_action(ActionType.SET_STOP_LOSS, price=124.5)
+    window.engine.step_forward()
+    window.engine.step_forward()
+    window.engine.record_action(ActionType.CLOSE, quantity=1, price=128.5)
+
+    window._update_ui_from_engine()
+
+    assert "Expectancy" in window.training_stats_label.text()
+    assert window.open_trade_history_button.isEnabled() is True
+
+    window.open_trade_history_dialog()
+
+    assert window._trade_history_dialog is not None
+    assert window._trade_history_dialog.trade_history_list.count() == 1
+    assert window._trade_history_dialog.trade_history_list.item(0).data(Qt.ItemDataRole.UserRole) == 1
+
+
+def test_trade_history_click_and_toggle_jump_between_entry_and_exit(window: MainWindow) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
+    entry_index = window.engine.session.current_index
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=125.5)
+    window.engine.record_action(ActionType.SET_STOP_LOSS, price=124.5)
+    window.engine.step_forward()
+    window.engine.step_forward()
+    exit_index = window.engine.session.current_index
+    window.engine.record_action(ActionType.CLOSE, quantity=1, price=128.5)
+    window._update_ui_from_engine()
+    window.open_trade_history_dialog()
+
+    assert window._trade_history_dialog is not None
+    item = window._trade_history_dialog.trade_history_list.item(0)
+    window._trade_history_dialog._handle_item_clicked(item)
+
+    assert window.chart_widget._cursor == entry_index
+    assert window.chart_widget._focused_trade_points is None
+    assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到出场"
+
+    window._trade_history_dialog._toggle_selected_trade_focus()
+
+    assert window.chart_widget._cursor == exit_index
+    assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到入场"
+
+
 def test_tick_size_change_snaps_price_input(window: MainWindow) -> None:
     _seed_engine(window)
     window.price_spin.setValue(5914.62)
@@ -573,6 +631,17 @@ def test_order_line_context_delete_cancels_line(window: MainWindow, monkeypatch)
     window._handle_order_line_action_requested(303, "delete")
 
     assert all(item.id != 303 or item.is_active is False for item in window.engine.order_lines)
+
+
+def test_handle_chart_protective_order_created_places_protective_line(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=101)
+    captured: list[tuple[OrderLineType, float]] = []
+    monkeypatch.setattr(window, "_place_order_line", lambda order_type, price: captured.append((order_type, price)))
+
+    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 104.2)
+
+    assert captured == [(OrderLineType.TAKE_PROFIT, 104.2)]
 
 
 def test_busy_overlay_becomes_visible_when_window_is_shown(window: MainWindow, app: QApplication) -> None:

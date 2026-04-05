@@ -16,7 +16,10 @@ from barbybar.domain.models import (
     SessionStats,
     SessionStatus,
     Trade,
+    TradeReviewItem,
 )
+
+PLANNED_STOP_SETUP_MAX_BARS = 3
 
 
 @dataclass(slots=True)
@@ -304,6 +307,108 @@ class ReviewEngine:
         self.session.status = SessionStatus.COMPLETED
         self._refresh_stats()
 
+    def trade_review_items(self) -> list[TradeReviewItem]:
+        items: list[TradeReviewItem] = []
+        position_direction: str | None = None
+        position_quantity = 0.0
+        average_price = 0.0
+        open_trade_started_at = self.actions[0].timestamp if self.actions else self.current_bar.timestamp
+        open_trade_started_bar_index = self.session.start_index
+        has_stop_protection = False
+        stop_set_bar_index: int | None = None
+        had_adverse_add = False
+        trade_index = 0
+
+        for action in self.actions:
+            price = float(action.price if action.price is not None else 0.0)
+            quantity = max(float(action.quantity), 0.0)
+
+            if action.action_type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+                direction = "long" if action.action_type is ActionType.OPEN_LONG else "short"
+                if position_quantity <= 0:
+                    position_direction = direction
+                    position_quantity = quantity
+                    average_price = price
+                    open_trade_started_at = action.timestamp
+                    open_trade_started_bar_index = action.bar_index
+                    has_stop_protection = False
+                    stop_set_bar_index = None
+                    had_adverse_add = False
+                elif position_direction == direction:
+                    new_quantity = position_quantity + quantity
+                    if new_quantity > 0:
+                        average_price = ((average_price * position_quantity) + (price * quantity)) / new_quantity
+                        position_quantity = new_quantity
+                continue
+
+            if action.action_type is ActionType.ADD:
+                if position_quantity > 0:
+                    is_adverse = (
+                        (position_direction == "long" and price < average_price)
+                        or (position_direction == "short" and price > average_price)
+                    )
+                    had_adverse_add = had_adverse_add or is_adverse
+                    new_quantity = position_quantity + quantity
+                    if new_quantity > 0:
+                        average_price = ((average_price * position_quantity) + (price * quantity)) / new_quantity
+                        position_quantity = new_quantity
+                continue
+
+            if action.action_type is ActionType.SET_STOP_LOSS:
+                if position_quantity > 0:
+                    has_stop_protection = True
+                    if stop_set_bar_index is None:
+                        stop_set_bar_index = action.bar_index
+                continue
+
+            if action.action_type not in {ActionType.CLOSE, ActionType.REDUCE}:
+                continue
+            if position_quantity <= 0 or trade_index >= len(self.trades):
+                continue
+
+            close_quantity = min(quantity, position_quantity) if quantity > 0 else position_quantity
+            remaining_quantity = max(position_quantity - close_quantity, 0.0)
+            trade = self.trades[trade_index]
+            trade_index += 1
+            exit_reason = self._trade_exit_reason(action, remaining_quantity)
+            holding_bars = max(action.bar_index - open_trade_started_bar_index, 0)
+            is_planned = (
+                has_stop_protection
+                and stop_set_bar_index is not None
+                and stop_set_bar_index - open_trade_started_bar_index <= PLANNED_STOP_SETUP_MAX_BARS
+                and not had_adverse_add
+                and exit_reason != "unknown"
+            )
+            items.append(
+                TradeReviewItem(
+                    trade_number=len(items) + 1,
+                    entry_time=trade.entry_time,
+                    exit_time=trade.exit_time,
+                    direction=trade.direction,
+                    quantity=trade.quantity,
+                    entry_price=trade.entry_price,
+                    exit_price=trade.exit_price,
+                    pnl=trade.pnl,
+                    entry_bar_index=open_trade_started_bar_index,
+                    exit_bar_index=action.bar_index,
+                    holding_bars=holding_bars,
+                    exit_reason=exit_reason,
+                    is_manual=not bool(action.extra.get("auto")),
+                    had_stop_protection=has_stop_protection,
+                    had_adverse_add=had_adverse_add,
+                    is_planned=is_planned,
+                )
+            )
+            position_quantity = remaining_quantity
+            if position_quantity <= 0:
+                position_direction = None
+                average_price = 0.0
+                has_stop_protection = False
+                stop_set_bar_index = None
+                had_adverse_add = False
+
+        return items
+
     def _apply_action(self, action: SessionAction) -> None:
         position = self.session.position
         price = action.price or self.current_bar.close
@@ -527,6 +632,34 @@ class ReviewEngine:
         gross_profit = sum(trade.pnl for trade in self.trades if trade.pnl > 0)
         gross_loss = abs(sum(trade.pnl for trade in self.trades if trade.pnl < 0))
         total_pnl = sum(trade.pnl for trade in self.trades)
+        review_items = self.trade_review_items()
+        average_win = gross_profit / wins if wins else 0.0
+        average_loss = gross_loss / losses if losses else 0.0
+        long_trades = len([item for item in review_items if item.direction == "long"])
+        short_trades = len([item for item in review_items if item.direction == "short"])
+        long_pnl = sum(item.pnl for item in review_items if item.direction == "long")
+        short_pnl = sum(item.pnl for item in review_items if item.direction == "short")
+        avg_holding_bars = sum(item.holding_bars for item in review_items) / total_trades if total_trades else 0.0
+        manual_trades = len([item for item in review_items if item.is_manual])
+        auto_trades = total_trades - manual_trades
+        planned_trades = len([item for item in review_items if item.is_planned])
+        stop_protected_trades = len([item for item in review_items if item.had_stop_protection])
+        max_win_streak = 0
+        max_loss_streak = 0
+        current_win_streak = 0
+        current_loss_streak = 0
+        for trade in self.trades:
+            if trade.pnl > 0:
+                current_win_streak += 1
+                current_loss_streak = 0
+            elif trade.pnl < 0:
+                current_loss_streak += 1
+                current_win_streak = 0
+            else:
+                current_win_streak = 0
+                current_loss_streak = 0
+            max_win_streak = max(max_win_streak, current_win_streak)
+            max_loss_streak = max(max_loss_streak, current_loss_streak)
         self.session.stats = SessionStats(
             total_trades=total_trades,
             wins=wins,
@@ -535,7 +668,39 @@ class ReviewEngine:
             average_pnl=total_pnl / total_trades if total_trades else 0.0,
             profit_factor=(gross_profit / gross_loss) if gross_loss else (gross_profit if gross_profit else 0.0),
             max_drawdown=self.session.position.max_drawdown,
+            average_win=average_win,
+            average_loss=average_loss,
+            payoff_ratio=(average_win / average_loss) if average_loss else (average_win if average_win else 0.0),
+            expectancy=total_pnl / total_trades if total_trades else 0.0,
+            long_trades=long_trades,
+            short_trades=short_trades,
+            long_pnl=long_pnl,
+            short_pnl=short_pnl,
+            avg_holding_bars=avg_holding_bars,
+            max_win_streak=max_win_streak,
+            max_loss_streak=max_loss_streak,
+            trades_with_stop_rate=(stop_protected_trades / total_trades) if total_trades else 0.0,
+            manual_trades=manual_trades,
+            auto_trades=auto_trades,
+            planned_trades=planned_trades,
         )
+
+    @staticmethod
+    def _trade_exit_reason(action: SessionAction, remaining_quantity: float) -> str:
+        if action.action_type is ActionType.REDUCE and remaining_quantity <= 0:
+            return "reduce_to_flat"
+        if not action.extra.get("auto"):
+            return "manual_close"
+        order_type = str(action.extra.get("order_type", ""))
+        if order_type == OrderLineType.STOP_LOSS.value:
+            return "stop_loss"
+        if order_type == OrderLineType.TAKE_PROFIT.value:
+            return "take_profit"
+        if order_type == OrderLineType.REVERSE.value:
+            return "reverse"
+        if order_type == OrderLineType.EXIT.value:
+            return "manual_close"
+        return "unknown"
 
     def _save_snapshot(self) -> None:
         self._history.append(
