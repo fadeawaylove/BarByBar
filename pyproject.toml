@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "barbybar"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Windows desktop bar-by-bar review trainer for futures minute data."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,9 +14,15 @@ dependencies = [
   "pyqtgraph>=0.13.7",
 ]
 
+[tool.setuptools.dynamic]
+version = { attr = "barbybar.__version__" }
+
 [dependency-groups]
 dev = [
   "pytest>=8.3",
+]
+release = [
+  "pyinstaller>=6.12",
 ]
 
 [tool.pytest.ini_options]

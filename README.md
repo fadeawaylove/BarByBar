@@ -25,6 +25,32 @@ The app stores its SQLite database under `%USERPROFILE%\.barbybar\barbybar.db`.
 ```powershell
 uv run pytest -q
 uv run python -m barbybar.app
+uv run pyinstaller --clean --noconfirm BarByBar.spec
+```
+
+## Release
+
+BarByBar publishes a Windows portable ZIP to GitHub Releases when you push a version tag.
+
+```powershell
+# 1. update src/barbybar/__init__.py version
+# 2. commit your changes
+git tag v0.1.0
+git push origin master --follow-tags
+```
+
+The release workflow will:
+
+- sync dependencies with `uv`
+- run the test suite
+- build the Windows GUI app with `PyInstaller`
+- upload `BarByBar-vX.Y.Z-windows-x64.zip` to GitHub Releases
+
+For a local packaging dry run:
+
+```powershell
+uv sync --group dev --group release
+.\scripts\build_release.ps1 -Tag v0.1.0
 ```
 
 ## Logs

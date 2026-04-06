@@ -27,6 +27,13 @@ FILE_FORMAT = (
 )
 
 
+def _console_sink():
+    for stream in (sys.stderr, sys.stdout):
+        if stream is not None:
+            return stream
+    return None
+
+
 def app_root_dir() -> Path:
     root = Path.home() / ".barbybar"
     root.mkdir(parents=True, exist_ok=True)
@@ -44,14 +51,16 @@ def setup_logging(base_log_dir: str | Path | None = None):
     target_dir.mkdir(parents=True, exist_ok=True)
 
     logger.remove()
-    logger.add(
-        sys.stderr,
-        level="INFO",
-        format=CONSOLE_FORMAT,
-        enqueue=False,
-        backtrace=False,
-        diagnose=False,
-    )
+    console_sink = _console_sink()
+    if console_sink is not None:
+        logger.add(
+            console_sink,
+            level="INFO",
+            format=CONSOLE_FORMAT,
+            enqueue=False,
+            backtrace=False,
+            diagnose=False,
+        )
     logger.add(
         target_dir / "app.log",
         level="DEBUG",
