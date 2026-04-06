@@ -1485,7 +1485,7 @@ class ChartWidget(QWidget):
             self._drag_anchor_index = None
             self._drawing_drag_mode = DrawingDragMode.TRANSLATE
         point = self.price_plot.vb.mapSceneToView(scene_pos)
-        self._drag_start_view_pos = DrawingAnchor(float(point.x()), float(point.y()))
+        self._drag_start_view_pos = self._stabilize_drawing_anchor(DrawingAnchor(float(point.x()), float(point.y())))
         self._drag_start_anchors = [DrawingAnchor(anchor.x, anchor.y) for anchor in self._drawings[self._drag_drawing_index].anchors]
         self._drag_drawing_changed = False
         self._hovered_drawing_index = self._drag_drawing_index
@@ -1498,7 +1498,7 @@ class ChartWidget(QWidget):
         if self._drag_drawing_index is None or self._drawing_drag_mode is None or self._drag_start_view_pos is None:
             return
         point = self.price_plot.vb.mapSceneToView(scene_pos)
-        current_anchor = DrawingAnchor(float(point.x()), float(point.y()))
+        current_anchor = self._stabilize_drawing_anchor(DrawingAnchor(float(point.x()), float(point.y())))
         drawing = self._drawings[self._drag_drawing_index]
         if self._drawing_drag_mode is DrawingDragMode.ANCHOR:
             if self._drag_anchor_index is None:
@@ -1508,7 +1508,7 @@ class ChartWidget(QWidget):
             delta_x = current_anchor.x - self._drag_start_view_pos.x
             delta_y = current_anchor.y - self._drag_start_view_pos.y
             drawing.anchors = [
-                DrawingAnchor(anchor.x + delta_x, anchor.y + delta_y)
+                self._stabilize_drawing_anchor(DrawingAnchor(anchor.x + delta_x, anchor.y + delta_y))
                 for anchor in self._drag_start_anchors
             ]
         self._drag_drawing_changed = True
@@ -1631,6 +1631,7 @@ class ChartWidget(QWidget):
             self._rebuild_line_items()
 
     def _normalized_drawing_anchor(self, anchor: DrawingAnchor) -> DrawingAnchor:
+        anchor = self._stabilize_drawing_anchor(anchor)
         if not (self._current_keyboard_modifiers() & Qt.KeyboardModifier.ControlModifier):
             return anchor
         hover = self._hover_bar_at(anchor.x)
@@ -1639,6 +1640,10 @@ class ChartWidget(QWidget):
         index, bar = hover
         snapped_price = min((bar.open, bar.high, bar.low, bar.close), key=lambda price: abs(price - anchor.y))
         return DrawingAnchor(float(index), float(snapped_price))
+
+    @staticmethod
+    def _stabilize_drawing_anchor(anchor: DrawingAnchor) -> DrawingAnchor:
+        return DrawingAnchor(round(float(anchor.x), 6), round(float(anchor.y), 6))
 
     def _current_keyboard_modifiers(self):
         return QApplication.keyboardModifiers()

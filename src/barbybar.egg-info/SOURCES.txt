@@ -10,6 +10,7 @@ src/barbybar.egg-info/requires.txt
 src/barbybar.egg-info/top_level.txt
 src/barbybar/data/__init__.py
 src/barbybar/data/csv_importer.py
+src/barbybar/data/tick_size.py
 src/barbybar/data/timeframe.py
 src/barbybar/domain/__init__.py
 src/barbybar/domain/engine.py

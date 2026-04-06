@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
+import barbybar.logging_config as logging_config
 from loguru import logger
 from PySide6.QtCore import qWarning
 
@@ -62,5 +63,22 @@ def test_setup_logging_captures_qt_messages() -> None:
 
         app_log = (log_path / "app.log").read_text(encoding="utf-8")
         assert "Qt message: qt warning from test" in app_log
+    finally:
+        shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_setup_logging_handles_windowed_runtime_without_console(monkeypatch) -> None:
+    case_dir = _case_dir()
+    log_path = case_dir / "logs"
+
+    try:
+        monkeypatch.setattr(logging_config.sys, "stderr", None)
+        monkeypatch.setattr(logging_config.sys, "stdout", None)
+        setup_logging(log_path)
+        logger.info("windowed log")
+        logger.complete()
+
+        app_log = (log_path / "app.log").read_text(encoding="utf-8")
+        assert "windowed log" in app_log
     finally:
         shutil.rmtree(case_dir, ignore_errors=True)

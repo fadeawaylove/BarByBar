@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 uv.lock
+build/
+dist/
+.pytest-temp/
+.test_tmp/

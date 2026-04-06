@@ -16,7 +16,7 @@ BarByBar is a Windows desktop review trainer for stepping through futures bars o
 
 - Import minute-level OHLCV data from local CSV files
 - Create review sessions with hidden future bars
-- Step forward, auto-play, step backward, and jump to a target bar
+- Step forward, step backward, and jump to a target bar
 - Record trading decisions, notes, stop-loss, and take-profit rules
 - Save sessions and actions into a local SQLite case library
 - Review past sessions with basic performance statistics
@@ -35,6 +35,32 @@ The app stores its SQLite database under `%USERPROFILE%\.barbybar\barbybar.db`.
 ```powershell
 uv run pytest -q
 uv run python -m barbybar.app
+uv run pyinstaller --clean --noconfirm BarByBar.spec
+```
+
+## Release
+
+BarByBar publishes a Windows portable ZIP to GitHub Releases when you push a version tag.
+
+```powershell
+# 1. update src/barbybar/__init__.py version
+# 2. commit your changes
+git tag v0.1.0
+git push origin master --follow-tags
+```
+
+The release workflow will:
+
+- sync dependencies with `uv`
+- run the test suite
+- build the Windows GUI app with `PyInstaller`
+- upload `BarByBar-vX.Y.Z-windows-x64.zip` to GitHub Releases
+
+For a local packaging dry run:
+
+```powershell
+uv sync --group dev --group release
+.\scripts\build_release.ps1 -Tag v0.1.0
 ```
 
 ## Logs
@@ -45,6 +71,10 @@ The app stores runtime logs under `%USERPROFILE%\.barbybar\logs`.
 - `error.log`: error and exception logs only
 
 When diagnosing slow loads, import failures, or background worker issues, check `app.log` first and then `error.log` for stack traces.
+
+## Assets
+
+The application window icon is stored at [src/barbybar/assets/barbybar-icon.svg](/C:/code/BarByBar/src/barbybar/assets/barbybar-icon.svg).
 
 ## CSV Format
 
