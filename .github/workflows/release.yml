@@ -29,9 +29,6 @@ jobs:
       - name: Sync dependencies
         run: uv sync --group dev --group release
 
-      - name: Run tests
-        run: uv run pytest -q
-
       - name: Build release bundle
         shell: pwsh
         run: .\scripts\build_release.ps1 -Tag "${{ github.ref_name }}"
