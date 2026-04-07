@@ -7,3 +7,6 @@ build/
 dist/
 .pytest-temp/
 .test_tmp/
+installer/HarvestedFiles.wxs
+installer/*.wixobj
+installer/*.wixpdb
