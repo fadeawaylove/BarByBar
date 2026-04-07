@@ -65,6 +65,7 @@ $productObjPath = Join-Path $installerDir "BarByBar.wixobj"
 $harvestObjPath = Join-Path $installerDir "HarvestedFiles.wixobj"
 $msiPath = Join-Path $repoRoot "dist\BarByBar-$versionToShow-windows-x64.msi"
 $assetsDir = Join-Path $repoRoot "src\barbybar\assets"
+$wixOutDir = ([System.IO.Path]::GetFullPath($installerDir)) + "\"
 
 Remove-Item -LiteralPath $productObjPath -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $harvestObjPath -Force -ErrorAction SilentlyContinue
@@ -74,7 +75,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "WiX heat failed with exit code $LASTEXITCODE."
 }
 
-& $candleExe -nologo -arch x64 "-dAppVersion=$msiVersion" "-dSourceDir=$sourceDir" "-dAssetsDir=$assetsDir" -out $installerDir\ $productPath $harvestPath
+& $candleExe -nologo -arch x64 "-dAppVersion=$msiVersion" "-dSourceDir=$sourceDir" "-dAssetsDir=$assetsDir" -out $wixOutDir $productPath $harvestPath
 if ($LASTEXITCODE -ne 0) {
     throw "WiX candle failed with exit code $LASTEXITCODE."
 }
