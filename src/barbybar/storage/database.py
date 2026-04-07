@@ -3,11 +3,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from barbybar.paths import default_db_path as resolve_default_db_path
+
 
 def default_db_path() -> Path:
-    root = Path.home() / ".barbybar"
-    root.mkdir(parents=True, exist_ok=True)
-    return root / "barbybar.db"
+    return resolve_default_db_path()
 
 
 SCHEMA_SQL = """

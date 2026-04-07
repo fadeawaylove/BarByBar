@@ -1,0 +1,8 @@
+2026-04-07 22:38:37.201 | INFO     | 8216:14908 | barbybar.logging_config:setup_logging:87 | BarByBar starting version=0.1.0 python=3.12.12 db_path=C:\code\BarByBar\data\barbybar.db log_dir=C:\code\BarByBar\data\logs
+2026-04-07 22:38:37.254 | DEBUG    | 8216:14908 | barbybar.ui.chart_widget:_log_interaction:2060 | event=cancel_order_preview_start
+2026-04-07 22:38:37.254 | DEBUG    | 8216:14908 | barbybar.ui.chart_widget:_log_interaction:2060 | event=cancel_order_preview_done
+2026-04-07 22:38:37.254 | DEBUG    | 8216:14908 | barbybar.ui.chart_widget:_log_interaction:2060 | event=set_active_drawing_tool_start
+2026-04-07 22:38:37.254 | DEBUG    | 8216:14908 | barbybar.ui.chart_widget:_log_interaction:2060 | event=set_active_drawing_tool_done
+2026-04-07 22:38:37.255 | DEBUG    | 8216:14908 | barbybar.ui.chart_widget:_log_interaction:2060 | event=cancel_order_preview_start
+2026-04-07 22:38:37.255 | DEBUG    | 8216:14908 | barbybar.ui.chart_widget:_log_interaction:2060 | event=cancel_order_preview_done
+2026-04-07 22:38:50.724 | DEBUG    | 8216:14908 | barbybar.ui.main_window:hide_busy_overlay:1404 | event=hide_busy_overlay
