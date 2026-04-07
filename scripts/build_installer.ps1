@@ -61,20 +61,25 @@ $installerDir = Join-Path $repoRoot "installer"
 $sourceDir = Join-Path $repoRoot "dist\release\BarByBar"
 $harvestPath = Join-Path $installerDir "HarvestedFiles.wxs"
 $productPath = Join-Path $installerDir "BarByBar.wxs"
+$productObjPath = Join-Path $installerDir "BarByBar.wixobj"
+$harvestObjPath = Join-Path $installerDir "HarvestedFiles.wixobj"
 $msiPath = Join-Path $repoRoot "dist\BarByBar-$versionToShow-windows-x64.msi"
 $assetsDir = Join-Path $repoRoot "src\barbybar\assets"
+
+Remove-Item -LiteralPath $productObjPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $harvestObjPath -Force -ErrorAction SilentlyContinue
 
 & $heatExe dir $sourceDir -nologo -cg AppFiles -dr INSTALLDIR -gg -scom -sreg -sfrag -srd -var var.SourceDir -out $harvestPath
 if ($LASTEXITCODE -ne 0) {
     throw "WiX heat failed with exit code $LASTEXITCODE."
 }
 
-& $candleExe -nologo -arch x64 "-dAppVersion=$msiVersion" "-dSourceDir=$sourceDir" "-dAssetsDir=$assetsDir" $productPath $harvestPath
+& $candleExe -nologo -arch x64 "-dAppVersion=$msiVersion" "-dSourceDir=$sourceDir" "-dAssetsDir=$assetsDir" -out $installerDir\ $productPath $harvestPath
 if ($LASTEXITCODE -ne 0) {
     throw "WiX candle failed with exit code $LASTEXITCODE."
 }
 
-& $lightExe -nologo -out $msiPath (Join-Path $installerDir 'BarByBar.wixobj') (Join-Path $installerDir 'HarvestedFiles.wixobj')
+& $lightExe -nologo -out $msiPath $productObjPath $harvestObjPath
 if ($LASTEXITCODE -ne 0) {
     throw "WiX light failed with exit code $LASTEXITCODE."
 }
