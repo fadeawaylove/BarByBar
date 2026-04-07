@@ -8,7 +8,7 @@
     Manufacturer="BarByBar"
     UpgradeCode="A516BBBA-3B66-4A27-9F44-03D52CB9D89D">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited" Platform="x64" />
-    <MajorUpgrade DowngradeErrorMessage="[ProductName] 已安装了更新版本。" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="AppIcon.ico" SourceFile="$(var.AssetsDir)\barbybar-icon.ico" />
