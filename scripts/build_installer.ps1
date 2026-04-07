@@ -10,6 +10,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 $versionToShow = if ($Version) { $Version } else { & .\.venv\Scripts\python.exe -c "from barbybar import __version__; print(__version__)" }
+$msiVersion = if ($versionToShow -match '^\d+\.\d+\.\d+$') { "$versionToShow.0" } else { $versionToShow }
 
 & .\scripts\build_release.ps1 -Version $Version -Tag $Tag
 if ($LASTEXITCODE -ne 0) {
@@ -68,7 +69,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "WiX heat failed with exit code $LASTEXITCODE."
 }
 
-& $candleExe -nologo -arch x64 -dAppVersion=$versionToShow -dSourceDir=$sourceDir -dAssetsDir=$assetsDir $productPath $harvestPath
+& $candleExe -nologo -arch x64 "-dAppVersion=$msiVersion" "-dSourceDir=$sourceDir" "-dAssetsDir=$assetsDir" $productPath $harvestPath
 if ($LASTEXITCODE -ne 0) {
     throw "WiX candle failed with exit code $LASTEXITCODE."
 }
