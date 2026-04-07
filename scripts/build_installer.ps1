@@ -17,15 +17,40 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if (-not $WixBin) {
+    $candleCommand = Get-Command candle.exe -ErrorAction SilentlyContinue
+    if ($candleCommand) {
+        $WixBin = Split-Path -Parent $candleCommand.Source
+    }
+}
+
+if (-not $WixBin) {
     $candidates = @(
+        "C:\ProgramData\chocolatey\bin",
+        "C:\ProgramData\chocolatey\lib\wixtoolset\tools",
         "C:\Program Files (x86)\WiX Toolset v3.11\bin",
-        "C:\Program Files\WiX Toolset v3.11\bin"
+        "C:\Program Files\WiX Toolset v3.11\bin",
+        "C:\Program Files (x86)\WiX Toolset v3.14\bin",
+        "C:\Program Files\WiX Toolset v3.14\bin"
     )
     $WixBin = $candidates | Where-Object { Test-Path (Join-Path $_ 'candle.exe') } | Select-Object -First 1
 }
 
 if (-not $WixBin) {
-    throw "WiX Toolset not found. Install WiX Toolset, or pass -WixBin to the WiX bin directory."
+    $wixInChocolateyLib = Get-ChildItem 'C:\ProgramData\chocolatey\lib' -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'wixtoolset*' } |
+        ForEach-Object {
+            Get-ChildItem $_.FullName -Directory -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path (Join-Path $_.FullName 'candle.exe') } |
+                Select-Object -ExpandProperty FullName
+        } |
+        Select-Object -First 1
+    if ($wixInChocolateyLib) {
+        $WixBin = $wixInChocolateyLib
+    }
+}
+
+if (-not $WixBin) {
+    throw "WiX Toolset not found. Install WiX Toolset, ensure candle.exe is on PATH, or pass -WixBin to the WiX bin directory."
 }
 
 $heatExe = Join-Path $WixBin "heat.exe"
