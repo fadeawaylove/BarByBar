@@ -63,7 +63,7 @@ $harvestPath = Join-Path $installerDir "HarvestedFiles.wxs"
 $productPath = Join-Path $installerDir "BarByBar.wxs"
 $productObjPath = Join-Path $installerDir "BarByBar.wixobj"
 $harvestObjPath = Join-Path $installerDir "HarvestedFiles.wixobj"
-$msiPath = Join-Path $repoRoot "dist\BarByBar-$versionToShow-windows-x64.msi"
+$msiPath = Join-Path $repoRoot "dist\BarByBar-v$versionToShow-windows-x64.msi"
 $assetsDir = Join-Path $repoRoot "src\barbybar\assets"
 $wixOutDir = ([System.IO.Path]::GetFullPath($installerDir)) + "\"
 
