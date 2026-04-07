@@ -18,13 +18,23 @@ uv sync --group dev
 uv run python -m barbybar.app
 ```
 
-The app stores its SQLite database under `%USERPROFILE%\.barbybar\barbybar.db`.
+`uv run python -m barbybar.app` starts the desktop app directly.
+
+By default, the app stores data under the `data` folder next to the project or packaged `.exe`.
+
+- Database: `data\barbybar.db`
+- Logs: `data\logs\`
+
+This makes the packaged app portable. If you copy the whole folder onto a USB drive, your data goes with it.
+
+You can still override the data location with `BARBYBAR_DATA_DIR` when needed.
 
 ## Common Commands
 
 ```powershell
 uv run pytest -q
 uv run python -m barbybar.app
+uv run python -m barbybar.desktop_app
 uv run pyinstaller --clean --noconfirm BarByBar.spec
 ```
 
@@ -55,7 +65,7 @@ uv sync --group dev --group release
 
 ## Logs
 
-The app stores runtime logs under `%USERPROFILE%\.barbybar\logs`.
+The app stores runtime logs under `data\logs` by default, or under `BARBYBAR_DATA_DIR\logs` if you override the data directory.
 
 - `app.log`: all application logs at `DEBUG` and above
 - `error.log`: error and exception logs only

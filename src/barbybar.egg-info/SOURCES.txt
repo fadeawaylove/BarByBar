@@ -2,7 +2,9 @@ README.md
 pyproject.toml
 src/barbybar/__init__.py
 src/barbybar/app.py
+src/barbybar/desktop_app.py
 src/barbybar/logging_config.py
+src/barbybar/paths.py
 src/barbybar.egg-info/PKG-INFO
 src/barbybar.egg-info/SOURCES.txt
 src/barbybar.egg-info/dependency_links.txt
@@ -26,4 +28,5 @@ tests/test_csv_importer.py
 tests/test_engine.py
 tests/test_logging_config.py
 tests/test_main_window.py
+tests/test_paths.py
 tests/test_repository.py

@@ -5,6 +5,7 @@ src_root = project_root / "src"
 
 
 datas = [
+    (str(src_root / "barbybar" / "assets" / "barbybar-icon.ico"), "barbybar/assets"),
     (str(src_root / "barbybar" / "assets" / "barbybar-icon.svg"), "barbybar/assets"),
 ]
 
@@ -32,6 +33,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="BarByBar",
+    icon=str(src_root / "barbybar" / "assets" / "barbybar-icon.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

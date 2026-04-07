@@ -9,7 +9,7 @@ from loguru import logger
 from PySide6.QtCore import QtMsgType, qInstallMessageHandler
 
 from barbybar import __version__
-from barbybar.storage.database import default_db_path
+from barbybar.paths import default_db_path, default_log_dir
 
 
 LOG_ROTATION = "10 MB"
@@ -35,15 +35,11 @@ def _console_sink():
 
 
 def app_root_dir() -> Path:
-    root = Path.home() / ".barbybar"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return default_db_path().parent
 
 
 def log_dir() -> Path:
-    root = app_root_dir() / "logs"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return default_log_dir()
 
 
 def setup_logging(base_log_dir: str | Path | None = None):
