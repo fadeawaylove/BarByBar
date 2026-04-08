@@ -58,6 +58,22 @@ def test_repository_roundtrip() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_find_dataset_by_symbol_returns_latest_match() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        repo.import_csv(Path("sample_data/if_sample.csv"), "AG9999", "1m")
+
+        found = repo.find_dataset_by_symbol("ag9999")
+
+        assert found is not None
+        assert found.symbol == "AG9999"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_aggregate_bars_drops_incomplete_tail() -> None:
     start = datetime(2025, 1, 1, 9, 0)
     source = []

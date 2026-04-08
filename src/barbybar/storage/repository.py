@@ -81,6 +81,15 @@ class Repository:
         self.conn.commit()
         return self.get_dataset(dataset_id)
 
+    def find_dataset_by_symbol(self, symbol: str) -> DataSet | None:
+        row = self.conn.execute(
+            "SELECT * FROM datasets WHERE UPPER(symbol) = UPPER(?) ORDER BY created_at DESC, id DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._dataset_from_row(row)
+
     def list_datasets(self) -> list[DataSet]:
         rows = self.conn.execute("SELECT * FROM datasets ORDER BY created_at DESC, id DESC").fetchall()
         return [self._dataset_from_row(row) for row in rows]

@@ -137,6 +137,7 @@ def test_manager_dialogs_include_delete_actions(window: MainWindow) -> None:
         session_buttons = {button.text() for button in session_dialog.findChildren(QPushButton)}
 
         assert "删除所选数据集" in dataset_buttons
+        assert "导入文件夹" in dataset_buttons
         assert "删除所选案例" in session_buttons
     finally:
         dataset_dialog.close()
@@ -704,6 +705,42 @@ def test_import_csv_defaults_to_1m(monkeypatch, app: QApplication) -> None:
     app.processEvents()
 
 
+def test_import_csv_uses_filename_symbol_without_prompt(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    csv_path = case_dir / "AG9999.XSGE_20250301_20250801_1min.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "datetime,open,high,low,close,volume",
+                "2025-01-01 09:00:00,100,101,99,100.5,1000",
+                "2025-01-01 09:01:00,100.5,101.5,100,101,1100",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
+
+    def _unexpected_prompt(*args, **kwargs):
+        raise AssertionError("symbol prompt should not open for recognized filenames")
+
+    monkeypatch.setattr("barbybar.ui.main_window.QInputDialog.getText", _unexpected_prompt)
+
+    window.import_csv()
+
+    datasets = repo.list_datasets()
+    assert len(datasets) == 1
+    assert datasets[0].symbol == "AG9999"
+    assert datasets[0].timeframe == "1m"
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
 def test_import_csv_opens_mapping_dialog_for_missing_columns(monkeypatch, app: QApplication) -> None:
     temp_root = Path("C:/code/BarByBar/.pytest-temp")
     temp_root.mkdir(exist_ok=True)
@@ -789,6 +826,46 @@ def test_import_csv_cancel_mapping_does_not_write_dataset(monkeypatch, app: QApp
     window.import_csv()
 
     assert repo.list_datasets() == []
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_import_csv_folder_imports_valid_files_and_skips_invalid_and_duplicate(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    folder = case_dir / "batch"
+    folder.mkdir()
+    valid_a = folder / "AG9999.XSGE_20250301_20250801_1min.csv"
+    valid_b = folder / "BU9999.XSGE_20250301_20250801_1min.csv"
+    duplicate = folder / "AG9999.XSGE_20250802_20250803_1min.csv"
+    invalid = folder / "sample.csv"
+    content = "\n".join(
+        [
+            "datetime,open,high,low,close,volume",
+            "2025-01-01 09:00:00,100,101,99,100.5,1000",
+            "2025-01-01 09:01:00,100.5,101.5,100,101,1100",
+        ]
+    )
+    for path in [valid_a, valid_b, duplicate]:
+        path.write_text(content, encoding="utf-8")
+    invalid.write_text(content, encoding="utf-8")
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+    captured: list[str] = []
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getExistingDirectory", lambda *args, **kwargs: str(folder))
+    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *args: captured.append(args[2]))
+
+    window.import_csv_folder()
+
+    datasets = repo.list_datasets()
+    assert [dataset.symbol for dataset in datasets] == ["BU9999", "AG9999"]
+    assert len(captured) == 1
+    assert "成功导入 2 个数据集" in captured[0]
+    assert "重复跳过: AG9999.XSGE_20250802_20250803_1min.csv" in captured[0]
+    assert "命名不合法: sample.csv" in captured[0]
     window.close()
     window.deleteLater()
     app.processEvents()

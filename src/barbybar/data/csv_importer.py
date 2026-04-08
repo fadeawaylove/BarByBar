@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,15 @@ class ImportResult:
     duplicates_removed: int = 0
 
 
+@dataclass(slots=True)
+class ParsedImportFilename:
+    symbol: str
+    exchange: str
+    start_date: str
+    end_date: str
+    timeframe: str
+
+
 class CsvImportError(ValueError):
     pass
 
@@ -46,8 +56,31 @@ class MissingColumnsError(CsvImportError):
         super().__init__(f"Missing required columns: {', '.join(missing_fields)}")
 
 
+FILENAME_PATTERN = re.compile(
+    r"^(?P<symbol>[A-Za-z0-9]+)\.(?P<exchange>[A-Za-z0-9]+)_(?P<start>\d{8})_(?P<end>\d{8})_(?P<timeframe>[A-Za-z0-9]+)\.csv$",
+    re.IGNORECASE,
+)
+
+
 def normalize_header(header: str) -> str:
     return header.strip().lower().replace(" ", "").replace("_", "")
+
+
+def parse_import_filename(path: str | Path) -> ParsedImportFilename:
+    file_name = Path(path).name
+    matched = FILENAME_PATTERN.match(file_name)
+    if matched is None:
+        raise CsvImportError(f"Unsupported import filename: {file_name}")
+    timeframe = matched.group("timeframe").lower()
+    if timeframe.endswith("min"):
+        timeframe = f"{timeframe[:-3]}m"
+    return ParsedImportFilename(
+        symbol=matched.group("symbol").upper(),
+        exchange=matched.group("exchange").upper(),
+        start_date=matched.group("start"),
+        end_date=matched.group("end"),
+        timeframe=timeframe,
+    )
 
 
 def _looks_like_datetime(value: str | None) -> bool:

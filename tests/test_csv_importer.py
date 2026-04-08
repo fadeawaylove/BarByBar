@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, load_bars_from_csv
+from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, load_bars_from_csv, parse_import_filename
 
 
 def test_import_standard_csv() -> None:
@@ -120,3 +120,18 @@ def test_blank_first_header_is_not_misdetected_when_not_datetime() -> None:
         assert "datetime" in exc_info.value.missing_fields
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_parse_import_filename_extracts_symbol_and_timeframe() -> None:
+    parsed = parse_import_filename("AG9999.XSGE_20250301_20250801_1min.csv")
+
+    assert parsed.symbol == "AG9999"
+    assert parsed.exchange == "XSGE"
+    assert parsed.start_date == "20250301"
+    assert parsed.end_date == "20250801"
+    assert parsed.timeframe == "1m"
+
+
+def test_parse_import_filename_rejects_unexpected_pattern() -> None:
+    with pytest.raises(CsvImportError):
+        parse_import_filename("sample.csv")
