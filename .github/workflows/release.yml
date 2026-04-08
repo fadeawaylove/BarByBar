@@ -26,36 +26,31 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v4
 
-      - name: Sync dependencies
-        run: uv sync --group dev --group release
+      - name: Sync release dependencies
+        run: uv sync --group release
 
-      - name: Build release bundle
-        shell: pwsh
-        run: .\scripts\build_release.ps1 -Tag "${{ github.ref_name }}"
-
-      - name: Ensure WiX Toolset
+      - name: Ensure Inno Setup
         shell: pwsh
         run: |
-          if (Get-Command candle.exe -ErrorAction SilentlyContinue) {
-            Write-Host "WiX Toolset already available on PATH."
+          if (Get-Command ISCC.exe -ErrorAction SilentlyContinue) {
+            Write-Host "Inno Setup already available on PATH."
           } else {
-            choco install wixtoolset --no-progress -y
+            choco install innosetup --no-progress -y
           }
 
-      - name: Inspect WiX installation
+      - name: Inspect Inno Setup installation
         shell: pwsh
         run: |
-          $commands = "heat.exe", "candle.exe", "light.exe" |
-            ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue | Select-Object Name, Source }
-          if ($commands) {
-            $commands | Format-Table -AutoSize
+          $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object Name, Source
+          if ($command) {
+            $command | Format-Table -AutoSize
           } else {
-            Write-Host "WiX executables were not found on PATH. Searching common install roots..."
-            Get-ChildItem 'C:\ProgramData\chocolatey\lib' -Recurse -Filter candle.exe -ErrorAction SilentlyContinue |
+            Write-Host "ISCC.exe was not found on PATH. Searching common install roots..."
+            Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6', 'C:\Program Files\Inno Setup 6' -Recurse -Filter ISCC.exe -ErrorAction SilentlyContinue |
               Select-Object -First 10 FullName
           }
 
-      - name: Build MSI installer
+      - name: Build release artifacts
         shell: pwsh
         run: .\scripts\build_installer.ps1 -Tag "${{ github.ref_name }}"
 
@@ -66,4 +61,4 @@ jobs:
           generate_release_notes: true
           files: |
             dist/BarByBar-${{ github.ref_name }}-windows-x64.zip
-            dist/BarByBar-${{ github.ref_name }}-windows-x64.msi
+            dist/BarByBar-${{ github.ref_name }}-windows-x64-setup.exe

@@ -69,6 +69,9 @@ if ($BumpVersion) {
 
 $tag = "v$version"
 
+Write-Output "Publishing $tag from version file $versionFile."
+Write-Output "This command assumes the packaging workflow has already validated the target commit."
+
 if (-not $Branch) {
     $Branch = (Get-GitOutput -Arguments @("rev-parse", "--abbrev-ref", "HEAD")).Trim()
 }

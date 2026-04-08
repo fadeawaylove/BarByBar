@@ -1,0 +1,49 @@
+name: Package
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync release dependencies
+        run: uv sync --group release
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          if (Get-Command ISCC.exe -ErrorAction SilentlyContinue) {
+            Write-Host "Inno Setup already available on PATH."
+          } else {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build package artifacts
+        shell: pwsh
+        run: .\scripts\build_installer.ps1
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BarByBar-windows-packages-${{ github.sha }}
+          path: |
+            dist/BarByBar-v*-windows-x64.zip
+            dist/BarByBar-v*-windows-x64-setup.exe
+          if-no-files-found: error

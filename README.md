@@ -38,36 +38,38 @@ uv run python -m barbybar.desktop_app
 uv run pyinstaller --clean --noconfirm BarByBar.spec
 .\scripts\build_release.ps1
 .\scripts\build_installer.ps1
+.\scripts\publish_release.ps1 -BumpVersion 0.1.0 -StageAll
 ```
 
 ## Release
 
-BarByBar publishes both a Windows portable ZIP and a Windows MSI installer to GitHub Releases when you push a version tag.
+BarByBar publishes a Windows portable ZIP and a Windows setup installer to GitHub Releases. The release flow is split into two stages so packaging can be validated before you burn a version tag.
 
 ```powershell
-# 1. update src/barbybar/__init__.py version
-# 2. commit your changes
-git tag v0.1.0
-git push origin master --follow-tags
+# 1. run the Package workflow on your target commit and verify both artifacts
+# 2. publish the validated commit with a new version tag
+.\scripts\publish_release.ps1 -BumpVersion 0.1.0 -StageAll
 ```
 
-The release workflow will:
+The GitHub Actions workflows are:
 
-- sync dependencies with `uv`
-- run the test suite
-- build the Windows GUI app with `PyInstaller`
-- build the Windows MSI installer with `WiX Toolset`
-- upload `BarByBar-vX.Y.Z-windows-x64.zip` and `BarByBar-X.Y.Z-windows-x64.msi` to GitHub Releases
+- `Package`: manual or `master` push validation, uploads build artifacts only
+- `Release`: tag-triggered publication after the commit has already been validated
+
+The release artifacts are:
+
+- `BarByBar-vX.Y.Z-windows-x64.zip`
+- `BarByBar-vX.Y.Z-windows-x64-setup.exe`
 
 For a local packaging dry run:
 
 ```powershell
-uv sync --group dev --group release
+uv sync --group release
 .\scripts\build_release.ps1 -Tag v0.1.0
-.\scripts\build_installer.ps1 -Tag v0.1.0 -WixBin "C:\Program Files (x86)\WiX Toolset v3.11\bin"
+.\scripts\build_installer.ps1 -Tag v0.1.0
 ```
 
-The MSI installer defaults to a writable per-user directory and upgrades in place. If you want the app and data to live on a USB drive, choose your USB directory during installation.
+The setup installer installs per-user under `%LOCALAPPDATA%\Programs\BarByBar`. The portable ZIP remains the best choice if you want the app and data to live together on a USB drive.
 
 ## Logs
 
