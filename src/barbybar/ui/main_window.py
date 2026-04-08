@@ -1883,8 +1883,8 @@ class MainWindow(QMainWindow):
             return
         self.cancel_draw_order_preview()
         self.chart_widget.set_trade_line_mode(None)
-        self._update_ui_from_engine()
         self.save_session(trigger=f"place_order_line:{order_type.value}")
+        self._update_ui_from_engine()
 
     @Slot(str, float)
     def _handle_chart_order_line_created(self, order_type_value: str, price: float) -> None:

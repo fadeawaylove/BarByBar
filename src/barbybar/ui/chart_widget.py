@@ -1570,6 +1570,10 @@ class ChartWidget(QWidget):
     def _is_order_line_movable(self, line: OrderLine) -> bool:
         return line.order_type is not OrderLineType.AVERAGE_PRICE
 
+    @staticmethod
+    def _can_upsert_transient_order_line(order_type: OrderLineType) -> bool:
+        return order_type in {OrderLineType.STOP_LOSS, OrderLineType.TAKE_PROFIT}
+
     def _average_price_drag_direction(self, scene_pos) -> OrderLineType | None:  # noqa: ANN001
         average_line = next((line for line in self._order_lines if line.order_type is OrderLineType.AVERAGE_PRICE), None)
         if average_line is None:
@@ -2036,6 +2040,12 @@ class ChartWidget(QWidget):
             self._log_interaction("begin_order_line_drag_no_match")
             return False
         if hover_line_type is not OrderLineType.AVERAGE_PRICE:
+            if not self._can_upsert_transient_order_line(hover_line_type):
+                self._log_interaction(
+                    "begin_order_line_drag_requires_identity",
+                    order_line_type=hover_line_type.value,
+                )
+                return False
             line = next((item for item in self._order_lines if item.order_type is hover_line_type), None)
             if line is None or not self._is_order_line_movable(line):
                 self._log_interaction("begin_order_line_drag_no_match", order_line_type=hover_line_type.value)
@@ -2158,6 +2168,13 @@ class ChartWidget(QWidget):
                 drag_commit_mode="move_existing",
             )
             self.orderLineMoved.emit(line_id, price)
+            return
+        if not self._can_upsert_transient_order_line(order_type):
+            self._log_interaction(
+                "finish_order_line_drag_aborted_missing_identity",
+                order_type=order_type.value,
+                finish_price=round(float(price), 6),
+            )
             return
         self._log_interaction(
             "finish_order_line_drag_emit_protective_create",

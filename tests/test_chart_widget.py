@@ -1605,6 +1605,44 @@ def test_hovered_transient_stop_loss_line_drag_emits_protective_upsert(widget: C
     assert widget._drag_order_label.isVisible() is False
 
 
+def test_hovered_transient_entry_line_drag_does_not_emit_duplicate_create(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.set_tick_size(0.2)
+    line = OrderLine(
+        order_type=OrderLineType.ENTRY_LONG,
+        price=98.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=1,
+        created_at=datetime(2025, 1, 1, 9, 0),
+        id=None,
+    )
+    widget.set_order_lines([line])
+    app.processEvents()
+    moved: list[tuple[int, float]] = []
+    created: list[tuple[str, float]] = []
+    widget.orderLineMoved.connect(lambda order_id, price: moved.append((order_id, price)))
+    widget.protectiveOrderCreated.connect(lambda order_type, price: created.append((order_type, price)))
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.13))
+    widget._handle_mouse_moved((start,))
+
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    assert widget.is_dragging is False
+
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert moved == []
+    assert created == []
+    assert widget._preview_line.isVisible() is False
+    assert widget._drag_order_label.isVisible() is False
+
+
 def test_hovered_transient_take_profit_line_small_drag_does_not_emit_update(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()

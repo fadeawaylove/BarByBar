@@ -645,6 +645,31 @@ def test_handle_chart_protective_order_created_places_protective_line(window: Ma
     assert captured == [(OrderLineType.TAKE_PROFIT, 104.2)]
 
 
+def test_place_order_line_saves_before_refreshing_chart(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.quantity_spin.setValue(1)
+    call_order: list[str] = []
+    order_ids_seen_by_chart: list[list[int | None]] = []
+
+    def fake_save_session(*, trigger: str = "manual") -> None:
+        call_order.append(f"save:{trigger}")
+        for index, line in enumerate(window.engine.order_lines, start=1):
+            if line.id is None and line.order_type is not OrderLineType.AVERAGE_PRICE:
+                line.id = index
+
+    def fake_update_ui_from_engine() -> None:
+        call_order.append("update_ui")
+        order_ids_seen_by_chart.append([line.id for line in window.engine.display_order_lines()])
+
+    monkeypatch.setattr(window, "save_session", fake_save_session)
+    monkeypatch.setattr(window, "_update_ui_from_engine", fake_update_ui_from_engine)
+
+    window._place_order_line_with_quantity(OrderLineType.ENTRY_LONG, 100.5, 1)
+
+    assert call_order == ["save:place_order_line:entry_long", "update_ui"]
+    assert order_ids_seen_by_chart == [[1]]
+
+
 def test_busy_overlay_becomes_visible_when_window_is_shown(window: MainWindow, app: QApplication) -> None:
     window.show()
     window.show_busy_overlay("正在加载案例...", "正在读取数据并构建图表")
