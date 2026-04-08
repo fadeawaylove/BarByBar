@@ -13,7 +13,7 @@ from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, WindowBars
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
-from barbybar.ui.main_window import DataSetManagerDialog, MainWindow, SessionLibraryDialog
+from barbybar.ui.main_window import DataSetManagerDialog, DrawingPropertiesDialog, MainWindow, SessionLibraryDialog
 
 
 def _app() -> QApplication:
@@ -164,17 +164,10 @@ def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
     assert "平" in button_texts
     assert "反" in button_texts
     assert "取消画线下单" in button_texts
-    assert "趋势线" in button_texts
-    assert "射线" in button_texts
-    assert "扩展线" in button_texts
-    assert "斐波" in button_texts
-    assert "水平线" in button_texts
-    assert "水平射线" in button_texts
-    assert "垂直线" in button_texts
-    assert "通道" in button_texts
-    assert "矩形" in button_texts
-    assert "价格区间" in button_texts
-    assert "文字" in button_texts
+    drawing_tooltips = {button.toolTip() for button in window._drawing_tool_buttons.values()}
+    assert drawing_tooltips == {"趋势线", "射线", "扩展线", "斐波", "水平线", "水平射线", "垂直线", "矩形", "价格区间", "通道", "文字"}
+    for button in window._drawing_tool_buttons.values():
+        assert button.text() != button.toolTip()
     assert "图上开多线" not in button_texts
     assert "图上开空线" not in button_texts
     assert "加仓" not in button_texts
@@ -430,6 +423,20 @@ def test_text_drawing_cancel_with_empty_text_deletes_placeholder(window: MainWin
     assert window.chart_widget.drawings() == []
     window._auto_save_timer.stop()
     window._session_dirty = False
+
+
+def test_text_drawing_dialog_focuses_text_input(app: QApplication) -> None:
+    dialog = DrawingPropertiesDialog(
+        ChartDrawing(tool_type=DrawingToolType.TEXT, anchors=[DrawingAnchor(10.0, 100.0)], style={"text": ""})
+    )
+    dialog.show()
+    app.processEvents()
+
+    assert dialog.text_edit.hasFocus() is True
+
+    dialog.close()
+    dialog.deleteLater()
+    app.processEvents()
 
 
 def test_clear_current_session_resets_to_browse_mode(window: MainWindow) -> None:

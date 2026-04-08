@@ -336,6 +336,8 @@ class DrawingPropertiesDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        if drawing.tool_type is DrawingToolType.TEXT:
+            QTimer.singleShot(0, self._focus_text_input)
 
     def style_payload(self) -> dict[str, object]:
         payload = {
@@ -356,6 +358,12 @@ class DrawingPropertiesDialog(QDialog):
             "anchor_mode": "free",
         }
         return normalize_drawing_style(self._drawing.tool_type, payload)
+
+    def _focus_text_input(self) -> None:
+        self.text_edit.setFocus()
+        cursor = self.text_edit.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.text_edit.setTextCursor(cursor)
 
     def _pick_color(self) -> None:
         color = QColorDialog.getColor(parent=self)
@@ -722,8 +730,11 @@ class MainWindow(QMainWindow):
             ("通道", DrawingToolType.PARALLEL_CHANNEL),
             ("文字", DrawingToolType.TEXT),
         ]:
-            button = QPushButton(label)
+            button = QPushButton(self._drawing_tool_icon(tool))
             button.setCheckable(True)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.setFixedWidth(34)
             button.clicked.connect(lambda checked, drawing_tool=tool: self._toggle_drawing_tool(drawing_tool, checked))
             self._drawing_tool_buttons[tool] = button
             chart_toolbar.addWidget(button)
@@ -2033,3 +2044,20 @@ class MainWindow(QMainWindow):
             DrawingToolType.TEXT: "文字",
         }
         return labels[tool]
+
+    @staticmethod
+    def _drawing_tool_icon(tool: DrawingToolType) -> str:
+        icons = {
+            DrawingToolType.TREND_LINE: "/",
+            DrawingToolType.RAY: "↗",
+            DrawingToolType.EXTENDED_LINE: "↔",
+            DrawingToolType.FIB_RETRACEMENT: "ƒ",
+            DrawingToolType.HORIZONTAL_LINE: "─",
+            DrawingToolType.HORIZONTAL_RAY: "⇢",
+            DrawingToolType.VERTICAL_LINE: "│",
+            DrawingToolType.PARALLEL_CHANNEL: "∥",
+            DrawingToolType.RECTANGLE: "▭",
+            DrawingToolType.PRICE_RANGE: "◫",
+            DrawingToolType.TEXT: "T",
+        }
+        return icons[tool]
