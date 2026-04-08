@@ -1,7 +1,7 @@
 param(
     [string]$Version = "",
     [string]$Tag = "",
-    [string]$WixBin = ""
+    [string]$InnoCompiler = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,99 +10,80 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 $versionToShow = if ($Version) { $Version } else { & .\.venv\Scripts\python.exe -c "from barbybar import __version__; print(__version__)" }
-$msiVersion = if ($versionToShow -match '^\d+\.\d+\.\d+$') { "$versionToShow.0" } else { $versionToShow }
 
 & .\scripts\build_release.ps1 -Version $Version -Tag $Tag
 if ($LASTEXITCODE -ne 0) {
     throw "Portable build failed with exit code $LASTEXITCODE."
 }
 
-if (-not $WixBin) {
-    $candleCommand = Get-Command candle.exe -ErrorAction SilentlyContinue
-    if ($candleCommand) {
-        $WixBin = Split-Path -Parent $candleCommand.Source
+if (-not $InnoCompiler) {
+    $isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($isccCommand) {
+        $InnoCompiler = $isccCommand.Source
     }
 }
 
-if (-not $WixBin) {
+if (-not $InnoCompiler) {
     $candidates = @(
-        "C:\ProgramData\chocolatey\bin",
-        "C:\ProgramData\chocolatey\lib\wixtoolset\tools",
-        "C:\Program Files (x86)\WiX Toolset v3.11\bin",
-        "C:\Program Files\WiX Toolset v3.11\bin",
-        "C:\Program Files (x86)\WiX Toolset v3.14\bin",
-        "C:\Program Files\WiX Toolset v3.14\bin"
+        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        "C:\Program Files\Inno Setup 6\ISCC.exe",
+        "C:\ProgramData\chocolatey\bin\ISCC.exe"
     )
-    $WixBin = $candidates | Where-Object { Test-Path (Join-Path $_ 'candle.exe') } | Select-Object -First 1
+    $InnoCompiler = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 
-if (-not $WixBin) {
-    $wixInChocolateyLib = Get-ChildItem 'C:\ProgramData\chocolatey\lib' -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like 'wixtoolset*' } |
+if (-not $InnoCompiler) {
+    $innoInChocolateyLib = Get-ChildItem 'C:\ProgramData\chocolatey\lib' -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'innosetup*' } |
         ForEach-Object {
-            Get-ChildItem $_.FullName -Directory -Recurse -ErrorAction SilentlyContinue |
-                Where-Object { Test-Path (Join-Path $_.FullName 'candle.exe') } |
+            Get-ChildItem $_.FullName -Recurse -Filter 'ISCC.exe' -ErrorAction SilentlyContinue |
                 Select-Object -ExpandProperty FullName
         } |
         Select-Object -First 1
-    if ($wixInChocolateyLib) {
-        $WixBin = $wixInChocolateyLib
+    if ($innoInChocolateyLib) {
+        $InnoCompiler = $innoInChocolateyLib
     }
 }
 
-if (-not $WixBin) {
-    throw "WiX Toolset not found. Install WiX Toolset, ensure candle.exe is on PATH, or pass -WixBin to the WiX bin directory."
+if (-not $InnoCompiler) {
+    throw "Inno Setup compiler not found. Install Inno Setup, ensure ISCC.exe is on PATH, or pass -InnoCompiler."
 }
 
-$heatExe = Join-Path $WixBin "heat.exe"
-$candleExe = Join-Path $WixBin "candle.exe"
-$lightExe = Join-Path $WixBin "light.exe"
-$missingTools = @($heatExe, $candleExe, $lightExe) | Where-Object { -not (Test-Path $_) }
-if ($missingTools.Count -gt 0) {
-    $searchedRoots = @(
-        $WixBin,
-        "C:\ProgramData\chocolatey\bin",
-        "C:\ProgramData\chocolatey\lib",
-        "C:\Program Files (x86)\WiX Toolset v3.11\bin",
-        "C:\Program Files\WiX Toolset v3.11\bin",
-        "C:\Program Files (x86)\WiX Toolset v3.14\bin",
-        "C:\Program Files\WiX Toolset v3.14\bin"
-    ) -join ", "
-    throw "WiX binaries missing. Expected: $($missingTools -join ', '). Searched roots: $searchedRoots"
+if (-not (Test-Path $InnoCompiler)) {
+    throw "Inno Setup compiler not found at $InnoCompiler"
 }
 
 $installerDir = Join-Path $repoRoot "installer"
 $sourceDir = Join-Path $repoRoot "dist\release\BarByBar"
-$harvestPath = Join-Path $installerDir "HarvestedFiles.wxs"
-$productPath = Join-Path $installerDir "BarByBar.wxs"
-$productObjPath = Join-Path $installerDir "BarByBar.wixobj"
-$harvestObjPath = Join-Path $installerDir "HarvestedFiles.wixobj"
-$msiPath = Join-Path $repoRoot "dist\BarByBar-v$versionToShow-windows-x64.msi"
+$scriptPath = Join-Path $installerDir "BarByBar.iss"
+$outputDir = Join-Path $repoRoot "dist"
+$outputBaseName = "BarByBar-v$versionToShow-windows-x64-setup"
+$setupPath = Join-Path $outputDir "$outputBaseName.exe"
 $assetsDir = Join-Path $repoRoot "src\barbybar\assets"
-$wixOutDir = ([System.IO.Path]::GetFullPath($installerDir)) + "\"
 
-Remove-Item -LiteralPath $productObjPath -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $harvestObjPath -Force -ErrorAction SilentlyContinue
-
-Write-Output "Using WiX bin directory: $WixBin"
-Write-Output "Using WiX tools:"
-Write-Output "  heat:   $heatExe"
-Write-Output "  candle: $candleExe"
-Write-Output "  light:  $lightExe"
-
-& $heatExe dir $sourceDir -nologo -cg AppFiles -dr INSTALLDIR -gg -scom -sreg -sfrag -srd -var var.SourceDir -out $harvestPath
-if ($LASTEXITCODE -ne 0) {
-    throw "WiX heat failed with exit code $LASTEXITCODE."
+if (-not (Test-Path $scriptPath)) {
+    throw "Inno Setup script not found: $scriptPath"
 }
 
-& $candleExe -nologo -arch x64 "-dAppVersion=$msiVersion" "-dSourceDir=$sourceDir" "-dAssetsDir=$assetsDir" -out $wixOutDir $productPath $harvestPath
-if ($LASTEXITCODE -ne 0) {
-    throw "WiX candle failed with exit code $LASTEXITCODE."
+if (-not (Test-Path $sourceDir)) {
+    throw "Portable bundle directory not found: $sourceDir"
 }
 
-& $lightExe -nologo -out $msiPath $productObjPath $harvestObjPath
+Remove-Item -LiteralPath $setupPath -Force -ErrorAction SilentlyContinue
+
+Write-Output "Using Inno Setup compiler: $InnoCompiler"
+Write-Output "Using source directory: $sourceDir"
+Write-Output "Using output path: $setupPath"
+
+& $InnoCompiler `
+    "/DMyAppVersion=$versionToShow" `
+    "/DSourceDir=$sourceDir" `
+    "/DAssetsDir=$assetsDir" `
+    "/DOutputDir=$outputDir" `
+    "/DOutputBaseFilename=$outputBaseName" `
+    $scriptPath
 if ($LASTEXITCODE -ne 0) {
-    throw "WiX light failed with exit code $LASTEXITCODE."
+    throw "Inno Setup compilation failed with exit code $LASTEXITCODE."
 }
 
-Write-Output "Created MSI: $msiPath"
+Write-Output "Created setup installer: $setupPath"
