@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: barbybar
-Version: 0.1.0
+Version: 0.1.14
 Summary: Windows desktop bar-by-bar review trainer for futures minute data.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
@@ -46,32 +46,42 @@ uv run pytest -q
 uv run python -m barbybar.app
 uv run python -m barbybar.desktop_app
 uv run pyinstaller --clean --noconfirm BarByBar.spec
+.\scripts\build_release.ps1
+.\scripts\build_installer.ps1
+.\scripts\publish_release.ps1 -BumpVersion 0.1.0 -StageAll
 ```
 
 ## Release
 
-BarByBar publishes a Windows portable ZIP to GitHub Releases when you push a version tag.
+BarByBar publishes a Windows portable ZIP and a Windows setup installer to GitHub Releases when you push a version tag that points at a commit already contained in `master`.
 
 ```powershell
-# 1. update src/barbybar/__init__.py version
-# 2. commit your changes
-git tag v0.1.0
-git push origin master --follow-tags
+# 1. make sure your release commit is already on master
+# 2. publish a new version tag from that commit
+.\scripts\publish_release.ps1 -BumpVersion 0.1.0 -StageAll
 ```
 
-The release workflow will:
+The GitHub Actions workflows are:
 
-- sync dependencies with `uv`
-- run the test suite
-- build the Windows GUI app with `PyInstaller`
-- upload `BarByBar-vX.Y.Z-windows-x64.zip` to GitHub Releases
+- `Package`: manual-only packaging validation, uploads workflow artifacts only
+- `Release`: tag-triggered publication, and it fails if the tagged commit is not in `master`
+
+The release artifacts are:
+
+- `BarByBar-vX.Y.Z-windows-x64.zip`
+- `BarByBar-vX.Y.Z-windows-x64-setup.exe`
 
 For a local packaging dry run:
 
 ```powershell
-uv sync --group dev --group release
+uv sync --group release
 .\scripts\build_release.ps1 -Tag v0.1.0
+.\scripts\build_installer.ps1 -Tag v0.1.0
 ```
+
+The setup installer defaults to `%LOCALAPPDATA%\Programs\BarByBar`, but it now lets you choose any writable install directory during setup, including a USB drive.
+
+When the packaged app runs, it stores its runtime data next to the installed executable under `data\`. That means if you install BarByBar onto a USB drive, the app binary, database, logs, and other runtime files all move together when you plug that drive into another Windows machine.
 
 ## Logs
 

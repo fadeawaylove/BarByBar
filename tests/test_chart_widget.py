@@ -6,7 +6,7 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction
-from barbybar.ui.chart_widget import BrowseMode, ChartWidget, DOWN_CANDLE_COLOR, InteractionMode, UP_CANDLE_COLOR
+from barbybar.ui.chart_widget import BrowseMode, ChartWidget, DOWN_CANDLE_COLOR, HoverTargetType, InteractionMode, UP_CANDLE_COLOR
 
 
 def _bars(count: int = 240) -> list[Bar]:
@@ -110,6 +110,51 @@ def test_future_bars_stay_hidden_while_window_can_extend(widget: ChartWidget) ->
 
     assert max(x_data) == 50
     assert widget.viewport_state.right_edge_index == 51
+
+
+def test_pan_allows_blank_space_when_revealed_bars_are_fewer_than_window(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(50)
+    widget.pan_x(-30)
+
+    assert widget.viewport_state.follow_latest is False
+    assert widget.viewport_state.right_edge_index == 21.0
+
+
+def test_pan_allows_right_blank_space_beyond_latest_bar(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(50)
+    old_right = widget.viewport_state.right_edge_index
+
+    widget.pan_x(40)
+
+    assert widget.viewport_state.follow_latest is False
+    assert widget.viewport_state.right_edge_index > old_right
+
+
+def test_revealed_window_bars_can_be_empty_in_blank_space(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(50)
+    widget.pan_x(-400)
+
+    left = widget.viewport_state.right_edge_index - widget.viewport_state.bars_in_view
+    assert widget._revealed_window_bars(left, widget.viewport_state.right_edge_index) == []
+
+
+def test_hover_target_is_none_when_viewport_is_in_blank_space(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(50)
+    widget.pan_x(-400)
+    app.processEvents()
+
+    left, _right = widget.current_x_range()
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(left + 10.0, 100.0))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._hover_target.target_type is HoverTargetType.NONE
+    assert widget._hover_card.isHidden() is True
 
 
 def test_candle_color_constants_match_red_up_green_down() -> None:
@@ -366,6 +411,23 @@ def test_mouse_move_enters_hover_without_click(widget: ChartWidget, app: QApplic
     assert widget.interaction_mode is InteractionMode.BROWSE
     assert widget._hover_card.isHidden() is False
     assert widget._axis_price_label.isHidden() is False
+    assert widget._hover_target.target_type is HoverTargetType.BAR
+
+
+def test_order_preview_hover_info_does_not_depend_on_browse_mode(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.begin_order_preview("entry_long", 1.0)
+    app.processEvents()
+
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10, 100))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget.interaction_mode is InteractionMode.ORDER_PREVIEW
+    assert widget._hover_card.isHidden() is False
+    assert widget._preview_line.isVisible()
 
 
 def test_left_drag_pans_chart_temporarily(widget: ChartWidget, app: QApplication) -> None:
@@ -1014,6 +1076,50 @@ def test_right_click_on_drawing_opens_drawing_context_menu(widget: ChartWidget, 
     assert captured == [0]
 
 
+def test_hover_target_prioritizes_order_line_over_bar(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_tick_size(0.2)
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.STOP_LOSS,
+                price=98.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=1,
+                created_at=datetime(2025, 1, 1, 9, 0),
+                id=12,
+            )
+        ]
+    )
+    app.processEvents()
+
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 98.0))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._hover_target.target_type is HoverTargetType.ORDER_LINE
+    assert widget._hover_target.order_line_id == 12
+
+
+def test_hover_target_identifies_drawing_anchor(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+    app.processEvents()
+
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._hover_target.target_type is HoverTargetType.DRAWING_ANCHOR
+    assert widget._hover_target.drawing_index == 0
+    assert widget._hover_target.anchor_index == 0
+
+
 def test_delete_drawing_removes_only_target(widget: ChartWidget) -> None:
     widget.set_drawings(
         [
@@ -1162,6 +1268,32 @@ def test_native_order_line_drag_keeps_axis_price_label_visible_during_mouse_move
     assert widget._axis_price_label.text() == "5914.2"
 
 
+def test_hovering_editable_order_line_marks_it_selected(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_tick_size(0.2)
+    line = OrderLine(
+        order_type=OrderLineType.STOP_LOSS,
+        price=98.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=1,
+        created_at=datetime(2025, 1, 1, 9, 0),
+        id=12,
+    )
+    widget.set_order_lines([line])
+    app.processEvents()
+
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 98.0))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._hovered_order_line_id == 12
+    assert widget.cursor().shape() == Qt.CursorShape.SizeVerCursor
+    assert widget._order_line_items[12].pen.widthF() == 2.0
+
+
 def test_average_price_drag_emits_take_profit_for_long_above_average(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -1294,7 +1426,7 @@ def test_average_price_drag_small_move_does_not_emit_order(widget: ChartWidget, 
     assert captured == []
 
 
-def test_non_average_order_line_drag_is_not_intercepted_by_custom_handler(widget: ChartWidget, app: QApplication) -> None:
+def test_hovered_non_average_order_line_drag_is_intercepted_by_custom_handler(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
     widget.set_full_data(_bars())
@@ -1313,7 +1445,9 @@ def test_non_average_order_line_drag_is_not_intercepted_by_custom_handler(widget
     app.processEvents()
 
     start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 98.0))
-    assert widget.handle_order_line_drag_event(_FakeDragEvent(start, start, is_start=True)) is False
+    widget._handle_mouse_moved((start,))
+
+    assert widget.handle_order_line_drag_event(_FakeDragEvent(start, start, is_start=True)) is True
 
 
 def test_editable_order_line_wins_over_average_price_drag_when_lines_are_close(widget: ChartWidget, app: QApplication) -> None:
@@ -1347,5 +1481,76 @@ def test_editable_order_line_wins_over_average_price_drag_when_lines_are_close(w
     app.processEvents()
 
     stop_scene = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.2))
+    widget._handle_mouse_moved((stop_scene,))
 
-    assert widget.handle_order_line_drag_event(_FakeDragEvent(stop_scene, stop_scene, is_start=True)) is False
+    assert widget.handle_order_line_drag_event(_FakeDragEvent(stop_scene, stop_scene, is_start=True)) is True
+
+
+def test_hovered_editable_order_line_drag_moves_line_instead_of_panning_chart(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.set_tick_size(0.2)
+    line = OrderLine(
+        order_type=OrderLineType.STOP_LOSS,
+        price=98.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=1,
+        created_at=datetime(2025, 1, 1, 9, 0),
+        id=12,
+    )
+    widget.set_order_lines([line])
+    app.processEvents()
+    captured: list[tuple[int, float]] = []
+    widget.orderLineMoved.connect(lambda order_id, price: captured.append((order_id, price)))
+    old_right = widget.viewport_state.right_edge_index
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.13))
+    widget._handle_mouse_moved((start,))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+
+    assert widget.viewport_state.right_edge_index == old_right
+    assert widget._axis_price_label.text() == "98.2"
+    assert widget.is_dragging is True
+
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert captured == [(12, 98.2)]
+    assert widget.is_dragging is False
+    assert widget._hovered_order_line_id == 12
+
+
+def test_hovered_editable_order_line_small_drag_does_not_emit_update(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.set_tick_size(0.2)
+    line = OrderLine(
+        order_type=OrderLineType.TAKE_PROFIT,
+        price=102.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=1,
+        created_at=datetime(2025, 1, 1, 9, 0),
+        id=18,
+    )
+    widget.set_order_lines([line])
+    app.processEvents()
+    captured: list[tuple[int, float]] = []
+    widget.orderLineMoved.connect(lambda order_id, price: captured.append((order_id, price)))
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 102.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 102.05))
+    widget._handle_mouse_moved((start,))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert captured == []
+    assert widget._preview_line.isHidden()
+    assert widget._order_lines[0].price == 102.0

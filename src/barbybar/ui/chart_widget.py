@@ -27,6 +27,7 @@ AVERAGE_PRICE_LINE_COLOR = "#5f6b7a"
 DRAWING_HIT_DISTANCE_PX = 10.0
 DRAWING_ANCHOR_HIT_DISTANCE_PX = 12.0
 TRADE_MARKER_HIT_DISTANCE_PX = 12.0
+ORDER_LINE_HIT_DISTANCE_PX = 16.0
 TRADE_LINK_WIN_COLOR = "#1f8b24"
 TRADE_LINK_LOSS_COLOR = "#d84a4a"
 TRADE_CLOSE_MARKER_COLOR = "#5f6b7a"
@@ -79,6 +80,47 @@ class InteractionMode(str, Enum):
 class DrawingDragMode(str, Enum):
     ANCHOR = "anchor"
     TRANSLATE = "translate"
+
+
+class HoverTargetType(str, Enum):
+    NONE = "none"
+    ORDER_LINE = "order_line"
+    DRAWING_ANCHOR = "drawing_anchor"
+    DRAWING_BODY = "drawing_body"
+    TRADE_MARKER = "trade_marker"
+    TRADE_LINK = "trade_link"
+    BAR = "bar"
+
+
+class ActiveDragTargetType(str, Enum):
+    NONE = "none"
+    ORDER_LINE = "order_line"
+    DRAWING_ANCHOR = "drawing_anchor"
+    DRAWING_BODY = "drawing_body"
+
+
+@dataclass(slots=True)
+class HoverTarget:
+    target_type: HoverTargetType = HoverTargetType.NONE
+    order_line_id: int | None = None
+    order_line_type: OrderLineType | None = None
+    drawing_index: int | None = None
+    anchor_index: int | None = None
+    trade_marker: TradeMarker | None = None
+    trade_link: TradeLink | None = None
+    bar_index: int | None = None
+    bar: Bar | None = None
+    scene_pos: QPointF | None = None
+    view_pos: QPointF | None = None
+    distance_px: float | None = None
+
+
+@dataclass(slots=True)
+class ActiveDragTarget:
+    target_type: ActiveDragTargetType = ActiveDragTargetType.NONE
+    order_line_id: int | None = None
+    drawing_index: int | None = None
+    anchor_index: int | None = None
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -167,6 +209,20 @@ class CandleViewBox(pg.ViewBox):
         ev.accept()
 
     def mouseDragEvent(self, ev, axis=None) -> None:  # noqa: ANN001
+        self.chart._log_interaction(
+            "mouse_drag_received",
+            button=str(ev.button()),
+            is_start=bool(ev.isStart()),
+            is_finish=bool(ev.isFinish()),
+            scene_x=round(float(ev.scenePos().x()), 3),
+            scene_y=round(float(ev.scenePos().y()), 3),
+            last_scene_x=round(float(ev.lastScenePos().x()), 3),
+            last_scene_y=round(float(ev.lastScenePos().y()), 3),
+            hovered_order_line_id=self.chart._hovered_order_line_id or -1,
+            drawing_drag_mode=self.chart._drawing_drag_mode.value if self.chart._drawing_drag_mode else "",
+            protective_drag_line_id=self.chart._protective_drag_line_id or -1,
+            protective_drag_from_average=self.chart._protective_drag_from_average,
+        )
         if self.chart.interaction_mode in {InteractionMode.DRAWING, InteractionMode.ORDER_PREVIEW}:
             self.chart._log_interaction(
                 "mouse_drag_ignored_tool_mode",
@@ -183,11 +239,19 @@ class CandleViewBox(pg.ViewBox):
         if ev.button() != Qt.MouseButton.LeftButton:
             super().mouseDragEvent(ev, axis=axis)
             return
+        if ev.isStart():
+            self.chart._pan_drag_start_scene_pos = ev.buttonDownScenePos() if hasattr(ev, "buttonDownScenePos") else ev.lastScenePos()
+            self.chart._log_interaction(
+                "mouse_drag_start_anchor",
+                anchor_x=round(float(self.chart._pan_drag_start_scene_pos.x()), 3) if self.chart._pan_drag_start_scene_pos is not None else -1.0,
+                anchor_y=round(float(self.chart._pan_drag_start_scene_pos.y()), 3) if self.chart._pan_drag_start_scene_pos is not None else -1.0,
+            )
         if ev.isFinish():
             if self.chart.is_dragging:
                 self.chart._set_dragging(False)
                 self.chart._suppress_next_left_click = True
                 self.chart._log_interaction("mouse_drag_finished", suppress_next_left_click=True)
+            self.chart._pan_drag_start_scene_pos = None
             ev.accept()
             return
         current_pos = ev.scenePos()
@@ -195,12 +259,15 @@ class CandleViewBox(pg.ViewBox):
         delta_x = float(current_pos.x() - last_pos.x())
         delta_y = float(current_pos.y() - last_pos.y())
         if not self.chart.is_dragging:
-            distance = hypot(delta_x, delta_y)
+            anchor_pos = self.chart._pan_drag_start_scene_pos or last_pos
+            distance = hypot(float(current_pos.x() - anchor_pos.x()), float(current_pos.y() - anchor_pos.y()))
             if distance < self.chart._drag_threshold_px:
                 self.chart._log_interaction(
                     "mouse_drag_below_threshold",
                     distance=round(distance, 3),
                     threshold=self.chart._drag_threshold_px,
+                    anchor_x=round(float(anchor_pos.x()), 3),
+                    anchor_y=round(float(anchor_pos.y()), 3),
                 )
                 ev.ignore()
                 return
@@ -210,10 +277,10 @@ class CandleViewBox(pg.ViewBox):
                 distance=round(distance, 3),
                 delta_x=round(delta_x, 3),
                 delta_y=round(delta_y, 3),
+                anchor_x=round(float(anchor_pos.x()), 3),
+                anchor_y=round(float(anchor_pos.y()), 3),
             )
         ev.accept()
-        if ev.isStart():
-            return
         current = self.mapSceneToView(current_pos)
         last = self.mapSceneToView(last_pos)
         self.chart._log_interaction(
@@ -265,6 +332,8 @@ class ChartWidget(QWidget):
         self._last_hover_price: float | None = None
         self._order_lines: list[OrderLine] = []
         self._order_line_scene_positions: dict[int, float] = {}
+        self._order_line_items: dict[int, pg.InfiniteLine] = {}
+        self._order_line_labels: dict[int, pg.TextItem] = {}
         self._trade_actions: list[SessionAction] = []
         self._trade_links: list[TradeLink] = []
         self._trade_markers: list[TradeMarker] = []
@@ -279,6 +348,7 @@ class ChartWidget(QWidget):
         self._interaction_mode = InteractionMode.BROWSE
         self._is_dragging = False
         self._drag_threshold_px = 4.0
+        self._pan_drag_start_scene_pos: QPointF | None = None
         self._suppress_next_left_click = False
         self._drawing_drag_mode: DrawingDragMode | None = None
         self._drag_drawing_index: int | None = None
@@ -288,12 +358,16 @@ class ChartWidget(QWidget):
         self._drag_drawing_changed = False
         self._hovered_drawing_index: int | None = None
         self._hovered_anchor_index: int | None = None
+        self._hovered_order_line_type: OrderLineType | None = None
         self._protective_drag_order_type: OrderLineType | None = None
         self._protective_drag_start_price: float | None = None
         self._protective_drag_preview_price: float | None = None
         self._protective_drag_line_id: int | None = None
         self._protective_drag_from_average = False
         self._native_order_drag_active = False
+        self._hovered_order_line_id: int | None = None
+        self._hover_target = HoverTarget()
+        self._active_drag_target = ActiveDragTarget()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -427,6 +501,8 @@ class ChartWidget(QWidget):
         self._pending_drawing_anchors = []
         self._drawing_preview_anchor = None
         self._clear_drawing_drag_state()
+        self._active_drag_target = ActiveDragTarget()
+        self._apply_hover_target(self._empty_hover_target())
         self._rebuild_line_items()
 
     def drawings(self) -> list[ChartDrawing]:
@@ -446,6 +522,8 @@ class ChartWidget(QWidget):
         if index is None:
             return
         del self._drawings[index]
+        self._active_drag_target = ActiveDragTarget()
+        self._apply_hover_target(self._empty_hover_target())
         self._rebuild_line_items()
         self.drawingsChanged.emit()
 
@@ -488,6 +566,7 @@ class ChartWidget(QWidget):
     def cancel_order_preview(self) -> None:
         self._log_interaction("cancel_order_preview_start")
         self._preview_order_type = None
+        self._active_drag_target = ActiveDragTarget()
         self._clear_protective_drag_state()
         self._preview_line.hide()
         if self._interaction_mode is InteractionMode.ORDER_PREVIEW:
@@ -496,7 +575,11 @@ class ChartWidget(QWidget):
 
     def set_order_lines(self, order_lines: list[OrderLine]) -> None:
         self._order_lines = list(order_lines)
+        valid_ids = {line.id for line in self._order_lines if line.id is not None and self._is_order_line_movable(line)}
+        if self._hovered_order_line_id not in valid_ids:
+            self._apply_hover_target(self._empty_hover_target())
         self._rebuild_order_line_items()
+        self._sync_cursor()
 
     def set_trade_actions(self, actions: list[SessionAction], trades: list[Trade] | None = None) -> None:
         self._trade_actions = list(actions)
@@ -542,6 +625,7 @@ class ChartWidget(QWidget):
             self._trade_line_mode = None
             self._preview_order_type = None
             self._preview_line.hide()
+            self._apply_hover_target(self._empty_hover_target())
             self._set_dragging(False)
             self._set_interaction_mode(InteractionMode.BROWSE)
         self._sync_plot_data()
@@ -591,8 +675,20 @@ class ChartWidget(QWidget):
     def pan_x(self, delta_bars: float) -> None:
         if self._cursor < 0:
             return
+        previous_right = float(self._viewport.right_edge_index)
+        previous_follow_latest = bool(self._viewport.follow_latest)
         self._viewport.right_edge_index += delta_bars
-        self._viewport.follow_latest = self._is_near_latest(self._viewport.right_edge_index)
+        # Manual panning must break "follow latest"; otherwise _apply_viewport()
+        # immediately snaps the view back to the cursor edge.
+        self._viewport.follow_latest = False
+        self._log_interaction(
+            "pan_x_requested",
+            delta_bars=round(float(delta_bars), 3),
+            previous_right_edge=round(previous_right, 3),
+            next_right_edge=round(float(self._viewport.right_edge_index), 3),
+            previous_follow_latest=previous_follow_latest,
+            next_follow_latest=self._viewport.follow_latest,
+        )
         self._apply_viewport()
 
     def clear_lines(self) -> None:
@@ -764,26 +860,25 @@ class ChartWidget(QWidget):
             if getattr(item, "_barbybar_order_line", False):
                 self.price_plot.removeItem(item)
         self._order_line_scene_positions.clear()
+        self._order_line_items.clear()
+        self._order_line_labels.clear()
         right_edge = self.price_plot.viewRange()[0][1] if self._bars else 0.0
         for line in self._order_lines:
-            pen, label_color, movable = self._order_line_style(line)
-            line_item = pg.InfiniteLine(pos=line.price, angle=0, movable=movable, pen=pen)
+            is_highlighted = self._is_hovered_order_line(line)
+            pen, label_color, movable = self._order_line_style(line, highlighted=is_highlighted)
+            line_item = pg.InfiniteLine(pos=line.price, angle=0, movable=False, pen=pen)
             line_item._barbybar_order_line = True
             line_item.setZValue(20)
-            if line.id is not None and movable:
-                line_item.sigPositionChanged.connect(
-                    lambda item=line_item: self._handle_native_order_line_dragged(float(item.value()))
-                )
-                line_item.sigPositionChangeFinished.connect(
-                    lambda item=line_item, order_id=line.id: self._handle_native_order_line_drag_finished(order_id, float(item.value()))
-                )
             self.price_plot.addItem(line_item)
-            label = pg.TextItem(self._order_line_label(line), color=label_color, fill=pg.mkBrush(255, 255, 255, 235), anchor=(1, 0.5))
+            label_fill = pg.mkBrush(255, 243, 191, 245) if is_highlighted else pg.mkBrush(255, 255, 255, 235)
+            label = pg.TextItem(self._order_line_label(line), color=label_color, fill=label_fill, anchor=(1, 0.5))
             label._barbybar_order_line = True
             label.setPos(right_edge - 0.4, line.price)
             label.setZValue(21)
             self.price_plot.addItem(label)
             if line.id is not None and movable:
+                self._order_line_items[line.id] = line_item
+                self._order_line_labels[line.id] = label
                 scene_point = self.price_plot.vb.mapViewToScene(QPointF(float(self._global_start_index), float(line.price)))
                 self._order_line_scene_positions[line.id] = float(scene_point.y())
 
@@ -792,43 +887,65 @@ class ChartWidget(QWidget):
             return
         self._is_applying_viewport = True
         try:
+            requested_right_edge = float(self._viewport.right_edge_index)
+            requested_follow_latest = bool(self._viewport.follow_latest)
             if self._viewport.follow_latest:
                 self._viewport.right_edge_index = self._cursor + 1
-            self._clamp_viewport()
+            clamp_bounds = self._clamp_viewport()
             left = self._viewport.right_edge_index - self._viewport.bars_in_view
             right = self._viewport.right_edge_index + self._right_padding
             self.price_plot.setXRange(left, right, padding=0)
-            self._apply_y_range(left, self._viewport.right_edge_index)
+            visible_window_has_bars = self._apply_y_range(left, self._viewport.right_edge_index)
             self._rebuild_order_line_items()
             self._rebuild_trade_geometry(None)
             self._rebuild_trade_marker_items()
+            self._log_interaction(
+                "viewport_applied",
+                requested_right_edge=round(requested_right_edge, 3),
+                applied_right_edge=round(float(self._viewport.right_edge_index), 3),
+                left=round(float(left), 3),
+                right=round(float(right), 3),
+                bars_in_view=int(self._viewport.bars_in_view),
+                clamped_right_edge=round(float(self._viewport.right_edge_index), 3),
+                min_right_edge=round(float(clamp_bounds[0]), 3),
+                max_right_edge=round(float(clamp_bounds[1]), 3),
+                cursor=self._cursor,
+                right_padding=round(float(self._right_padding), 3),
+                follow_latest=requested_follow_latest,
+                applied_follow_latest=bool(self._viewport.follow_latest),
+                visible_window_has_bars=visible_window_has_bars,
+            )
         finally:
             self._is_applying_viewport = False
         self.viewportChanged.emit()
 
-    def _clamp_viewport(self) -> None:
-        min_right = self._viewport.bars_in_view - self._left_padding
-        max_right = max(self._cursor + 1, 0) if self._viewport.follow_latest else (max(self._total_count - 1, 0) + self._right_padding)
+    def _clamp_viewport(self) -> tuple[float, float]:
+        blank_buffer = float(max(self._viewport.bars_in_view * 4, self._total_count or len(self._bars), 200))
+        min_right = float(self._global_start_index) - blank_buffer
+        max_right = (
+            max(float(self._cursor + 1), 0.0)
+            if self._viewport.follow_latest
+            else max(float(max(self._total_count - 1, 0)) + self._right_padding + blank_buffer, min_right)
+        )
         self._viewport.right_edge_index = min(max(self._viewport.right_edge_index, min_right), max_right)
+        return min_right, max_right
 
-    def _apply_y_range(self, left: float, right_edge: float) -> None:
+    def _apply_y_range(self, left: float, right_edge: float) -> bool:
         window = self._revealed_window_bars(left, right_edge)
         if not window:
-            return
+            return False
         low = min(bar.low for _, bar in window)
         high = max(bar.high for _, bar in window)
         height = max(high - low, max(abs(high) * 0.01, 1.0))
         padding = max(height * 0.06, 0.5)
         self.price_plot.setYRange(low - padding, high + padding, padding=0)
+        return True
 
     def _revealed_window_bars(self, left: float, right_edge: float) -> list[tuple[int, Bar]]:
         if self._cursor < 0:
             return []
         start = max(self._global_start_index, int(floor(left)))
         stop = min(self._cursor + 1, int(ceil(right_edge)))
-        if start >= stop:
-            start = max(self._global_start_index, min(self._cursor, int(floor(right_edge)) - 1))
-            stop = min(self._cursor + 1, start + 1)
         result: list[tuple[int, Bar]] = []
         for global_index in range(start, stop):
             local_index = global_index - self._global_start_index
@@ -839,6 +956,8 @@ class ChartWidget(QWidget):
     def _handle_scene_click(self, event) -> None:  # noqa: ANN001
         scene_pos = event.scenePos()
         in_chart = bool(self.price_plot.sceneBoundingRect().contains(scene_pos))
+        if in_chart and not self._is_dragging:
+            self._apply_hover_target(self._compute_hover_target(scene_pos))
         self._log_interaction(
             "scene_click_received",
             button=str(event.button()),
@@ -863,14 +982,18 @@ class ChartWidget(QWidget):
                 event.accept()
                 return
             if in_chart:
-                drawing_hit = self._drawing_at_scene_pos(scene_pos)
-                if drawing_hit is not None:
-                    self._log_interaction("scene_click_open_drawing_context_menu", drawing_index=drawing_hit[0])
-                    self._show_drawing_context_menu(drawing_hit[0], scene_pos)
-                    event.accept()
-                    return
-                order_id = self._editable_order_id_at_scene_pos(float(scene_pos.y()))
-                if order_id is not None:
+                if self._hover_target.target_type in {HoverTargetType.DRAWING_ANCHOR, HoverTargetType.DRAWING_BODY}:
+                    drawing_index = self._hover_target.drawing_index
+                    if drawing_index is not None:
+                        self._log_interaction("scene_click_open_drawing_context_menu", drawing_index=drawing_index)
+                        self._show_drawing_context_menu(drawing_index, scene_pos)
+                        event.accept()
+                        return
+                if (
+                    self._hover_target.target_type is HoverTargetType.ORDER_LINE
+                    and self._hover_target.order_line_id is not None
+                ):
+                    order_id = self._hover_target.order_line_id
                     self._log_interaction("scene_click_open_order_context_menu", order_id=order_id)
                     self._show_order_line_context_menu(order_id, scene_pos)
                     event.accept()
@@ -916,14 +1039,11 @@ class ChartWidget(QWidget):
         event.accept()
 
     def _handle_mouse_moved(self, event) -> None:  # noqa: ANN001
-        if (
-            not self._crosshair_enabled
-            or self._cursor < 0
-            or self._is_dragging
-            or self._interaction_mode not in {InteractionMode.BROWSE, InteractionMode.ORDER_PREVIEW}
-        ):
-            self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
         pos = event[0]
+        if self._is_dragging:
+            self._log_interaction("mouse_move_skipped_dragging")
+        else:
+            self._apply_hover_target(self._compute_hover_target(pos))
         if self._active_drawing_tool is not None:
             if self.price_plot.sceneBoundingRect().contains(pos):
                 point = self.price_plot.vb.mapSceneToView(pos)
@@ -940,28 +1060,19 @@ class ChartWidget(QWidget):
                 self._log_interaction("mouse_move_drawing_preview_outside_chart")
                 self._drawing_preview_anchor = None
                 self._rebuild_line_items()
-        self._update_drawing_hover_state(pos)
         if (
             not self._crosshair_enabled
             or self._cursor < 0
             or self._is_dragging
-            or self._interaction_mode not in {InteractionMode.BROWSE, InteractionMode.ORDER_PREVIEW}
+            or self._interaction_mode is InteractionMode.DRAWING
         ):
+            self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
             return
         if not self.price_plot.sceneBoundingRect().contains(pos):
             self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
             return
-        point = self.price_plot.vb.mapSceneToView(pos)
+        point = self._hover_target.view_pos or self.price_plot.vb.mapSceneToView(pos)
         self._last_hover_price = self._snap_price(float(point.y()))
-        if self._interaction_mode is InteractionMode.BROWSE:
-            trade_hover = self._trade_marker_at_scene_pos(pos)
-            if trade_hover is not None:
-                marker, link = trade_hover
-                hover_price = marker.y if marker is not None else link.y2
-                hover_x = int(round(marker.x if marker is not None else link.x2))
-                self._update_crosshair(hover_x, hover_price)
-                self._update_trade_hover_info(marker.detail_lines if marker is not None else link.detail_lines)
-                return
         if self._preview_order_type:
             self._log_interaction(
                 "mouse_move_order_preview",
@@ -971,14 +1082,24 @@ class ChartWidget(QWidget):
             )
             self._preview_line.setPos(self._last_hover_price)
             self._preview_line.show()
-        if self._interaction_mode is InteractionMode.ORDER_PREVIEW:
+        if self._hover_target.target_type is HoverTargetType.TRADE_MARKER and self._hover_target.trade_marker is not None:
+            marker = self._hover_target.trade_marker
+            hover_price = marker.y
+            hover_x = int(round(marker.x))
+            self._update_crosshair(hover_x, hover_price)
+            self._update_trade_hover_info(marker.detail_lines)
+            return
+        if self._hover_target.target_type is HoverTargetType.TRADE_LINK and self._hover_target.trade_link is not None:
+            link = self._hover_target.trade_link
+            hover_price = link.y2
+            hover_x = int(round(link.x2))
+            self._update_crosshair(hover_x, hover_price)
+            self._update_trade_hover_info(link.detail_lines)
+            return
+        if self._hover_target.target_type is not HoverTargetType.BAR or self._hover_target.bar is None or self._hover_target.bar_index is None:
             self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
             return
-        hover = self._hover_bar_at(point.x())
-        if hover is None:
-            self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
-            return
-        index, bar = hover
+        index, bar = self._hover_target.bar_index, self._hover_target.bar
         self._log_interaction("hover_active", hover_index=index, hover_price=round(float(point.y()), 3))
         self._update_crosshair(index, point.y())
         self._update_hover_info(bar, point.y())
@@ -1115,27 +1236,201 @@ class ChartWidget(QWidget):
         y = max(4, min(self.height() - height - 4, y))
         self._axis_price_label.move(x, y)
 
+    def _empty_hover_target(self, scene_pos: QPointF | None = None, view_pos: QPointF | None = None) -> HoverTarget:
+        return HoverTarget(scene_pos=scene_pos, view_pos=view_pos)
+
+    def _hover_target_matches(self, first: HoverTarget, second: HoverTarget) -> bool:
+        return (
+            first.target_type == second.target_type
+            and first.order_line_id == second.order_line_id
+            and first.order_line_type == second.order_line_type
+            and first.drawing_index == second.drawing_index
+            and first.anchor_index == second.anchor_index
+            and first.bar_index == second.bar_index
+            and first.trade_marker is second.trade_marker
+            and first.trade_link is second.trade_link
+        )
+
+    def _apply_hover_target(self, target: HoverTarget) -> None:
+        previous = self._hover_target
+        if self._hover_target_matches(previous, target):
+            self._hover_target = target
+            self._sync_cursor()
+            return
+        self._hover_target = target
+        self._hovered_order_line_id = target.order_line_id if target.target_type is HoverTargetType.ORDER_LINE else None
+        self._hovered_order_line_type = target.order_line_type if target.target_type is HoverTargetType.ORDER_LINE else None
+        if target.target_type is HoverTargetType.DRAWING_ANCHOR:
+            self._hovered_drawing_index = target.drawing_index
+            self._hovered_anchor_index = target.anchor_index
+        elif target.target_type is HoverTargetType.DRAWING_BODY:
+            self._hovered_drawing_index = target.drawing_index
+            self._hovered_anchor_index = None
+        else:
+            self._hovered_drawing_index = None
+            self._hovered_anchor_index = None
+        self._log_interaction(
+            "hover_target_changed",
+            previous_target=previous.target_type.value,
+            target=target.target_type.value,
+            order_line_id=target.order_line_id or -1,
+            order_line_type=target.order_line_type.value if target.order_line_type else "",
+            drawing_index=target.drawing_index if target.drawing_index is not None else -1,
+            anchor_index=target.anchor_index if target.anchor_index is not None else -1,
+            bar_index=target.bar_index if target.bar_index is not None else -1,
+            distance_px=round(float(target.distance_px), 3) if target.distance_px is not None else -1.0,
+        )
+        self._rebuild_order_line_items()
+        self._rebuild_line_items()
+        self._sync_cursor()
+
+    def _is_hovered_order_line(self, line: OrderLine) -> bool:
+        if self._hover_target.target_type is not HoverTargetType.ORDER_LINE:
+            return False
+        if line.id is not None and self._hover_target.order_line_id is not None:
+            return line.id == self._hover_target.order_line_id
+        return line.order_type is self._hover_target.order_line_type
+
+    def _compute_hover_target(self, scene_pos) -> HoverTarget:  # noqa: ANN001
+        if self._cursor < 0 or not self.price_plot.sceneBoundingRect().contains(scene_pos):
+            return self._empty_hover_target(scene_pos=scene_pos)
+        view_pos = self.price_plot.vb.mapSceneToView(scene_pos)
+        order_target = self._order_line_hover_target(scene_pos, view_pos)
+        if order_target is not None:
+            return order_target
+        anchor_hit = self._drawing_anchor_at_scene_pos(scene_pos)
+        if anchor_hit is not None:
+            drawing_index, anchor_index = anchor_hit
+            anchor_scene = self.price_plot.vb.mapViewToScene(
+                QPointF(self._drawings[drawing_index].anchors[anchor_index].x, self._drawings[drawing_index].anchors[anchor_index].y)
+            )
+            distance = hypot(float(scene_pos.x()) - float(anchor_scene.x()), float(scene_pos.y()) - float(anchor_scene.y()))
+            return HoverTarget(
+                target_type=HoverTargetType.DRAWING_ANCHOR,
+                drawing_index=drawing_index,
+                anchor_index=anchor_index,
+                scene_pos=scene_pos,
+                view_pos=view_pos,
+                distance_px=distance,
+            )
+        drawing_hit = self._drawing_at_scene_pos(scene_pos)
+        if drawing_hit is not None:
+            drawing_index, _drawing = drawing_hit
+            border_distance, _inside = self._drawing_hit_test(self._drawings[drawing_index], scene_pos)
+            return HoverTarget(
+                target_type=HoverTargetType.DRAWING_BODY,
+                drawing_index=drawing_index,
+                scene_pos=scene_pos,
+                view_pos=view_pos,
+                distance_px=border_distance or 0.0,
+            )
+        trade_hover = self._trade_marker_at_scene_pos(scene_pos)
+        if trade_hover is not None:
+            marker, link = trade_hover
+            if marker is not None:
+                marker_scene = self.price_plot.vb.mapViewToScene(QPointF(marker.x, marker.y))
+                distance = hypot(float(scene_pos.x()) - float(marker_scene.x()), float(scene_pos.y()) - float(marker_scene.y()))
+                return HoverTarget(
+                    target_type=HoverTargetType.TRADE_MARKER,
+                    trade_marker=marker,
+                    scene_pos=scene_pos,
+                    view_pos=view_pos,
+                    distance_px=distance,
+                )
+            return HoverTarget(
+                target_type=HoverTargetType.TRADE_LINK,
+                trade_link=link,
+                scene_pos=scene_pos,
+                view_pos=view_pos,
+                distance_px=0.0,
+            )
+        hover = self._hover_bar_at(float(view_pos.x()))
+        if hover is None:
+            return self._empty_hover_target(scene_pos=scene_pos, view_pos=view_pos)
+        bar_index, bar = hover
+        return HoverTarget(
+            target_type=HoverTargetType.BAR,
+            bar_index=bar_index,
+            bar=bar,
+            scene_pos=scene_pos,
+            view_pos=view_pos,
+            distance_px=0.0,
+        )
+
+    def _order_line_hover_target(self, scene_pos, view_pos: QPointF) -> HoverTarget | None:  # noqa: ANN001
+        best_target: HoverTarget | None = None
+        best_priority = 99
+        best_distance = float("inf")
+        for line in self._order_lines:
+            scene_point = self.price_plot.vb.mapViewToScene(QPointF(float(self._global_start_index), float(line.price)))
+            distance = abs(float(scene_pos.y()) - float(scene_point.y()))
+            if distance > ORDER_LINE_HIT_DISTANCE_PX:
+                continue
+            priority = 0 if self._is_order_line_movable(line) else 1
+            if priority < best_priority or (priority == best_priority and distance < best_distance):
+                best_priority = priority
+                best_distance = distance
+                best_target = HoverTarget(
+                    target_type=HoverTargetType.ORDER_LINE,
+                    order_line_id=line.id,
+                    order_line_type=line.order_type,
+                    scene_pos=scene_pos,
+                    view_pos=view_pos,
+                    distance_px=distance,
+                )
+        return best_target
+
     def _editable_order_id_at_scene_pos(self, scene_y: float) -> int | None:
         closest_id: int | None = None
-        closest_delta = 9.0
+        closest_delta = ORDER_LINE_HIT_DISTANCE_PX
         for order_id, order_scene_y in self._order_line_scene_positions.items():
             delta = abs(order_scene_y - scene_y)
             if delta <= closest_delta:
                 closest_id = order_id
                 closest_delta = delta
+        self._log_interaction(
+            "editable_order_hit_test",
+            scene_y=round(float(scene_y), 3),
+            matched_order_id=closest_id or -1,
+            matched_delta=round(float(closest_delta), 3) if closest_id is not None else -1.0,
+            tracked_order_lines=len(self._order_line_scene_positions),
+        )
         return closest_id
 
     def _editable_order_hit_distance(self, scene_y: float) -> float | None:
         closest_delta: float | None = None
         for order_scene_y in self._order_line_scene_positions.values():
             delta = abs(order_scene_y - scene_y)
-            if delta <= 9.0 and (closest_delta is None or delta < closest_delta):
+            if delta <= ORDER_LINE_HIT_DISTANCE_PX and (closest_delta is None or delta < closest_delta):
                 closest_delta = delta
         return closest_delta
 
+    def _update_hovered_order_line_state(self, scene_pos) -> None:  # noqa: ANN001
+        self._apply_hover_target(self._compute_hover_target(scene_pos))
+
+    def _set_hovered_order_line_id(self, order_id: int | None) -> None:
+        if order_id is None:
+            self._apply_hover_target(self._empty_hover_target())
+            return
+        line = next((item for item in self._order_lines if item.id == order_id), None)
+        if line is None:
+            self._apply_hover_target(self._empty_hover_target())
+            return
+        scene_point = self.price_plot.vb.mapViewToScene(QPointF(float(self._global_start_index), float(line.price)))
+        self._apply_hover_target(
+            HoverTarget(
+                target_type=HoverTargetType.ORDER_LINE,
+                order_line_id=order_id,
+                order_line_type=line.order_type,
+                scene_pos=scene_point,
+                view_pos=QPointF(float(self._global_start_index), float(line.price)),
+                distance_px=0.0,
+            )
+        )
+
     def _order_line_at_scene_pos(self, scene_pos) -> OrderLine | None:  # noqa: ANN001
         closest_line: OrderLine | None = None
-        closest_delta = 9.0
+        closest_delta = ORDER_LINE_HIT_DISTANCE_PX
         for line in self._order_lines:
             scene_point = self.price_plot.vb.mapViewToScene(QPointF(float(self._global_start_index), float(line.price)))
             delta = abs(float(scene_pos.y()) - float(scene_point.y()))
@@ -1150,7 +1445,7 @@ class ChartWidget(QWidget):
             return None
         scene_point = self.price_plot.vb.mapViewToScene(QPointF(float(self._global_start_index), float(average_line.price)))
         delta = abs(float(scene_pos.y()) - float(scene_point.y()))
-        if delta > 9.0:
+        if delta > ORDER_LINE_HIT_DISTANCE_PX:
             return None
         return average_line, delta
 
@@ -1183,12 +1478,19 @@ class ChartWidget(QWidget):
     def _handle_native_order_line_dragged(self, price: float) -> None:
         self._native_order_drag_active = True
         self._set_dragging(True)
-        self._show_axis_price_label(float(price))
+        snapped_price = self._snap_price(float(price))
+        self._show_axis_price_label(snapped_price)
 
     def _handle_native_order_line_drag_finished(self, order_id: int, price: float) -> None:
         self._native_order_drag_active = False
-        self._show_axis_price_label(float(price))
-        self.orderLineMoved.emit(order_id, float(price))
+        snapped_price = self._snap_price(float(price))
+        line = next((item for item in self._order_lines if item.id == order_id), None)
+        if line is not None and abs(snapped_price - self._snap_price(float(line.price))) < max(self._tick_size, 0.0001):
+            self._show_axis_price_label(snapped_price)
+            self._set_dragging(False)
+            return
+        self._show_axis_price_label(snapped_price)
+        self.orderLineMoved.emit(order_id, snapped_price)
         self._set_dragging(False)
 
     def _show_order_line_context_menu(self, order_id: int, scene_pos) -> None:  # noqa: ANN001
@@ -1363,19 +1665,20 @@ class ChartWidget(QWidget):
                     return None, link
         return None
 
-    def _order_line_style(self, line: OrderLine) -> tuple[pg.QtGui.QPen, str, bool]:
+    def _order_line_style(self, line: OrderLine, *, highlighted: bool = False) -> tuple[pg.QtGui.QPen, str, bool]:
+        width = 2 if highlighted else 1
         if line.order_type is OrderLineType.ENTRY_LONG:
-            return pg.mkPen(ENTRY_LONG_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine), ENTRY_LONG_LINE_COLOR, True
+            return pg.mkPen(ENTRY_LONG_LINE_COLOR, width=width, style=Qt.PenStyle.DashLine), ENTRY_LONG_LINE_COLOR, True
         if line.order_type is OrderLineType.ENTRY_SHORT:
-            return pg.mkPen(ENTRY_SHORT_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine), ENTRY_SHORT_LINE_COLOR, True
+            return pg.mkPen(ENTRY_SHORT_LINE_COLOR, width=width, style=Qt.PenStyle.DashLine), ENTRY_SHORT_LINE_COLOR, True
         if line.order_type is OrderLineType.EXIT:
-            return pg.mkPen("#5f6b7a", width=1, style=Qt.PenStyle.DashLine), "#5f6b7a", True
+            return pg.mkPen("#5f6b7a", width=width, style=Qt.PenStyle.DashLine), "#5f6b7a", True
         if line.order_type is OrderLineType.REVERSE:
-            return pg.mkPen("#7a43b6", width=1, style=Qt.PenStyle.DashLine), "#7a43b6", True
+            return pg.mkPen("#7a43b6", width=width, style=Qt.PenStyle.DashLine), "#7a43b6", True
         if line.order_type is OrderLineType.STOP_LOSS:
-            return pg.mkPen(STOP_LOSS_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine), STOP_LOSS_LINE_COLOR, True
+            return pg.mkPen(STOP_LOSS_LINE_COLOR, width=width, style=Qt.PenStyle.DashLine), STOP_LOSS_LINE_COLOR, True
         if line.order_type is OrderLineType.TAKE_PROFIT:
-            return pg.mkPen(TAKE_PROFIT_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine), TAKE_PROFIT_LINE_COLOR, True
+            return pg.mkPen(TAKE_PROFIT_LINE_COLOR, width=width, style=Qt.PenStyle.DashLine), TAKE_PROFIT_LINE_COLOR, True
         return pg.mkPen(AVERAGE_PRICE_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine), AVERAGE_PRICE_LINE_COLOR, False
 
     def _order_line_label(self, line: OrderLine) -> str:
@@ -1454,37 +1757,53 @@ class ChartWidget(QWidget):
             return False
         if self._active_drawing_tool is not None or self._interaction_mode is InteractionMode.ORDER_PREVIEW or self._cursor < 0:
             return False
+        if self._active_drag_target.target_type in {ActiveDragTargetType.DRAWING_ANCHOR, ActiveDragTargetType.DRAWING_BODY}:
+            if ev.isFinish():
+                self._finish_drawing_drag()
+                ev.accept()
+                return True
+            if ev.isStart():
+                ev.accept()
+                return True
+            self._update_drawing_drag(ev.scenePos())
+            ev.accept()
+            return True
         if self._drawing_drag_mode is None:
             if ev.isFinish():
                 return False
-            if not self._begin_drawing_drag(ev.scenePos()):
+            if not self._begin_drawing_drag():
                 return False
             ev.accept()
             return True
-        if ev.isFinish():
-            self._finish_drawing_drag()
-            ev.accept()
-            return True
-        if ev.isStart():
-            ev.accept()
-            return True
-        self._update_drawing_drag(ev.scenePos())
-        ev.accept()
-        return True
+        return False
 
-    def _begin_drawing_drag(self, scene_pos) -> bool:  # noqa: ANN001
-        anchor_hit = self._drawing_anchor_at_scene_pos(scene_pos)
-        if anchor_hit is not None:
-            self._drag_drawing_index, self._drag_anchor_index = anchor_hit
-            self._drawing_drag_mode = DrawingDragMode.ANCHOR
-        else:
-            drawing_hit = self._drawing_at_scene_pos(scene_pos)
-            if drawing_hit is None:
+    def _begin_drawing_drag(self) -> bool:
+        if self._hover_target.target_type is HoverTargetType.DRAWING_ANCHOR:
+            if self._hover_target.drawing_index is None or self._hover_target.anchor_index is None:
                 return False
-            self._drag_drawing_index = drawing_hit[0]
+            self._drag_drawing_index = self._hover_target.drawing_index
+            self._drag_anchor_index = self._hover_target.anchor_index
+            self._drawing_drag_mode = DrawingDragMode.ANCHOR
+            self._active_drag_target = ActiveDragTarget(
+                target_type=ActiveDragTargetType.DRAWING_ANCHOR,
+                drawing_index=self._drag_drawing_index,
+                anchor_index=self._drag_anchor_index,
+            )
+        elif self._hover_target.target_type is HoverTargetType.DRAWING_BODY:
+            if self._hover_target.drawing_index is None:
+                return False
+            self._drag_drawing_index = self._hover_target.drawing_index
             self._drag_anchor_index = None
             self._drawing_drag_mode = DrawingDragMode.TRANSLATE
-        point = self.price_plot.vb.mapSceneToView(scene_pos)
+            self._active_drag_target = ActiveDragTarget(
+                target_type=ActiveDragTargetType.DRAWING_BODY,
+                drawing_index=self._drag_drawing_index,
+            )
+        else:
+            return False
+        point = self._hover_target.view_pos
+        if point is None:
+            return False
         self._drag_start_view_pos = self._stabilize_drawing_anchor(DrawingAnchor(float(point.x()), float(point.y())))
         self._drag_start_anchors = [DrawingAnchor(anchor.x, anchor.y) for anchor in self._drawings[self._drag_drawing_index].anchors]
         self._drag_drawing_changed = False
@@ -1517,6 +1836,8 @@ class ChartWidget(QWidget):
     def _finish_drawing_drag(self) -> None:
         changed = self._drag_drawing_changed
         self._clear_drawing_drag_state()
+        self._active_drag_target = ActiveDragTarget()
+        self._pan_drag_start_scene_pos = None
         self._set_dragging(False)
         self._suppress_next_left_click = True
         self._rebuild_line_items()
@@ -1528,31 +1849,72 @@ class ChartWidget(QWidget):
             return False
         if self._cursor < 0 or not self.price_plot.sceneBoundingRect().contains(ev.scenePos()):
             return False
+        if self._active_drag_target.target_type is ActiveDragTargetType.ORDER_LINE:
+            if ev.isFinish():
+                self._finish_order_line_drag()
+                ev.accept()
+                return True
+            if ev.isStart():
+                ev.accept()
+                return True
+            self._update_order_line_drag(ev.scenePos())
+            ev.accept()
+            return True
         if self._protective_drag_order_type is None and not self._protective_drag_from_average:
             if ev.isFinish():
                 return False
-            if not self._begin_order_line_drag(ev.scenePos()):
+            if not self._begin_order_line_drag():
                 return False
             ev.accept()
             return True
-        if ev.isFinish():
-            self._finish_order_line_drag()
-            ev.accept()
-            return True
-        if ev.isStart():
-            ev.accept()
-            return True
-        self._update_order_line_drag(ev.scenePos())
-        ev.accept()
-        return True
+        return False
 
-    def _begin_order_line_drag(self, scene_pos) -> bool:  # noqa: ANN001
-        average_match = self._average_price_line_match(scene_pos)
-        if average_match is None:
+    def _begin_order_line_drag(self) -> bool:
+        if self._hover_target.target_type is not HoverTargetType.ORDER_LINE:
             return False
-        line, average_delta = average_match
-        editable_delta = self._editable_order_hit_distance(float(scene_pos.y()))
-        if editable_delta is not None and editable_delta <= average_delta:
+        scene_pos = self._hover_target.scene_pos
+        editable_order_id = self._hover_target.order_line_id
+        self._log_interaction(
+            "begin_order_line_drag_attempt",
+            scene_x=round(float(scene_pos.x()), 3) if scene_pos is not None else -1.0,
+            scene_y=round(float(scene_pos.y()), 3) if scene_pos is not None else -1.0,
+            hovered_order_line_id=self._hovered_order_line_id or -1,
+            editable_order_id=editable_order_id or -1,
+            hover_target=self._hover_target.target_type.value,
+        )
+        if editable_order_id is not None:
+            line = next((item for item in self._order_lines if item.id == editable_order_id), None)
+            if line is None:
+                self._log_interaction("begin_order_line_drag_missing_line", order_line_id=editable_order_id)
+                return False
+            snapped_price = self._snap_price(float(line.price))
+            self._protective_drag_order_type = line.order_type
+            self._protective_drag_line_id = editable_order_id
+            self._protective_drag_start_price = snapped_price
+            self._protective_drag_preview_price = snapped_price
+            self._protective_drag_from_average = False
+            self._preview_line.setPen(pg.mkPen(self._protective_drag_color(line.order_type), width=2, style=Qt.PenStyle.DashLine))
+            self._preview_line.setPos(snapped_price)
+            self._preview_line.show()
+            self._show_axis_price_label(snapped_price)
+            self._active_drag_target = ActiveDragTarget(
+                target_type=ActiveDragTargetType.ORDER_LINE,
+                order_line_id=editable_order_id,
+            )
+            self._set_dragging(True)
+            self._log_interaction(
+                "begin_order_line_drag_existing_line",
+                order_line_id=editable_order_id,
+                order_type=line.order_type.value,
+                start_price=snapped_price,
+            )
+            return True
+        if self._hover_target.order_line_type is not OrderLineType.AVERAGE_PRICE:
+            self._log_interaction("begin_order_line_drag_no_match")
+            return False
+        line = next((item for item in self._order_lines if item.order_type is OrderLineType.AVERAGE_PRICE), None)
+        if line is None:
+            self._log_interaction("begin_order_line_drag_no_match")
             return False
         self._protective_drag_order_type = None
         self._protective_drag_line_id = None
@@ -1563,11 +1925,18 @@ class ChartWidget(QWidget):
         self._preview_line.setPos(line.price)
         self._preview_line.show()
         self._show_axis_price_label(line.price)
+        self._active_drag_target = ActiveDragTarget(target_type=ActiveDragTargetType.ORDER_LINE)
         self._set_dragging(True)
+        self._log_interaction(
+            "begin_order_line_drag_average_line",
+            start_price=round(float(line.price), 6),
+            average_delta=round(float(self._hover_target.distance_px or 0.0), 3),
+        )
         return True
 
     def _update_order_line_drag(self, scene_pos) -> None:  # noqa: ANN001
         if self._protective_drag_order_type is None and not self._protective_drag_from_average:
+            self._log_interaction("update_order_line_drag_skipped_no_active_drag")
             return
         point = self.price_plot.vb.mapSceneToView(scene_pos)
         snapped_price = self._snap_price(float(point.y()))
@@ -1582,23 +1951,61 @@ class ChartWidget(QWidget):
                 self._preview_line.setPen(pg.mkPen(AVERAGE_PRICE_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine))
         self._preview_line.setPos(snapped_price)
         self._show_axis_price_label(snapped_price)
+        self._log_interaction(
+            "update_order_line_drag",
+            scene_x=round(float(scene_pos.x()), 3),
+            scene_y=round(float(scene_pos.y()), 3),
+            mapped_y=round(float(point.y()), 6),
+            snapped_price=round(float(snapped_price), 6),
+            order_line_id=self._protective_drag_line_id or -1,
+            order_type=self._protective_drag_order_type.value if self._protective_drag_order_type else "",
+            from_average=self._protective_drag_from_average,
+        )
 
     def _finish_order_line_drag(self) -> None:
         order_type = self._protective_drag_order_type
         price = self._protective_drag_preview_price
         line_id = self._protective_drag_line_id
         start_price = self._protective_drag_start_price
+        self._log_interaction(
+            "finish_order_line_drag_start",
+            order_line_id=line_id or -1,
+            order_type=order_type.value if order_type else "",
+            start_price=round(float(start_price), 6) if start_price is not None else -1.0,
+            finish_price=round(float(price), 6) if price is not None else -1.0,
+            from_average=self._protective_drag_from_average,
+        )
         self._set_dragging(False)
         self._preview_line.hide()
         self._suppress_next_left_click = True
+        self._pan_drag_start_scene_pos = None
+        hovered_target = self._hover_target
+        self._active_drag_target = ActiveDragTarget()
         self._clear_protective_drag_state()
+        self._apply_hover_target(hovered_target)
         if order_type is None or price is None or start_price is None:
+            self._log_interaction("finish_order_line_drag_aborted_incomplete_state")
             return
         if abs(price - start_price) < max(self._tick_size, 0.0001):
+            self._log_interaction(
+                "finish_order_line_drag_ignored_small_move",
+                tick_size=round(float(self._tick_size), 6),
+                delta=round(float(abs(price - start_price)), 6),
+            )
             return
         if line_id is not None:
+            self._log_interaction(
+                "finish_order_line_drag_emit_move",
+                order_line_id=line_id,
+                finish_price=round(float(price), 6),
+            )
             self.orderLineMoved.emit(line_id, price)
             return
+        self._log_interaction(
+            "finish_order_line_drag_emit_protective_create",
+            order_type=order_type.value,
+            finish_price=round(float(price), 6),
+        )
         self.protectiveOrderCreated.emit(order_type.value, price)
 
     def _clear_protective_drag_state(self) -> None:
@@ -2021,20 +2428,24 @@ class ChartWidget(QWidget):
 
     def _set_dragging(self, dragging: bool) -> None:
         if self._is_dragging == dragging:
+            self._sync_cursor()
             return
         self._is_dragging = dragging
         if dragging:
             self._log_interaction("hover_hidden_dragging")
             self._hide_crosshair()
         else:
+            self._pan_drag_start_scene_pos = None
             self._hide_crosshair()
             if self._interaction_mode is InteractionMode.BROWSE:
                 self._log_interaction("hover_resume_after_drag")
         self._log_interaction("set_dragging", dragging=dragging)
+        self._sync_cursor()
         self.interactionModeChanged.emit(self._interaction_mode)
 
     def _set_interaction_mode(self, mode: InteractionMode) -> None:
         if self._interaction_mode == mode:
+            self._sync_cursor()
             return
         previous_mode = self._interaction_mode
         self._interaction_mode = mode
@@ -2046,7 +2457,23 @@ class ChartWidget(QWidget):
         if mode is InteractionMode.BROWSE:
             self._hide_crosshair()
         self._log_interaction("set_interaction_mode", previous_mode=previous_mode.value, mode=mode.value)
+        self._sync_cursor()
         self.interactionModeChanged.emit(mode)
+
+    def _sync_cursor(self) -> None:
+        if self._is_dragging:
+            cursor = Qt.CursorShape.ClosedHandCursor
+        elif self._hover_target.target_type is HoverTargetType.ORDER_LINE:
+            cursor = Qt.CursorShape.SizeVerCursor
+        elif self._hover_target.target_type in {HoverTargetType.DRAWING_ANCHOR, HoverTargetType.DRAWING_BODY}:
+            cursor = Qt.CursorShape.OpenHandCursor
+        elif self._crosshair_enabled and self._interaction_mode in {InteractionMode.BROWSE, InteractionMode.ORDER_PREVIEW}:
+            cursor = Qt.CursorShape.CrossCursor
+        else:
+            cursor = Qt.CursorShape.ArrowCursor
+        self.setCursor(cursor)
+        self.graphics.setCursor(cursor)
+        self._log_interaction("sync_cursor", cursor=str(cursor))
 
     def _log_interaction(self, event: str, **fields) -> None:
         payload = {
@@ -2055,9 +2482,12 @@ class ChartWidget(QWidget):
             "preview_order_type": self._preview_order_type or "",
             "is_dragging": self._is_dragging,
             "suppress_next_left_click": self._suppress_next_left_click,
+            "hover_target": self._hover_target.target_type.value,
+            "active_drag_target": self._active_drag_target.target_type.value,
         }
         payload.update(fields)
-        logger.bind(component="chart_interaction", **payload).debug("event={event}", event=event)
+        field_text = " ".join(f"{key}={value}" for key, value in payload.items())
+        logger.bind(component="chart_interaction", **payload).debug("event={} {}", event, field_text)
 
     def _is_near_latest(self, right_edge_index: float) -> bool:
         return abs((self._cursor + 1) - right_edge_index) <= max(1.0, self._right_padding)

@@ -51,7 +51,7 @@ def setup_logging(base_log_dir: str | Path | None = None):
     if console_sink is not None:
         logger.add(
             console_sink,
-            level="INFO",
+            level="DEBUG",
             format=CONSOLE_FORMAT,
             enqueue=False,
             backtrace=False,
