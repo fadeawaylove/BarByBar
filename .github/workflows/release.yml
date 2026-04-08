@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,6 +27,15 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v4
+
+      - name: Verify tagged commit is on master
+        shell: pwsh
+        run: |
+          git fetch origin master --depth=1
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/master
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tagged commit $env:GITHUB_SHA is not contained in origin/master."
+          }
 
       - name: Sync release dependencies
         run: uv sync --group release
