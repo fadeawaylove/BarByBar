@@ -43,18 +43,18 @@ uv run pyinstaller --clean --noconfirm BarByBar.spec
 
 ## Release
 
-BarByBar publishes a Windows portable ZIP and a Windows setup installer to GitHub Releases. The release flow is split into two stages so packaging can be validated before you burn a version tag.
+BarByBar publishes a Windows portable ZIP and a Windows setup installer to GitHub Releases when you push a version tag that points at a commit already contained in `master`.
 
 ```powershell
-# 1. run the Package workflow on your target commit and verify both artifacts
-# 2. publish the validated commit with a new version tag
+# 1. make sure your release commit is already on master
+# 2. publish a new version tag from that commit
 .\scripts\publish_release.ps1 -BumpVersion 0.1.0 -StageAll
 ```
 
 The GitHub Actions workflows are:
 
-- `Package`: manual or `master` push validation, uploads build artifacts only
-- `Release`: tag-triggered publication after the commit has already been validated
+- `Package`: manual-only packaging validation, uploads workflow artifacts only
+- `Release`: tag-triggered publication, and it fails if the tagged commit is not in `master`
 
 The release artifacts are:
 
@@ -69,7 +69,9 @@ uv sync --group release
 .\scripts\build_installer.ps1 -Tag v0.1.0
 ```
 
-The setup installer installs per-user under `%LOCALAPPDATA%\Programs\BarByBar`. The portable ZIP remains the best choice if you want the app and data to live together on a USB drive.
+The setup installer defaults to `%LOCALAPPDATA%\Programs\BarByBar`, but it now lets you choose any writable install directory during setup, including a USB drive.
+
+When the packaged app runs, it stores its runtime data next to the installed executable under `data\`. That means if you install BarByBar onto a USB drive, the app binary, database, logs, and other runtime files all move together when you plug that drive into another Windows machine.
 
 ## Logs
 

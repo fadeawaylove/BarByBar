@@ -31,7 +31,7 @@ AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\BarByBar
 DefaultGroupName=BarByBar
-DisableDirPage=yes
+DisableDirPage=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64os
@@ -45,6 +45,7 @@ SolidCompression=yes
 WizardStyle=modern
 ChangesAssociations=no
 UsedUserAreasWarning=no
+DirExistsWarning=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
