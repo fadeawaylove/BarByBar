@@ -34,7 +34,7 @@ jobs:
         run: .\scripts\build_release.ps1 -Tag "${{ github.ref_name }}"
 
       - name: Install WiX Toolset
-        run: choco install wixtoolset --version=3.14.1.20250415 --no-progress -y
+        run: choco install wixtoolset --version=3.14.1 --no-progress -y
 
       - name: Inspect WiX installation
         shell: pwsh
