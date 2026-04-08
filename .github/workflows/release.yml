@@ -34,7 +34,20 @@ jobs:
         run: .\scripts\build_release.ps1 -Tag "${{ github.ref_name }}"
 
       - name: Install WiX Toolset
-        run: choco install wixtoolset --no-progress -y
+        run: choco install wixtoolset --version=3.14.1.20250415 --no-progress -y
+
+      - name: Inspect WiX installation
+        shell: pwsh
+        run: |
+          $commands = "heat.exe", "candle.exe", "light.exe" |
+            ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue | Select-Object Name, Source }
+          if ($commands) {
+            $commands | Format-Table -AutoSize
+          } else {
+            Write-Host "WiX executables were not found on PATH. Searching common install roots..."
+            Get-ChildItem 'C:\ProgramData\chocolatey\lib' -Recurse -Filter candle.exe -ErrorAction SilentlyContinue |
+              Select-Object -First 10 FullName
+          }
 
       - name: Build MSI installer
         shell: pwsh

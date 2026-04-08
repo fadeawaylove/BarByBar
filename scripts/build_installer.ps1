@@ -57,6 +57,20 @@ if (-not $WixBin) {
 $heatExe = Join-Path $WixBin "heat.exe"
 $candleExe = Join-Path $WixBin "candle.exe"
 $lightExe = Join-Path $WixBin "light.exe"
+$missingTools = @($heatExe, $candleExe, $lightExe) | Where-Object { -not (Test-Path $_) }
+if ($missingTools.Count -gt 0) {
+    $searchedRoots = @(
+        $WixBin,
+        "C:\ProgramData\chocolatey\bin",
+        "C:\ProgramData\chocolatey\lib",
+        "C:\Program Files (x86)\WiX Toolset v3.11\bin",
+        "C:\Program Files\WiX Toolset v3.11\bin",
+        "C:\Program Files (x86)\WiX Toolset v3.14\bin",
+        "C:\Program Files\WiX Toolset v3.14\bin"
+    ) -join ", "
+    throw "WiX binaries missing. Expected: $($missingTools -join ', '). Searched roots: $searchedRoots"
+}
+
 $installerDir = Join-Path $repoRoot "installer"
 $sourceDir = Join-Path $repoRoot "dist\release\BarByBar"
 $harvestPath = Join-Path $installerDir "HarvestedFiles.wxs"
@@ -69,6 +83,12 @@ $wixOutDir = ([System.IO.Path]::GetFullPath($installerDir)) + "\"
 
 Remove-Item -LiteralPath $productObjPath -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $harvestObjPath -Force -ErrorAction SilentlyContinue
+
+Write-Output "Using WiX bin directory: $WixBin"
+Write-Output "Using WiX tools:"
+Write-Output "  heat:   $heatExe"
+Write-Output "  candle: $candleExe"
+Write-Output "  light:  $lightExe"
 
 & $heatExe dir $sourceDir -nologo -cg AppFiles -dr INSTALLDIR -gg -scom -sreg -sfrag -srd -var var.SourceDir -out $harvestPath
 if ($LASTEXITCODE -ne 0) {
