@@ -38,7 +38,7 @@ uv run python -m barbybar.desktop_app
 uv run pyinstaller --clean --noconfirm BarByBar.spec
 .\scripts\build_release.ps1
 .\scripts\build_installer.ps1
-.\scripts\publish_release.ps1 -BumpVersion 0.1.0 -StageAll
+.\scripts\publish_release.ps1 patch
 ```
 
 ## Release
@@ -48,7 +48,7 @@ BarByBar publishes a Windows portable ZIP and a Windows setup installer to GitHu
 ```powershell
 # 1. make sure your release commit is already on master
 # 2. publish a new version tag from that commit
-.\scripts\publish_release.ps1 -BumpVersion 0.1.0 -StageAll
+.\scripts\publish_release.ps1 patch
 ```
 
 The GitHub Actions workflows are:

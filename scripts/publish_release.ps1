@@ -1,13 +1,25 @@
 param(
-    [string]$Remote = "origin",
-    [string]$Branch = "",
-    [string]$CommitMessage = "",
-    [string]$BumpVersion = "",
-    [switch]$StageAll,
-    [switch]$ForceTag
+    [Parameter(Position = 0)]
+    [string]$BumpPart
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
+
+function Show-Usage {
+    Write-Host 'Usage: .\\scripts\\publish_release.ps1 major|minor|patch' -ForegroundColor Yellow
+    Write-Host 'Example: .\\scripts\\publish_release.ps1 patch' -ForegroundColor DarkGray
+}
+
+if ([string]::IsNullOrWhiteSpace($BumpPart)) {
+    Show-Usage
+    exit 1
+}
+
+$normalizedPart = $BumpPart.Trim().ToLowerInvariant()
+if ($normalizedPart -notin @('major', 'minor', 'patch')) {
+    Show-Usage
+    exit 1
+}
 
 function Invoke-Git {
     param(
@@ -34,14 +46,48 @@ function Get-GitOutput {
     return $output
 }
 
+function Get-IncrementedVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [string]$Part
+    )
+
+    if ($Version -notmatch '^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$') {
+        throw "Current version '$Version' must use semantic version format X.Y.Z."
+    }
+
+    $major = [int]$Matches['major']
+    $minor = [int]$Matches['minor']
+    $patch = [int]$Matches['patch']
+
+    switch ($Part) {
+        'major' {
+            $major += 1
+            $minor = 0
+            $patch = 0
+        }
+        'minor' {
+            $minor += 1
+            $patch = 0
+        }
+        default {
+            $patch += 1
+        }
+    }
+
+    return "$major.$minor.$patch"
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    throw "git was not found on PATH."
+    throw 'git was not found on PATH.'
 }
 
-$versionFile = Join-Path $repoRoot "src\barbybar\__init__.py"
+$versionFile = Join-Path $repoRoot 'src\barbybar\__init__.py'
 if (-not (Test-Path $versionFile)) {
     throw "Version file not found: $versionFile"
 }
@@ -52,91 +98,24 @@ if (-not $versionMatch.Success) {
     throw "Unable to read __version__ from $versionFile"
 }
 
-$version = $versionMatch.Groups["version"].Value
-if ($BumpVersion) {
-    if ($BumpVersion -notmatch '^\d+\.\d+\.\d+$') {
-        throw "BumpVersion must use semantic version format X.Y.Z."
-    }
-    $updatedContent = [regex]::Replace(
-        $versionFileContent,
-        '__version__\s*=\s*"[^"]+"',
-        "__version__ = ""$BumpVersion""",
-        1
-    )
-    Set-Content -Path $versionFile -Value $updatedContent -NoNewline
-    $version = $BumpVersion
-}
+$currentVersion = $versionMatch.Groups['version'].Value
+$nextVersion = Get-IncrementedVersion -Version $currentVersion -Part $normalizedPart
+$updatedContent = [regex]::Replace(
+    $versionFileContent,
+    '__version__\s*=\s*"[^"]+"',
+    "__version__ = ""$nextVersion""",
+    1
+)
+Set-Content -Path $versionFile -Value $updatedContent -NoNewline
 
-$tag = "v$version"
+$tag = "v$nextVersion"
+$branch = (Get-GitOutput -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')).Trim()
 
-Write-Output "Publishing $tag from version file $versionFile."
-Write-Output "This command assumes the packaging workflow has already validated the target commit."
+Invoke-Git -Arguments @('add', '.')
+Invoke-Git -Arguments @('commit', '-m', "Release $tag")
+Invoke-Git -Arguments @('push', 'origin', $branch)
+Invoke-Git -Arguments @('tag', $tag)
+Invoke-Git -Arguments @('push', 'origin', $tag)
 
-if (-not $Branch) {
-    $Branch = (Get-GitOutput -Arguments @("rev-parse", "--abbrev-ref", "HEAD")).Trim()
-}
+Write-Output "Published $tag from branch $branch."
 
-$statusLines = @(Get-GitOutput -Arguments @("status", "--short"))
-$hasChanges = $statusLines.Count -gt 0
-
-if ($hasChanges -and -not $StageAll) {
-    throw "Working tree is not clean. Commit changes first or rerun with -StageAll."
-}
-
-if ($StageAll) {
-    Invoke-Git -Arguments @("add", "--all")
-    $postAddStatus = @(Get-GitOutput -Arguments @("status", "--short"))
-    if ($postAddStatus.Count -gt 0) {
-        $hasStagedChanges = $false
-        foreach ($line in $postAddStatus) {
-            if ($line.Length -ge 1 -and $line[0] -ne ' ') {
-                $hasStagedChanges = $true
-                break
-            }
-        }
-
-        if ($hasStagedChanges) {
-            if (-not $CommitMessage) {
-                $CommitMessage = "Release $tag"
-            }
-            Invoke-Git -Arguments @("commit", "-m", $CommitMessage)
-        }
-    }
-}
-
-$localTagExists = $false
-try {
-    $existingLocalTag = (Get-GitOutput -Arguments @("tag", "--list", $tag)).Trim()
-    $localTagExists = [string]::IsNullOrWhiteSpace($existingLocalTag) -eq $false
-}
-catch {
-    $localTagExists = $false
-}
-
-$remoteTagExists = $false
-try {
-    $remoteTagLookup = Get-GitOutput -Arguments @("ls-remote", "--tags", $Remote, "refs/tags/$tag")
-    $remoteTagExists = [string]::IsNullOrWhiteSpace(($remoteTagLookup -join "").Trim()) -eq $false
-}
-catch {
-    $remoteTagExists = $false
-}
-
-if (($localTagExists -or $remoteTagExists) -and -not $ForceTag) {
-    throw "Tag $tag already exists. Rerun with -ForceTag to replace it."
-}
-
-if ($localTagExists -and $ForceTag) {
-    Invoke-Git -Arguments @("tag", "-d", $tag)
-}
-
-Invoke-Git -Arguments @("push", $Remote, $Branch)
-
-if ($remoteTagExists -and $ForceTag) {
-    Invoke-Git -Arguments @("push", $Remote, ":refs/tags/$tag")
-}
-
-Invoke-Git -Arguments @("tag", $tag)
-Invoke-Git -Arguments @("push", $Remote, $tag)
-
-Write-Output "Published release tag $tag from branch $Branch."

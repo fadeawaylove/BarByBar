@@ -1,5 +1,6 @@
 .venv/
 .pytest_cache/
+pytest-cache-files-*/
 __pycache__/
 *.pyc
 uv.lock
@@ -7,6 +8,8 @@ build/
 dist/
 .pytest-temp/
 .test_tmp/
+data/
+.claude/
 installer/HarvestedFiles.wxs
 installer/*.wixobj
 installer/*.wixpdb
