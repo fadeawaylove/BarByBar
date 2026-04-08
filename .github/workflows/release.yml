@@ -33,8 +33,14 @@ jobs:
         shell: pwsh
         run: .\scripts\build_release.ps1 -Tag "${{ github.ref_name }}"
 
-      - name: Install WiX Toolset
-        run: choco install wixtoolset --version=3.14.1 --no-progress -y
+      - name: Ensure WiX Toolset
+        shell: pwsh
+        run: |
+          if (Get-Command candle.exe -ErrorAction SilentlyContinue) {
+            Write-Host "WiX Toolset already available on PATH."
+          } else {
+            choco install wixtoolset --no-progress -y
+          }
 
       - name: Inspect WiX installation
         shell: pwsh

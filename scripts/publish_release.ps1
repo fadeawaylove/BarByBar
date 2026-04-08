@@ -2,6 +2,7 @@ param(
     [string]$Remote = "origin",
     [string]$Branch = "",
     [string]$CommitMessage = "",
+    [string]$BumpVersion = "",
     [switch]$StageAll,
     [switch]$ForceTag
 )
@@ -52,6 +53,20 @@ if (-not $versionMatch.Success) {
 }
 
 $version = $versionMatch.Groups["version"].Value
+if ($BumpVersion) {
+    if ($BumpVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw "BumpVersion must use semantic version format X.Y.Z."
+    }
+    $updatedContent = [regex]::Replace(
+        $versionFileContent,
+        '__version__\s*=\s*"[^"]+"',
+        "__version__ = ""$BumpVersion""",
+        1
+    )
+    Set-Content -Path $versionFile -Value $updatedContent -NoNewline
+    $version = $BumpVersion
+}
+
 $tag = "v$version"
 
 if (-not $Branch) {
