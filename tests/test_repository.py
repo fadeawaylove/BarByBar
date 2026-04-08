@@ -49,6 +49,7 @@ def test_repository_roundtrip() -> None:
         assert len(actions) == 2
         assert len(order_lines) == 1
         assert len(loaded_drawings) == 1
+        assert dataset.display_name == "if_sample.csv"
         assert loaded_drawings[0].tool_type is DrawingToolType.RAY
         assert loaded_drawings[0].style["color"] == "#3366ff"
         assert loaded_drawings[0].style["width"] == 3
@@ -70,6 +71,22 @@ def test_find_dataset_by_symbol_returns_latest_match() -> None:
 
         assert found is not None
         assert found.symbol == "AG9999"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_find_dataset_by_display_name_returns_latest_match() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        repo.import_csv(Path("sample_data/if_sample.csv"), "AG9999", "1m", display_name="AG9999.csv")
+
+        found = repo.find_dataset_by_display_name("AG9999.csv")
+
+        assert found is not None
+        assert found.display_name == "AG9999.csv"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

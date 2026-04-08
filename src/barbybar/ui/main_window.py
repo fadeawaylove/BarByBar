@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QCloseEvent
 
-from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, parse_import_filename
+from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
 from barbybar.data.tick_size import format_price, price_decimals_for_tick, snap_price
 from barbybar.data.timeframe import normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
@@ -73,7 +73,6 @@ AUTO_SAVE_DELAY_MS = 800
 class BatchImportOutcome:
     imported: list[str]
     skipped_duplicates: list[str]
-    skipped_invalid_names: list[str]
     failed_files: list[str]
 
 
@@ -388,12 +387,19 @@ class DataSetManagerDialog(QDialog):
         self.resize(560, 520)
 
         layout = QVBoxLayout(self)
-        import_button = QPushButton("导入 CSV")
+        import_button = QPushButton("导入单个 CSV")
         import_button.clicked.connect(self._import_csv)
         layout.addWidget(import_button)
+        self._import_button = import_button
         import_folder_button = QPushButton("导入文件夹")
         import_folder_button.clicked.connect(self._import_csv_folder)
         layout.addWidget(import_folder_button)
+        self._import_folder_button = import_folder_button
+
+        self.dataset_filter = QLineEdit()
+        self.dataset_filter.setPlaceholderText("按文件名或品种筛选")
+        self.dataset_filter.textChanged.connect(self._refresh_datasets)
+        layout.addWidget(self.dataset_filter)
 
         layout.addWidget(QLabel("数据集"))
         self.dataset_list = QListWidget()
@@ -416,9 +422,14 @@ class DataSetManagerDialog(QDialog):
 
     def _refresh_datasets(self) -> None:
         self.dataset_list.clear()
+        filter_text = self.dataset_filter.text().strip().lower()
         for dataset in self.repo.list_datasets():
+            if filter_text:
+                haystack = f"{dataset.display_name} {dataset.symbol}".lower()
+                if filter_text not in haystack:
+                    continue
             item = QListWidgetItem(
-                f"{dataset.symbol} {dataset.timeframe} | "
+                f"{dataset.display_name} | "
                 f"{dataset.start_time:%m-%d %H:%M} -> {dataset.end_time:%m-%d %H:%M}"
             )
             item.setData(32, dataset.id)
@@ -431,12 +442,24 @@ class DataSetManagerDialog(QDialog):
         value = item.data(32)
         return int(value) if value is not None else None
 
+    def _set_import_actions_enabled(self, enabled: bool) -> None:
+        self._import_button.setEnabled(enabled)
+        self._import_folder_button.setEnabled(enabled)
+
     def _import_csv(self) -> None:
-        self.owner.import_csv()
+        self._set_import_actions_enabled(False)
+        try:
+            self.owner.import_csv()
+        finally:
+            self._set_import_actions_enabled(True)
         self._refresh_datasets()
 
     def _import_csv_folder(self) -> None:
-        self.owner.import_csv_folder()
+        self._set_import_actions_enabled(False)
+        try:
+            self.owner.import_csv_folder()
+        finally:
+            self._set_import_actions_enabled(True)
         self._refresh_datasets()
 
     def _create_session(self) -> None:
@@ -456,7 +479,7 @@ class DataSetManagerDialog(QDialog):
         confirm = QMessageBox.question(
             self,
             "删除数据集",
-            f"删除数据集“{dataset.symbol} {dataset.timeframe}”会级联删除其下所有案例、动作和条件单，确定继续吗？",
+            f"删除数据集“{dataset.display_name}”会级联删除其下所有案例、动作和条件单，确定继续吗？",
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
@@ -650,10 +673,6 @@ class MainWindow(QMainWindow):
         top_bar = QHBoxLayout()
         top_bar.setContentsMargins(8, 8, 8, 6)
         top_bar.setSpacing(6)
-
-        import_button = QPushButton("导入 CSV")
-        import_button.clicked.connect(self.import_csv)
-        top_bar.addWidget(import_button)
 
         dataset_button = QPushButton("数据集")
         dataset_button.clicked.connect(self.open_dataset_manager)
@@ -891,25 +910,31 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "选择 CSV", str(Path.cwd()), "CSV Files (*.csv)")
         if not path:
             return
+        display_name = Path(path).name
+        if self.repo.find_dataset_by_display_name(display_name) is not None:
+            QMessageBox.information(self, "重复数据集", f"同名文件已存在: {display_name}")
+            return
+        self.show_busy_overlay("正在导入 CSV...", "正在读取并校验数据")
         try:
-            parsed = parse_import_filename(path)
-        except CsvImportError:
-            symbol, ok = QInputDialog.getText(self, "品种代码", "输入品种代码，例如 IF")
-            if not ok or not symbol.strip():
-                return
-            symbol = symbol.strip().upper()
-            timeframe = "1m"
-        else:
-            symbol = parsed.symbol
-            timeframe = normalize_timeframe(parsed.timeframe)
-        self._import_csv_with_mapping(path, symbol, timeframe)
+            self._import_csv_with_mapping(
+                path,
+                infer_symbol_from_filename(path),
+                "1m",
+                display_name=display_name,
+            )
+        finally:
+            self.hide_busy_overlay()
 
     def import_csv_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "选择 CSV 文件夹", str(Path.cwd()))
         if not folder:
             return
-        outcome = self._import_csv_folder_path(folder)
-        if not outcome.imported and not outcome.skipped_duplicates and not outcome.skipped_invalid_names and not outcome.failed_files:
+        self.show_busy_overlay("正在批量导入...", "正在逐个读取 CSV，请稍候")
+        try:
+            outcome = self._import_csv_folder_path(folder)
+        finally:
+            self.hide_busy_overlay()
+        if not outcome.imported and not outcome.skipped_duplicates and not outcome.failed_files:
             QMessageBox.information(self, "批量导入", "所选文件夹中没有找到 CSV 文件。")
             return
         parts = [f"成功导入 {len(outcome.imported)} 个数据集"]
@@ -917,8 +942,6 @@ class MainWindow(QMainWindow):
             parts.append("已导入: " + "、".join(outcome.imported))
         if outcome.skipped_duplicates:
             parts.append("重复跳过: " + "、".join(outcome.skipped_duplicates))
-        if outcome.skipped_invalid_names:
-            parts.append("命名不合法: " + "、".join(outcome.skipped_invalid_names))
         if outcome.failed_files:
             parts.append("导入失败: " + "、".join(outcome.failed_files))
         self.statusBar().showMessage(f"批量导入完成，成功 {len(outcome.imported)} 个", 5000)
@@ -926,28 +949,25 @@ class MainWindow(QMainWindow):
 
     def _import_csv_folder_path(self, folder: str | Path) -> BatchImportOutcome:
         directory = Path(folder)
-        outcome = BatchImportOutcome(imported=[], skipped_duplicates=[], skipped_invalid_names=[], failed_files=[])
+        outcome = BatchImportOutcome(imported=[], skipped_duplicates=[], failed_files=[])
         files = sorted(path for path in directory.iterdir() if path.is_file() and path.suffix.lower() == ".csv")
         for csv_path in files:
-            try:
-                parsed = parse_import_filename(csv_path)
-            except CsvImportError:
-                outcome.skipped_invalid_names.append(csv_path.name)
-                continue
-            if self.repo.find_dataset_by_symbol(parsed.symbol) is not None:
+            display_name = csv_path.name
+            if self.repo.find_dataset_by_display_name(display_name) is not None:
                 outcome.skipped_duplicates.append(csv_path.name)
                 continue
             try:
                 self._import_csv_with_mapping(
                     str(csv_path),
-                    parsed.symbol,
-                    normalize_timeframe(parsed.timeframe),
+                    infer_symbol_from_filename(csv_path),
+                    "1m",
+                    display_name=display_name,
                     interactive=False,
                 )
             except Exception:  # noqa: BLE001
                 outcome.failed_files.append(csv_path.name)
                 continue
-            outcome.imported.append(parsed.symbol)
+            outcome.imported.append(display_name)
         return outcome
 
     def _import_csv_with_mapping(
@@ -957,11 +977,12 @@ class MainWindow(QMainWindow):
         timeframe: str,
         field_map: dict[str, str] | None = None,
         *,
+        display_name: str | None = None,
         interactive: bool = True,
     ) -> DataSet | None:
-        log = logger.bind(component="csv_import", symbol=symbol, path=path, timeframe=timeframe)
+        log = logger.bind(component="csv_import", symbol=symbol, path=path, timeframe=timeframe, display_name=display_name or Path(path).name)
         try:
-            dataset = self.repo.import_csv(path, symbol, timeframe, field_map=field_map)
+            dataset = self.repo.import_csv(path, symbol, timeframe, field_map=field_map, display_name=display_name)
         except MissingColumnsError as exc:
             if not interactive:
                 log.warning("event=batch_import_missing_columns missing_fields={missing_fields}", missing_fields=",".join(exc.missing_fields))
@@ -980,7 +1001,7 @@ class MainWindow(QMainWindow):
                     return None
                 raise CsvImportError("Column mapping cancelled")
             try:
-                dataset = self.repo.import_csv(path, symbol, timeframe, field_map=dialog.get_field_map())
+                dataset = self.repo.import_csv(path, symbol, timeframe, field_map=dialog.get_field_map(), display_name=display_name)
             except Exception as retry_exc:  # noqa: BLE001
                 log.exception("event=import_failed_after_mapping error={error}", error=str(retry_exc))
                 if interactive:
@@ -993,7 +1014,7 @@ class MainWindow(QMainWindow):
             raise
         log.info("event=import_success dataset_id={} timeframe={}", dataset.id, dataset.timeframe)
         if interactive:
-            self.statusBar().showMessage(f"已导入 {dataset.symbol} {dataset.timeframe}", 5000)
+            self.statusBar().showMessage(f"已导入 {dataset.display_name}", 5000)
         return dataset
 
     def create_session_for_dataset(self, dataset_id: int) -> None:
@@ -1065,7 +1086,7 @@ class MainWindow(QMainWindow):
         sessions = self.repo.list_sessions()
         if not sessions:
             self._clear_current_session()
-            self.statusBar().showMessage("请先导入 CSV 或打开数据集/案例库", 5000)
+            self.statusBar().showMessage("请先导入文件夹或打开数据集/案例库", 5000)
             return
         session_id = sessions[0].id
         if session_id is None:

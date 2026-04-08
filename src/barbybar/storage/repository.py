@@ -56,16 +56,25 @@ class Repository:
         self.conn: Connection = connect(db_path)
         self._window_meta_cache: dict[tuple[int, str], list[_WindowMeta]] = {}
 
-    def import_csv(self, path: str | Path, symbol: str, timeframe: str, field_map: dict[str, str] | None = None) -> DataSet:
+    def import_csv(
+        self,
+        path: str | Path,
+        symbol: str,
+        timeframe: str,
+        field_map: dict[str, str] | None = None,
+        *,
+        display_name: str | None = None,
+    ) -> DataSet:
         timeframe = normalize_timeframe(timeframe)
         result = load_bars_from_csv(path, field_map=field_map)
         bars = result.bars
+        resolved_display_name = (display_name or Path(path).name).strip() or Path(path).name
         cursor = self.conn.execute(
             """
-            INSERT INTO datasets(symbol, timeframe, source_path, total_bars, start_time, end_time)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO datasets(display_name, symbol, timeframe, source_path, total_bars, start_time, end_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (symbol, timeframe, str(path), len(bars), bars[0].timestamp.isoformat(), bars[-1].timestamp.isoformat()),
+            (resolved_display_name, symbol, timeframe, str(path), len(bars), bars[0].timestamp.isoformat(), bars[-1].timestamp.isoformat()),
         )
         dataset_id = int(cursor.lastrowid)
         self.conn.executemany(
@@ -85,6 +94,15 @@ class Repository:
         row = self.conn.execute(
             "SELECT * FROM datasets WHERE UPPER(symbol) = UPPER(?) ORDER BY created_at DESC, id DESC LIMIT 1",
             (symbol,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._dataset_from_row(row)
+
+    def find_dataset_by_display_name(self, display_name: str) -> DataSet | None:
+        row = self.conn.execute(
+            "SELECT * FROM datasets WHERE display_name = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (display_name,),
         ).fetchone()
         if row is None:
             return None
@@ -468,6 +486,7 @@ class Repository:
     def _dataset_from_row(self, row) -> DataSet:
         return DataSet(
             id=row["id"],
+            display_name=(row["display_name"] or row["symbol"]).strip(),
             symbol=row["symbol"],
             timeframe=row["timeframe"],
             source_path=row["source_path"],

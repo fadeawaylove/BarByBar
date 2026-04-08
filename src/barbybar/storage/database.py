@@ -15,6 +15,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS datasets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    display_name TEXT NOT NULL DEFAULT '',
     symbol TEXT NOT NULL,
     timeframe TEXT NOT NULL,
     source_path TEXT NOT NULL,
@@ -114,6 +115,10 @@ def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
+    dataset_columns = {row["name"] for row in conn.execute("PRAGMA table_info(datasets)").fetchall()}
+    if dataset_columns and "display_name" not in dataset_columns:
+        conn.execute("ALTER TABLE datasets ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+        conn.execute("UPDATE datasets SET display_name = symbol WHERE display_name = ''")
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
     if "replay_timeframe" not in columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN replay_timeframe TEXT NOT NULL DEFAULT '1m'")
@@ -154,4 +159,5 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )
             """
         )
+    conn.execute("UPDATE datasets SET display_name = symbol WHERE display_name = ''")
     conn.commit()

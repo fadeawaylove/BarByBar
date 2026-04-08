@@ -153,6 +153,7 @@ class WindowBars:
 @dataclass(slots=True)
 class DataSet:
     id: int | None
+    display_name: str
     symbol: str
     timeframe: str
     source_path: str
