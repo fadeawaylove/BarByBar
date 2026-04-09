@@ -115,6 +115,16 @@ def parse_datetime(value: str) -> datetime:
     raise CsvImportError(f"Unsupported datetime format: {value}")
 
 
+def _parse_numeric_field(raw_value: str | None, field_name: str, timestamp: datetime) -> float:
+    value = (raw_value or "").strip()
+    if not value:
+        raise CsvImportError(f"Invalid row for timestamp {timestamp}: numeric field '{field_name}' is empty")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise CsvImportError(f"Invalid row for timestamp {timestamp}: field '{field_name}' is not a valid number") from exc
+
+
 def load_bars_from_csv(path: str | Path, field_map: dict[str, str] | None = None) -> ImportResult:
     csv_path = Path(path)
     if not csv_path.exists():
@@ -146,14 +156,14 @@ def load_bars_from_csv(path: str | Path, field_map: dict[str, str] | None = None
             try:
                 bar = Bar(
                     timestamp=timestamp,
-                    open=float(row[normalized_headers[normalize_header(mapping["open"])]]),
-                    high=float(row[normalized_headers[normalize_header(mapping["high"])]]),
-                    low=float(row[normalized_headers[normalize_header(mapping["low"])]]),
-                    close=float(row[normalized_headers[normalize_header(mapping["close"])]]),
-                    volume=float(row[normalized_headers[normalize_header(mapping["volume"])]]),
+                    open=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["open"])]], "open", timestamp),
+                    high=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["high"])]], "high", timestamp),
+                    low=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["low"])]], "low", timestamp),
+                    close=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["close"])]], "close", timestamp),
+                    volume=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["volume"])]], "volume", timestamp),
                 )
-            except (TypeError, ValueError) as exc:
-                raise CsvImportError(f"Invalid row for timestamp {timestamp}: {exc}") from exc
+            except CsvImportError:
+                raise
             seen_timestamps.add(timestamp)
             bars.append(bar)
     if not bars:

@@ -74,6 +74,17 @@ class BatchImportOutcome:
     imported: list[str]
     skipped_duplicates: list[str]
     failed_files: list[str]
+    failure_details: list[tuple[str, str]]
+
+
+@dataclass(slots=True)
+class BatchImportProgress:
+    current: int
+    total: int
+    current_name: str
+    imported_count: int
+    skipped_count: int
+    failed_count: int
 
 
 def _thread_id() -> int:
@@ -115,6 +126,62 @@ class BusyOverlay(QWidget):
         self.title_label.setText(title)
         self.detail_label.setText(detail)
         self.detail_label.setVisible(bool(detail))
+
+    def set_indeterminate(self) -> None:
+        self.progress.setRange(0, 0)
+        self.progress.setValue(0)
+
+    def set_progress(self, current: int, total: int) -> None:
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(max(0, min(current, max(total, 1))))
+
+
+class BatchImportWorker(QObject):
+    progress = Signal(int, object)
+    finished = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(self, db_path: str | Path | None, folder: str | Path, task_id: int) -> None:
+        super().__init__()
+        self.db_path = db_path
+        self.folder = Path(folder)
+        self.task_id = task_id
+
+    def run(self) -> None:
+        log = logger.bind(component="batch_import_worker", task_id=self.task_id, thread_id=_thread_id())
+        outcome = BatchImportOutcome(imported=[], skipped_duplicates=[], failed_files=[], failure_details=[])
+        try:
+            repo = Repository(self.db_path)
+            files = sorted(path for path in self.folder.iterdir() if path.is_file() and path.suffix.lower() == ".csv")
+            total = len(files)
+            for index, csv_path in enumerate(files, start=1):
+                display_name = csv_path.name
+                if repo.find_dataset_by_display_name(display_name) is not None:
+                    outcome.skipped_duplicates.append(display_name)
+                    self.progress.emit(
+                        self.task_id,
+                        BatchImportProgress(index, total, display_name, len(outcome.imported), len(outcome.skipped_duplicates), len(outcome.failed_files)),
+                    )
+                    continue
+                try:
+                    repo.import_csv(str(csv_path), infer_symbol_from_filename(csv_path), "1m", display_name=display_name)
+                    outcome.imported.append(display_name)
+                except MissingColumnsError:
+                    log.warning("event=batch_import_missing_columns file={file}", file=display_name)
+                    outcome.failed_files.append(display_name)
+                    outcome.failure_details.append((display_name, "缺少必需列，且批量导入不会弹出列映射"))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("event=batch_import_failed file={file} error={error}", file=display_name, error=str(exc))
+                    outcome.failed_files.append(display_name)
+                    outcome.failure_details.append((display_name, str(exc)))
+                self.progress.emit(
+                    self.task_id,
+                    BatchImportProgress(index, total, display_name, len(outcome.imported), len(outcome.skipped_duplicates), len(outcome.failed_files)),
+                )
+            self.finished.emit(self.task_id, outcome)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("event=batch_import_worker_crashed error={error}", error=str(exc))
+            self.failed.emit(self.task_id, str(exc))
 
 
 class SessionLoadWorker(QObject):
@@ -393,6 +460,7 @@ class DataSetManagerDialog(QDialog):
         self.owner = owner
         self.setWindowTitle("数据集")
         self.resize(560, 520)
+        self._batch_import_active = False
 
         layout = QVBoxLayout(self)
         import_button = QPushButton("导入单个 CSV")
@@ -417,14 +485,35 @@ class DataSetManagerDialog(QDialog):
         create_button = QPushButton("基于所选数据创建复盘")
         create_button.clicked.connect(self._create_session)
         layout.addWidget(create_button)
+        self._create_button = create_button
 
         delete_button = QPushButton("删除所选数据集")
         delete_button.clicked.connect(self._delete_dataset)
         layout.addWidget(delete_button)
+        self._delete_button = delete_button
+
+        self._batch_progress_panel = QWidget(self)
+        progress_layout = QVBoxLayout(self._batch_progress_panel)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        progress_layout.setSpacing(4)
+        self._batch_progress_title = QLabel("正在批量导入...")
+        self._batch_progress_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #2c2c2c;")
+        self._batch_progress_detail = QLabel("")
+        self._batch_progress_detail.setWordWrap(True)
+        self._batch_progress_detail.setStyleSheet("font-size: 12px; color: #4f5b66;")
+        self._batch_progress_bar = QProgressBar()
+        self._batch_progress_bar.setRange(0, 1)
+        self._batch_progress_bar.setValue(0)
+        progress_layout.addWidget(self._batch_progress_title)
+        progress_layout.addWidget(self._batch_progress_detail)
+        progress_layout.addWidget(self._batch_progress_bar)
+        self._batch_progress_panel.hide()
+        layout.addWidget(self._batch_progress_panel)
 
         close_button = QPushButton("关闭")
         close_button.clicked.connect(self.reject)
         layout.addWidget(close_button)
+        self._close_button = close_button
 
         self._refresh_datasets()
 
@@ -454,6 +543,26 @@ class DataSetManagerDialog(QDialog):
         self._import_button.setEnabled(enabled)
         self._import_folder_button.setEnabled(enabled)
 
+    def _set_batch_import_active(self, active: bool) -> None:
+        self._batch_import_active = active
+        self._set_import_actions_enabled(not active)
+        self.dataset_filter.setEnabled(not active)
+        self.dataset_list.setEnabled(not active)
+        self._create_button.setEnabled(not active)
+        self._delete_button.setEnabled(not active)
+
+    def _show_batch_progress(self, title: str, detail: str, current: int, total: int) -> None:
+        self._batch_progress_title.setText(title)
+        self._batch_progress_detail.setText(detail)
+        self._batch_progress_bar.setRange(0, max(total, 1))
+        self._batch_progress_bar.setValue(max(0, min(current, max(total, 1))))
+        self._batch_progress_panel.show()
+
+    def _hide_batch_progress(self) -> None:
+        self._batch_progress_panel.hide()
+        self._batch_progress_bar.setRange(0, 1)
+        self._batch_progress_bar.setValue(0)
+
     def _import_csv(self) -> None:
         self._set_import_actions_enabled(False)
         try:
@@ -463,12 +572,67 @@ class DataSetManagerDialog(QDialog):
         self._refresh_datasets()
 
     def _import_csv_folder(self) -> None:
-        self._set_import_actions_enabled(False)
-        try:
-            self.owner.import_csv_folder()
-        finally:
-            self._set_import_actions_enabled(True)
+        self._set_batch_import_active(True)
+        self._show_batch_progress("正在批量导入...", "正在准备文件列表", 0, 1)
+        self.owner.import_csv_folder()
+        active_thread = self.owner._active_batch_import_thread
+        if active_thread is None:
+            self._set_batch_import_active(False)
+            self._hide_batch_progress()
+            self._refresh_datasets()
+            return
+        active_worker = self.owner._active_batch_import_worker
+        assert active_worker is not None
+        active_worker.progress.connect(self._handle_batch_import_progress, Qt.ConnectionType.QueuedConnection)
+        active_worker.finished.connect(self._handle_batch_import_result, Qt.ConnectionType.QueuedConnection)
+        active_worker.failed.connect(self._handle_batch_import_error, Qt.ConnectionType.QueuedConnection)
+        active_thread.finished.connect(self._handle_batch_import_finished, Qt.ConnectionType.QueuedConnection)
+
+    @Slot(int, object)
+    def _handle_batch_import_progress(self, token: int, payload: object) -> None:
+        if token != self.owner._active_batch_import_token:
+            return
+        assert isinstance(payload, BatchImportProgress)
+        self._show_batch_progress(
+            f"正在批量导入 {payload.current}/{payload.total}",
+            f"当前文件: {payload.current_name}\n成功 {payload.imported_count} 个，跳过 {payload.skipped_count} 个，失败 {payload.failed_count} 个",
+            payload.current,
+            payload.total,
+        )
+
+    @Slot(int, object)
+    def _handle_batch_import_result(self, token: int, payload: object) -> None:
+        if token != self.owner._active_batch_import_token:
+            return
+        if isinstance(payload, BatchImportOutcome):
+            total = max(
+                len(payload.imported) + len(payload.skipped_duplicates) + len(payload.failed_files),
+                1,
+            )
+            self._show_batch_progress(
+                f"正在批量导入 {total}/{total}",
+                f"成功 {len(payload.imported)} 个，跳过 {len(payload.skipped_duplicates)} 个，失败 {len(payload.failed_files)} 个",
+                total,
+                total,
+            )
+
+    @Slot(int, str)
+    def _handle_batch_import_error(self, token: int, message: str) -> None:
+        if token != self.owner._active_batch_import_token:
+            return
+        self._show_batch_progress("批量导入失败", message, 0, 1)
+
+    @Slot()
+    def _handle_batch_import_finished(self) -> None:
+        self._set_batch_import_active(False)
+        self._hide_batch_progress()
         self._refresh_datasets()
+
+    def reject(self) -> None:
+        if self._batch_import_active:
+            QMessageBox.information(self, "批量导入进行中", "批量导入仍在进行中，请等待完成。")
+            return
+        super().reject()
 
     def _create_session(self) -> None:
         dataset_id = self._selected_dataset_id()
@@ -659,6 +823,9 @@ class MainWindow(QMainWindow):
         self._active_loader_thread: QThread | None = None
         self._active_loader_worker: SessionLoadWorker | None = None
         self._active_loader_token = 0
+        self._active_batch_import_thread: QThread | None = None
+        self._active_batch_import_worker: BatchImportWorker | None = None
+        self._active_batch_import_token = 0
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._perform_auto_save)
@@ -949,27 +1116,14 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "选择 CSV 文件夹", str(Path.cwd()))
         if not folder:
             return
-        self.show_busy_overlay("正在批量导入...", "正在逐个读取 CSV，请稍候")
-        try:
-            outcome = self._import_csv_folder_path(folder)
-        finally:
-            self.hide_busy_overlay()
-        if not outcome.imported and not outcome.skipped_duplicates and not outcome.failed_files:
-            QMessageBox.information(self, "批量导入", "所选文件夹中没有找到 CSV 文件。")
+        if self._active_batch_import_thread is not None:
+            QMessageBox.information(self, "批量导入", "已有批量导入任务正在进行，请稍候。")
             return
-        parts = [f"成功导入 {len(outcome.imported)} 个数据集"]
-        if outcome.imported:
-            parts.append("已导入: " + "、".join(outcome.imported))
-        if outcome.skipped_duplicates:
-            parts.append("重复跳过: " + "、".join(outcome.skipped_duplicates))
-        if outcome.failed_files:
-            parts.append("导入失败: " + "、".join(outcome.failed_files))
-        self.statusBar().showMessage(f"批量导入完成，成功 {len(outcome.imported)} 个", 5000)
-        QMessageBox.information(self, "批量导入结果", "\n".join(parts))
+        self._start_batch_import(folder)
 
     def _import_csv_folder_path(self, folder: str | Path) -> BatchImportOutcome:
         directory = Path(folder)
-        outcome = BatchImportOutcome(imported=[], skipped_duplicates=[], failed_files=[])
+        outcome = BatchImportOutcome(imported=[], skipped_duplicates=[], failed_files=[], failure_details=[])
         files = sorted(path for path in directory.iterdir() if path.is_file() and path.suffix.lower() == ".csv")
         for csv_path in files:
             display_name = csv_path.name
@@ -984,11 +1138,93 @@ class MainWindow(QMainWindow):
                     display_name=display_name,
                     interactive=False,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 outcome.failed_files.append(csv_path.name)
+                outcome.failure_details.append((csv_path.name, str(exc)))
                 continue
             outcome.imported.append(display_name)
         return outcome
+
+    def _start_batch_import(self, folder: str | Path) -> None:
+        self._active_batch_import_token += 1
+        token = self._active_batch_import_token
+        self.show_busy_overlay("正在批量导入...", "正在准备文件列表")
+        if self._busy_overlay is not None:
+            self._busy_overlay.set_progress(0, 1)
+        thread = QThread(self)
+        worker = BatchImportWorker(self.repo.db_path, folder, token)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._handle_batch_import_progress, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._handle_batch_import_finished, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(self._handle_batch_import_failed, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._handle_batch_import_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._active_batch_import_thread = thread
+        self._active_batch_import_worker = worker
+        thread.start()
+
+    @Slot(int, object)
+    def _handle_batch_import_progress(self, token: int, payload: object) -> None:
+        if token != self._active_batch_import_token:
+            return
+        assert isinstance(payload, BatchImportProgress)
+        title = f"正在批量导入 {payload.current}/{payload.total}"
+        detail = (
+            f"当前文件: {payload.current_name}\n"
+            f"成功 {payload.imported_count} 个，跳过 {payload.skipped_count} 个，失败 {payload.failed_count} 个"
+        )
+        if self._busy_overlay is not None:
+            self._busy_overlay.set_message(title, detail)
+            self._busy_overlay.set_progress(payload.current, payload.total)
+
+    @Slot(int, object)
+    def _handle_batch_import_finished(self, token: int, payload: object) -> None:
+        if token != self._active_batch_import_token:
+            return
+        self.hide_busy_overlay()
+        assert isinstance(payload, BatchImportOutcome)
+        if not payload.imported and not payload.skipped_duplicates and not payload.failed_files:
+            QMessageBox.information(self, "批量导入", "所选文件夹中没有找到 CSV 文件。")
+            return
+        parts = [f"成功导入 {len(payload.imported)} 个数据集"]
+        if payload.skipped_duplicates:
+            parts.append(f"重复跳过 {len(payload.skipped_duplicates)} 个")
+        if payload.failed_files:
+            parts.append(f"导入失败 {len(payload.failed_files)} 个")
+        if payload.skipped_duplicates:
+            samples = "、".join(payload.skipped_duplicates[:3])
+            suffix = "" if len(payload.skipped_duplicates) <= 3 else f" 等 {len(payload.skipped_duplicates)} 个文件"
+            parts.append(f"重复示例: {samples}{suffix}")
+        if payload.failure_details:
+            samples = "；".join(f"{name}: {reason}" for name, reason in payload.failure_details[:3])
+            suffix = "" if len(payload.failure_details) <= 3 else f"；等 {len(payload.failure_details)} 个文件"
+            parts.append(f"失败示例: {samples}{suffix}")
+        elif payload.failed_files:
+            samples = "、".join(payload.failed_files[:3])
+            suffix = "" if len(payload.failed_files) <= 3 else f" 等 {len(payload.failed_files)} 个文件"
+            parts.append(f"失败示例: {samples}{suffix}")
+        self.statusBar().showMessage(
+            f"批量导入完成：成功 {len(payload.imported)}，跳过 {len(payload.skipped_duplicates)}，失败 {len(payload.failed_files)}",
+            5000,
+        )
+        QMessageBox.information(self, "批量导入结果", "\n".join(parts))
+
+    @Slot(int, str)
+    def _handle_batch_import_failed(self, token: int, message: str) -> None:
+        if token != self._active_batch_import_token:
+            return
+        self.hide_busy_overlay()
+        QMessageBox.warning(self, "批量导入失败", message)
+
+    @Slot()
+    def _handle_batch_import_thread_finished(self) -> None:
+        self._active_batch_import_thread = None
+        self._active_batch_import_worker = None
 
     def _import_csv_with_mapping(
         self,
@@ -1701,6 +1937,10 @@ class MainWindow(QMainWindow):
         self.hide_busy_overlay()
         if self._trade_history_dialog is not None:
             self._trade_history_dialog.close()
+        if self._active_batch_import_thread and self._active_batch_import_thread.isRunning():
+            logger.bind(component="batch_import").warning("event=close_waiting_for_batch_import_thread")
+            self._active_batch_import_thread.quit()
+            self._active_batch_import_thread.wait(3000)
         if self._active_loader_thread and self._active_loader_thread.isRunning():
             logger.bind(component="session_load").warning("event=close_waiting_for_loader_thread")
             self._active_loader_thread.quit()

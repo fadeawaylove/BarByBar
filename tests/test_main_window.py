@@ -13,7 +13,7 @@ from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, WindowBars
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
-from barbybar.ui.main_window import DataSetManagerDialog, DrawingPropertiesDialog, MainWindow, SessionLibraryDialog
+from barbybar.ui.main_window import BatchImportOutcome, BatchImportProgress, DataSetManagerDialog, DrawingPropertiesDialog, MainWindow, SessionLibraryDialog
 
 
 def _app() -> QApplication:
@@ -106,6 +106,16 @@ def _wait_for_loaded_session(app: QApplication, window: MainWindow, timeout_s: f
         if window.engine is not None and window.current_session_id is not None:
             return
     raise AssertionError("session did not load in time")
+
+
+def _wait_for_batch_import(app: QApplication, window: MainWindow, timeout_s: float = 5.0) -> None:
+    started = perf_counter()
+    while perf_counter() - started < timeout_s:
+        app.processEvents()
+        thread = window._active_batch_import_thread
+        if thread is None or not thread.isRunning():
+            return
+    raise AssertionError("batch import did not finish in time")
 
 
 def test_main_window_uses_timeframe_shortcut_buttons(window: MainWindow) -> None:
@@ -896,13 +906,15 @@ def test_import_csv_folder_imports_valid_files_and_skips_duplicate_by_display_na
     monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *args: captured.append(args[2]))
 
     window.import_csv_folder()
+    _wait_for_batch_import(app, window)
 
     datasets = repo.list_datasets()
     assert [dataset.display_name for dataset in datasets] == ["sample.csv", valid_a.name]
     assert len(captured) == 1
     assert "成功导入 1 个数据集" in captured[0]
-    assert f"已导入: {valid_b.name}" in captured[0]
-    assert f"重复跳过: {valid_a.name}" in captured[0]
+    assert "重复跳过 1 个" in captured[0]
+    assert f"重复示例: {valid_a.name}" in captured[0]
+    assert valid_b.name not in captured[0]
     window.close()
     window.deleteLater()
     app.processEvents()
@@ -1125,9 +1137,100 @@ def test_import_csv_folder_uses_busy_overlay(monkeypatch, app: QApplication) -> 
     monkeypatch.setattr(window, "hide_busy_overlay", lambda: hidden.append(True))
 
     window.import_csv_folder()
+    _wait_for_batch_import(app, window)
 
-    assert shown == [("正在批量导入...", "正在逐个读取 CSV，请稍候")]
+    assert shown == [("正在批量导入...", "正在准备文件列表")]
     assert hidden == [True]
     window.close()
     window.deleteLater()
     app.processEvents()
+
+
+def test_batch_import_progress_updates_busy_overlay(window: MainWindow) -> None:
+    window.show_busy_overlay("初始", "准备中")
+    window._active_batch_import_token = 1
+
+    window._handle_batch_import_progress(
+        1,
+        BatchImportProgress(
+            current=3,
+            total=8,
+            current_name="sample.csv",
+            imported_count=2,
+            skipped_count=1,
+            failed_count=0,
+        ),
+    )
+
+    assert window._busy_overlay is not None
+    assert window._busy_overlay.title_label.text() == "正在批量导入 3/8"
+    assert window._busy_overlay.detail_label.text() == "当前文件: sample.csv\n成功 2 个，跳过 1 个，失败 0 个"
+    assert window._busy_overlay.progress.maximum() == 8
+    assert window._busy_overlay.progress.value() == 3
+
+
+def test_dataset_manager_shows_batch_import_progress_in_dialog(window: MainWindow) -> None:
+    dialog = DataSetManagerDialog(window.repo, window)
+    try:
+        window._active_batch_import_token = 1
+        dialog._handle_batch_import_progress(
+            1,
+            BatchImportProgress(
+                current=2,
+                total=5,
+                current_name="IC9999.CCFX_2005_1min.csv",
+                imported_count=1,
+                skipped_count=0,
+                failed_count=1,
+            ),
+        )
+
+        assert dialog._batch_progress_panel.isHidden() is False
+        assert dialog._batch_progress_title.text() == "正在批量导入 2/5"
+        assert dialog._batch_progress_detail.text() == (
+            "当前文件: IC9999.CCFX_2005_1min.csv\n成功 1 个，跳过 0 个，失败 1 个"
+        )
+        assert dialog._batch_progress_bar.maximum() == 5
+        assert dialog._batch_progress_bar.value() == 2
+        assert dialog._import_button.isEnabled() is True
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_dataset_manager_reject_is_blocked_while_batch_import_active(window: MainWindow, monkeypatch) -> None:
+    dialog = DataSetManagerDialog(window.repo, window)
+    messages: list[str] = []
+    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *args: messages.append(args[2]))
+    try:
+        dialog._set_batch_import_active(True)
+        dialog.reject()
+
+        assert messages == ["批量导入仍在进行中，请等待完成。"]
+        assert dialog.isVisible() is False
+        assert dialog._batch_import_active is True
+    finally:
+        dialog._set_batch_import_active(False)
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_batch_import_result_message_includes_failure_reason(window: MainWindow, monkeypatch) -> None:
+    captured: list[str] = []
+    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *args: captured.append(args[2]))
+    window._active_batch_import_token = 1
+
+    window._handle_batch_import_finished(
+        1,
+        BatchImportOutcome(
+            imported=["ok.csv"],
+            skipped_duplicates=[],
+            failed_files=["IC9999.CCFX_2005_1min.csv"],
+            failure_details=[("IC9999.CCFX_2005_1min.csv", "Invalid row for timestamp 2005-01-04 09:16:00: numeric field 'close' is empty")],
+        ),
+    )
+
+    assert len(captured) == 1
+    assert "成功导入 1 个数据集" in captured[0]
+    assert "导入失败 1 个" in captured[0]
+    assert "IC9999.CCFX_2005_1min.csv: Invalid row for timestamp 2005-01-04 09:16:00: numeric field 'close' is empty" in captured[0]

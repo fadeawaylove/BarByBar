@@ -130,3 +130,22 @@ def test_infer_symbol_from_filename_extracts_leading_symbol() -> None:
 
 def test_infer_symbol_from_filename_returns_unknown_for_missing_prefix() -> None:
     assert infer_symbol_from_filename("...sample.csv") == "UNKNOWN"
+
+
+def test_import_reports_empty_numeric_field_with_clear_error() -> None:
+    temp_dir = Path(".test_tmp") / f"csv-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        csv_path = temp_dir / "empty-close.csv"
+        csv_path.write_text(
+            "datetime,open,high,low,close,volume\n"
+            "2005-01-04 09:16:00,1,2,0.5,,10\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            load_bars_from_csv(csv_path)
+
+        assert str(exc_info.value) == "Invalid row for timestamp 2005-01-04 09:16:00: numeric field 'close' is empty"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
