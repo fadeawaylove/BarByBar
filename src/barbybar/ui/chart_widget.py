@@ -304,6 +304,9 @@ class CandleViewBox(pg.ViewBox):
 
 
 class ChartWidget(QWidget):
+    _FIB_LABEL_X_OFFSET = 0.35
+    _MIN_BAR_PIXELS = 5.0
+
     lineAdded = Signal()
     drawingsChanged = Signal()
     drawingToolChanged = Signal(object)
@@ -654,7 +657,7 @@ class ChartWidget(QWidget):
         self._total_count = max(0, total_count)
         self._cursor = cursor if self._bars else -1
         self._viewport.max_bars_in_view = max(200, self._total_count or len(self._bars))
-        self._viewport.bars_in_view = min(max(120, self._viewport.min_bars_in_view), self._viewport.max_bars_in_view)
+        self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         if not preserve_viewport:
             self._pending_drawing_anchors = []
             self._drawing_preview_anchor = None
@@ -687,7 +690,7 @@ class ChartWidget(QWidget):
 
     def reset_viewport(self, follow_latest: bool = True) -> None:
         self._viewport.follow_latest = follow_latest
-        self._viewport.bars_in_view = min(max(120, self._viewport.min_bars_in_view), self._viewport.max_bars_in_view)
+        self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         self._viewport.right_edge_index = self._cursor + 1 if self._cursor >= 0 else 0.0
         self._apply_viewport()
 
@@ -696,7 +699,7 @@ class ChartWidget(QWidget):
             return
         old_bars = self._viewport.bars_in_view
         new_bars = int(round(old_bars * scale))
-        new_bars = max(self._viewport.min_bars_in_view, min(new_bars, self._viewport.max_bars_in_view))
+        new_bars = self._clamp_bars_in_view(new_bars)
         if new_bars == old_bars:
             return
         anchor_x = float(self._cursor)
@@ -751,7 +754,26 @@ class ChartWidget(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
+        if self._bars:
+            clamped_bars = self._clamp_bars_in_view(self._viewport.bars_in_view)
+            if clamped_bars != self._viewport.bars_in_view:
+                self._viewport.bars_in_view = clamped_bars
+                self._apply_viewport()
         self._position_hover_card()
+
+    def _max_readable_bars_in_view(self) -> int:
+        plot_width = self.price_plot.sceneBoundingRect().width()
+        if plot_width <= 1:
+            plot_width = float(max(self.width(), self.graphics.width(), 0))
+        if plot_width <= 1:
+            return self._viewport.max_bars_in_view
+        readable_cap = int(floor(plot_width / self._MIN_BAR_PIXELS))
+        return max(self._viewport.min_bars_in_view, min(readable_cap, self._viewport.max_bars_in_view))
+
+    def _clamp_bars_in_view(self, bars_in_view: int) -> int:
+        logical_cap = max(self._viewport.min_bars_in_view, min(int(bars_in_view), self._viewport.max_bars_in_view))
+        readable_cap = self._max_readable_bars_in_view()
+        return min(logical_cap, readable_cap)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
@@ -1701,6 +1723,10 @@ class ChartWidget(QWidget):
         if drawing.tool_type is DrawingToolType.TEXT and drawing.anchors:
             rect = self._text_scene_rect(drawing)
             return (0.0 if rect.contains(scene_pos) else None), False
+        if drawing.tool_type is DrawingToolType.HORIZONTAL_LINE and drawing.anchors:
+            line_scene = self.price_plot.vb.mapViewToScene(QPointF(float(self._global_start_index), float(drawing.anchors[0].y)))
+            distance = abs(float(scene_pos.y()) - float(line_scene.y()))
+            return (distance if distance <= DRAWING_HIT_DISTANCE_PX else None), False
         segments = self._drawing_segments(drawing)
         min_distance: float | None = None
         for x_values, y_values in segments:
@@ -2307,6 +2333,21 @@ class ChartWidget(QWidget):
             if not preview:
                 self._add_drawing_anchor_items(drawing, drawing_index, is_hovered)
             return
+        if drawing.tool_type is DrawingToolType.HORIZONTAL_LINE and drawing.anchors:
+            item = pg.InfiniteLine(
+                pos=drawing.anchors[0].y,
+                angle=0,
+                movable=False,
+                pen=self._drawing_pen(style, preview=preview, highlighted=is_hovered),
+            )
+            item._barbybar_line = True
+            item._barbybar_drawing_id = drawing.id
+            item._barbybar_drawing_tool = drawing.tool_type.value
+            item.setZValue(18 if preview else 17)
+            self.price_plot.addItem(item)
+            if not preview:
+                self._add_drawing_anchor_items(drawing, drawing_index, is_hovered)
+            return
         pen = self._drawing_pen(style, preview=preview, highlighted=is_hovered)
         fill_item = self._drawing_fill_item(drawing, style, preview=preview)
         if fill_item is not None:
@@ -2341,8 +2382,7 @@ class ChartWidget(QWidget):
         if drawing.tool_type is DrawingToolType.FIB_RETRACEMENT and len(anchors) >= 2:
             return self._fib_segments(drawing)
         if drawing.tool_type is DrawingToolType.HORIZONTAL_LINE and anchors:
-            left = self._global_start_index - self._left_padding
-            right = max(self._cursor + 1 + self._right_padding, self.window_end_index + self._right_padding if self._bars else left + 1)
+            left, right = self.price_plot.viewRange()[0]
             return [([left, right], [anchors[0].y, anchors[0].y])]
         if drawing.tool_type is DrawingToolType.HORIZONTAL_RAY and anchors:
             right = max(self._cursor + 1 + self._right_padding, self.window_end_index + self._right_padding if self._bars else anchors[0].x + 1)
@@ -2371,7 +2411,6 @@ class ChartWidget(QWidget):
         if drawing.tool_type is not DrawingToolType.FIB_RETRACEMENT or len(drawing.anchors) < 2:
             return []
         first, second = drawing.anchors[:2]
-        left = min(first.x, second.x)
         right = max(first.x, second.x)
         y_start = first.y
         y_end = second.y
@@ -2386,8 +2425,8 @@ class ChartWidget(QWidget):
                 parts.append(format_price(self._snap_price(price), self._tick_size))
             if not parts:
                 continue
-            item = pg.TextItem("  ".join(parts), color=str(style["color"]), fill=pg.mkBrush(255, 255, 255, 220), anchor=(1, 0.5))
-            item.setPos(right, price)
+            item = pg.TextItem("  ".join(parts), color=str(style["color"]), fill=pg.mkBrush(255, 255, 255, 220), anchor=(0, 0.5))
+            item.setPos(right + self._FIB_LABEL_X_OFFSET, price)
             items.append(item)
         return items
 

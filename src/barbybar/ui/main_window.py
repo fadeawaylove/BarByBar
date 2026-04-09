@@ -790,14 +790,14 @@ class TradeHistoryDialog(QDialog):
         trade_number = item.data(Qt.ItemDataRole.UserRole)
         if trade_number is None:
             return
-        self.owner.select_trade_history_item(int(trade_number), focus_view="entry")
+        self.owner.select_trade_history_item(int(trade_number), focus_view="exit")
         self.refresh_items()
 
     def _handle_item_double_clicked(self, item: QListWidgetItem) -> None:
         trade_number = item.data(Qt.ItemDataRole.UserRole)
         if trade_number is None:
             return
-        self.owner.select_trade_history_item(int(trade_number), focus_view="entry")
+        self.owner.select_trade_history_item(int(trade_number), focus_view="exit")
         self.owner.toggle_selected_trade_focus()
         self.refresh_items()
 

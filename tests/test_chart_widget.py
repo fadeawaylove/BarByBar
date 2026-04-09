@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 
+import pyqtgraph as pg
 import pytest
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QKeyEvent
@@ -56,6 +57,7 @@ def widget(app: QApplication) -> ChartWidget:
 
 
 def test_zoom_and_anchor_stability(widget: ChartWidget) -> None:
+    widget.resize(900, 600)
     widget.set_full_data(_bars())
     widget.set_cursor(199)
     old_bars = widget.viewport_state.bars_in_view
@@ -70,6 +72,43 @@ def test_zoom_and_anchor_stability(widget: ChartWidget) -> None:
     new_left = widget.viewport_state.right_edge_index - widget.viewport_state.bars_in_view
     new_anchor_ratio = (latest_x - new_left) / widget.viewport_state.bars_in_view
     assert abs(new_anchor_ratio - old_anchor_ratio) < 0.05
+
+
+def test_zoom_out_is_limited_by_dynamic_readable_bar_cap(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(120, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(100)
+    app.processEvents()
+
+    for _ in range(20):
+        widget.zoom_x(anchor_x=100, scale=1.18)
+
+    assert widget.viewport_state.bars_in_view == widget._max_readable_bars_in_view()
+
+
+def test_wider_chart_allows_more_bars_than_narrow_chart(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(120, 600)
+    widget.show()
+    app.processEvents()
+    narrow_cap = widget._max_readable_bars_in_view()
+
+    widget.resize(900, 600)
+    app.processEvents()
+
+    assert widget._max_readable_bars_in_view() > narrow_cap
+
+
+def test_reset_viewport_respects_dynamic_readable_bar_cap(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(120, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(100)
+    app.processEvents()
+
+    widget.reset_viewport(follow_latest=True)
+
+    assert widget.viewport_state.bars_in_view == widget._max_readable_bars_in_view()
 
 
 def test_pan_disables_follow_latest_and_cursor_update_keeps_view(widget: ChartWidget) -> None:
@@ -823,6 +862,80 @@ def test_vertical_line_tool_still_uses_view_height(widget: ChartWidget) -> None:
     assert segments == [([10.0, 10.0], [low, high])]
 
 
+def test_horizontal_line_renders_as_infinite_line(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.pan_x(40)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 105.0)])])
+    app.processEvents()
+
+    line_items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_drawing_tool", "") == DrawingToolType.HORIZONTAL_LINE.value and isinstance(item, pg.InfiniteLine)
+    ]
+
+    assert len(line_items) == 1
+    assert line_items[0].value() == 105.0
+
+
+def test_horizontal_line_hit_test_works_away_from_anchor(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.pan_x(40)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 105.0)])])
+    app.processEvents()
+
+    hit = widget._drawing_at_scene_pos(widget.price_plot.vb.mapViewToScene(QPointF(80.0, 105.0)))
+
+    assert hit is not None
+    assert hit[1].tool_type is DrawingToolType.HORIZONTAL_LINE
+
+
+def test_horizontal_ray_still_extends_from_anchor_only(widget: ChartWidget) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.pan_x(40)
+    drawing = ChartDrawing(
+        tool_type=DrawingToolType.HORIZONTAL_RAY,
+        anchors=[DrawingAnchor(10.0, 105.0)],
+    )
+
+    segments = widget._drawing_segments(drawing)
+
+    assert len(segments) == 1
+    assert segments[0][0][0] == 10.0
+    assert segments[0][0][1] > 10.0
+    assert segments[0][1] == [105.0, 105.0]
+
+
+def test_horizontal_line_stays_infinite_after_resize(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 105.0)])])
+    app.processEvents()
+
+    widget.resize(500, 600)
+    app.processEvents()
+
+    line_items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_drawing_tool", "") == DrawingToolType.HORIZONTAL_LINE.value and isinstance(item, pg.InfiniteLine)
+    ]
+
+    assert len(line_items) == 1
+    assert line_items[0].value() == 105.0
+
+
 def test_price_range_tool_creates_drawing_after_two_clicks(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -879,6 +992,7 @@ def test_fib_drawing_renders_level_labels(widget: ChartWidget, app: QApplication
 
     assert len(label_items) == 4
     assert any("0.5" in item.toPlainText() for item in label_items)
+    assert all(item.pos().x() > 15.0 for item in label_items)
 
 
 def test_text_tool_creates_placeholder_after_single_click(widget: ChartWidget, app: QApplication) -> None:

@@ -688,14 +688,14 @@ def test_trade_history_click_and_toggle_jump_between_entry_and_exit(window: Main
     item = window._trade_history_dialog.trade_history_list.item(0)
     window._trade_history_dialog._handle_item_clicked(item)
 
-    assert window.chart_widget._cursor == entry_index
+    assert window.chart_widget._cursor == exit_index
     assert window.chart_widget._focused_trade_points is None
-    assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到出场"
+    assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到入场"
 
     window._trade_history_dialog._toggle_selected_trade_focus()
 
-    assert window.chart_widget._cursor == exit_index
-    assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到入场"
+    assert window.chart_widget._cursor == entry_index
+    assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到出场"
 
 
 def test_tick_size_change_snaps_price_input(window: MainWindow) -> None:
