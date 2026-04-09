@@ -80,6 +80,78 @@ function Get-IncrementedVersion {
     return "$major.$minor.$patch"
 }
 
+function Get-GitHubRepositoryInfo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RemoteUrl
+    )
+
+    $trimmed = $RemoteUrl.Trim()
+    if ($trimmed -match '^git@github\.com:(?<slug>[^/]+/[^/]+?)(?:\.git)?$') {
+        $slug = $Matches['slug']
+    } elseif ($trimmed -match '^https://github\.com/(?<slug>[^/]+/[^/]+?)(?:\.git)?/?$') {
+        $slug = $Matches['slug']
+    } else {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Slug    = $slug
+        BaseUrl = "https://github.com/$slug"
+    }
+}
+
+function Write-ReleaseSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CurrentVersion,
+        [Parameter(Mandatory = $true)]
+        [string]$NextVersion,
+        [Parameter(Mandatory = $true)]
+        [string]$Branch,
+        [Parameter(Mandatory = $true)]
+        [string]$Tag,
+        [Parameter(Mandatory = $true)]
+        [string]$CommitSha,
+        [Parameter()]
+        [pscustomobject]$GitHubRepo
+    )
+
+    $zipAsset = "BarByBar-$Tag-windows-x64.zip"
+    $setupAsset = "BarByBar-$Tag-windows-x64-setup.exe"
+
+    Write-Output ''
+    Write-Output 'Published'
+    Write-Output "Version: $CurrentVersion -> $NextVersion"
+    Write-Output "Branch: $Branch"
+    Write-Output "Tag: $Tag"
+    Write-Output "Commit: $CommitSha"
+
+    if ($null -ne $GitHubRepo) {
+        $releasesPage = "$($GitHubRepo.BaseUrl)/releases"
+        $tagPage = "$($GitHubRepo.BaseUrl)/releases/tag/$Tag"
+        $workflowPage = "$($GitHubRepo.BaseUrl)/actions/workflows/release.yml"
+        $tagsPage = "$($GitHubRepo.BaseUrl)/tags"
+
+        Write-Output ''
+        Write-Output "Release page: $releasesPage"
+        Write-Output "Tag page: $tagPage"
+        Write-Output "Workflow page: $workflowPage"
+        Write-Output "Tags page: $tagsPage"
+
+        Write-Output ''
+        Write-Output 'Expected assets:'
+        Write-Output "  $zipAsset"
+        Write-Output "  $($GitHubRepo.BaseUrl)/releases/download/$Tag/$zipAsset"
+        Write-Output "  $setupAsset"
+        Write-Output "  $($GitHubRepo.BaseUrl)/releases/download/$Tag/$setupAsset"
+        Write-Output 'Assets are built and uploaded by the GitHub Actions release workflow; after pushing the tag it may take a few minutes to appear.'
+    } else {
+        Write-Output ''
+        Write-Output 'GitHub links: unavailable (origin is not a recognized GitHub remote)'
+    }
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
@@ -103,13 +175,15 @@ $nextVersion = Get-IncrementedVersion -Version $currentVersion -Part $normalized
 $updatedContent = [regex]::Replace(
     $versionFileContent,
     '__version__\s*=\s*"[^"]+"',
-    "__version__ = ""$nextVersion""",
+    "__version__ = \"$nextVersion\"",
     1
 )
 Set-Content -Path $versionFile -Value $updatedContent -NoNewline
 
 $tag = "v$nextVersion"
 $branch = (Get-GitOutput -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')).Trim()
+$remoteUrl = (Get-GitOutput -Arguments @('remote', 'get-url', 'origin')).Trim()
+$githubRepo = Get-GitHubRepositoryInfo -RemoteUrl $remoteUrl
 
 Invoke-Git -Arguments @('add', '.')
 Invoke-Git -Arguments @('commit', '-m', "Release $tag")
@@ -117,5 +191,5 @@ Invoke-Git -Arguments @('push', 'origin', $branch)
 Invoke-Git -Arguments @('tag', $tag)
 Invoke-Git -Arguments @('push', 'origin', $tag)
 
-Write-Output "Published $tag from branch $branch."
-
+$commitSha = (Get-GitOutput -Arguments @('rev-parse', '--short', 'HEAD')).Trim()
+Write-ReleaseSummary -CurrentVersion $currentVersion -NextVersion $nextVersion -Branch $branch -Tag $tag -CommitSha $commitSha -GitHubRepo $githubRepo
