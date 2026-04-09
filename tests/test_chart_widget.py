@@ -157,9 +157,9 @@ def test_hover_target_is_none_when_viewport_is_in_blank_space(widget: ChartWidge
     assert widget._hover_card.isHidden() is True
 
 
-def test_candle_color_constants_match_red_up_green_down() -> None:
-    assert UP_CANDLE_COLOR == "#d84a4a"
-    assert DOWN_CANDLE_COLOR == "#1f8b24"
+def test_candle_color_constants_match_white_up_black_down_theme() -> None:
+    assert UP_CANDLE_COLOR == "#000000"
+    assert DOWN_CANDLE_COLOR == "#000000"
 
 
 def test_chart_background_grid_is_disabled(widget: ChartWidget) -> None:

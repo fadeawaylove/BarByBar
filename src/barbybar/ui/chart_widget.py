@@ -14,8 +14,10 @@ from PySide6.QtWidgets import QApplication, QFrame, QGraphicsPathItem, QLabel, Q
 from barbybar.data.tick_size import format_price
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, normalize_drawing_style
 
-UP_CANDLE_COLOR = "#d84a4a"
-DOWN_CANDLE_COLOR = "#1f8b24"
+UP_CANDLE_COLOR = "#000000"
+DOWN_CANDLE_COLOR = "#000000"
+CANDLE_WICK_WIDTH = 1.4
+CANDLE_BODY_BORDER_WIDTH = 1.6
 SESSION_MARKER_COLOR = "#d6dde6"
 SESSION_OPEN_TIMES = (time(9, 0), time(21, 0))
 EMA_LINE_COLOR = "#d84a4a"
@@ -153,9 +155,9 @@ class CandlestickItem(pg.GraphicsObject):
             x = self._global_start_index + index
             bullish = bar.close >= bar.open
             candle_color = UP_CANDLE_COLOR if bullish else DOWN_CANDLE_COLOR
-            wick_pen = pg.mkPen(candle_color, width=1)
-            body_pen = pg.mkPen(candle_color, width=1)
-            body_brush = pg.mkBrush(QColor("white") if bullish else QColor(DOWN_CANDLE_COLOR))
+            wick_pen = pg.mkPen(candle_color, width=CANDLE_WICK_WIDTH)
+            body_pen = pg.mkPen(candle_color, width=CANDLE_BODY_BORDER_WIDTH)
+            body_brush = pg.mkBrush(QColor("white") if bullish else QColor("#000000"))
             painter.setPen(wick_pen)
             painter.drawLine(pg.QtCore.QPointF(x, bar.low), pg.QtCore.QPointF(x, bar.high))
             painter.setPen(body_pen)
