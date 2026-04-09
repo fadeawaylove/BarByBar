@@ -100,10 +100,7 @@ def normalize_drawing_style(tool_type: DrawingToolType, style: dict[str, Any] | 
     payload["font_size"] = max(8, int(payload.get("font_size", 12)))
     payload["text_color"] = str(payload.get("text_color") or payload["color"])
     payload["anchor_mode"] = str(payload.get("anchor_mode") or "free")
-    if tool_type is DrawingToolType.RAY:
-        payload["extend_left"] = False
-        payload["extend_right"] = True
-    elif tool_type is DrawingToolType.EXTENDED_LINE:
+    if tool_type is DrawingToolType.EXTENDED_LINE:
         payload["extend_left"] = True
         payload["extend_right"] = True
     elif tool_type is DrawingToolType.HORIZONTAL_RAY:

@@ -709,7 +709,10 @@ def test_ray_tool_creates_drawing_after_two_clicks(widget: ChartWidget, app: QAp
 
     drawing = widget.drawings()[0]
     assert drawing.tool_type is DrawingToolType.RAY
-    assert drawing.style["extend_right"] is True
+    assert drawing.style["extend_right"] is False
+    segments = widget._drawing_segments(drawing)
+    assert len(segments) == 3
+    assert segments[0] == ([10.0, 15.0], [100.0, 104.0])
 
 
 def test_horizontal_ray_tool_creates_drawing_after_single_click(widget: ChartWidget, app: QApplication) -> None:
@@ -1196,6 +1199,33 @@ def test_update_drawing_style_persists_normalized_style(widget: ChartWidget) -> 
     assert style["width"] == 3
     assert style["line_style"] == "dash"
     assert style["fill_opacity"] == 0.35
+
+
+def test_set_drawing_style_preset_applies_to_new_drawings(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawing_style_preset(DrawingToolType.RECTANGLE, {"color": "#3366ff", "width": 3, "fill_opacity": 0.35})
+    widget.set_active_drawing_tool(DrawingToolType.RECTANGLE)
+    app.processEvents()
+
+    widget._handle_scene_click(_FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(10, 100))))
+    widget._handle_scene_click(_FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(15, 110))))
+
+    drawing = widget.drawings()[0]
+    assert drawing.style["color"] == "#3366ff"
+    assert drawing.style["width"] == 3
+    assert drawing.style["fill_opacity"] == 0.35
+
+
+def test_text_style_preset_does_not_reuse_previous_text_content(widget: ChartWidget) -> None:
+    widget.set_drawing_style_preset(DrawingToolType.TEXT, {"text": "old", "font_size": 18, "text_color": "#3366ff"})
+
+    style = widget.drawing_style_preset(DrawingToolType.TEXT)
+    assert style["text"] == ""
+    assert style["font_size"] == 18
+    assert style["text_color"] == "#3366ff"
 
 
 def test_set_drawings_normalizes_legacy_empty_style(widget: ChartWidget) -> None:

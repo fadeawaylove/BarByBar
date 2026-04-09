@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import time
 from enum import Enum
-from math import ceil, floor, hypot
+from math import ceil, floor, hypot, sqrt
 
 import pyqtgraph as pg
 from loguru import logger
@@ -322,6 +322,7 @@ class ChartWidget(QWidget):
         self._active_drawing_tool: DrawingToolType | None = None
         self._pending_drawing_anchors: list[DrawingAnchor] = []
         self._drawings: list[ChartDrawing] = []
+        self._drawing_style_defaults: dict[DrawingToolType, dict[str, object]] = {}
         self._drawing_preview_anchor: DrawingAnchor | None = None
         self._viewport = ViewportState()
         self._right_padding = 3.0
@@ -509,6 +510,18 @@ class ChartWidget(QWidget):
         self._active_drag_target = ActiveDragTarget()
         self._apply_hover_target(self._empty_hover_target())
         self._rebuild_line_items()
+
+    def set_drawing_style_preset(self, tool: DrawingToolType, style: dict[str, object]) -> None:
+        normalized = normalize_drawing_style(tool, dict(style))
+        if tool is DrawingToolType.TEXT:
+            normalized["text"] = ""
+        self._drawing_style_defaults[tool] = normalized
+
+    def drawing_style_preset(self, tool: DrawingToolType) -> dict[str, object]:
+        style = normalize_drawing_style(tool, self._drawing_style_defaults.get(tool))
+        if tool is DrawingToolType.TEXT:
+            style["text"] = ""
+        return style
 
     def drawings(self) -> list[ChartDrawing]:
         return [
@@ -714,8 +727,12 @@ class ChartWidget(QWidget):
         self._pending_drawing_anchors = []
         self._drawing_preview_anchor = None
         self._active_drawing_tool = None
+        self._clear_drawing_drag_state()
+        self._active_drag_target = ActiveDragTarget()
+        self._apply_hover_target(self._empty_hover_target())
         self._sync_plot_data()
         self._apply_viewport()
+        self._set_interaction_mode(InteractionMode.BROWSE)
         self.drawingsChanged.emit()
         self.drawingToolChanged.emit(None)
 
@@ -1877,7 +1894,7 @@ class ChartWidget(QWidget):
         drawing = ChartDrawing(
             tool_type=tool,
             anchors=[DrawingAnchor(item.x, item.y) for item in self._pending_drawing_anchors[:needed]],
-            style=normalize_drawing_style(tool),
+            style=self.drawing_style_preset(tool),
         )
         self._drawings.append(drawing)
         self._pending_drawing_anchors = []
@@ -2311,8 +2328,10 @@ class ChartWidget(QWidget):
     def _drawing_segments(self, drawing: ChartDrawing) -> list[tuple[list[float], list[float]]]:
         anchors = drawing.anchors
         style = normalize_drawing_style(drawing.tool_type, drawing.style)
-        if drawing.tool_type in {DrawingToolType.TREND_LINE, DrawingToolType.RAY, DrawingToolType.EXTENDED_LINE} and len(anchors) >= 2:
+        if drawing.tool_type in {DrawingToolType.TREND_LINE, DrawingToolType.EXTENDED_LINE} and len(anchors) >= 2:
             return [self._line_points_with_extension(anchors[0], anchors[1], style["extend_left"], style["extend_right"])]
+        if drawing.tool_type is DrawingToolType.RAY and len(anchors) >= 2:
+            return self._arrow_line_segments(anchors[0], anchors[1])
         if drawing.tool_type is DrawingToolType.FIB_RETRACEMENT and len(anchors) >= 2:
             return self._fib_segments(drawing)
         if drawing.tool_type is DrawingToolType.HORIZONTAL_LINE and anchors:
@@ -2451,6 +2470,32 @@ class ChartWidget(QWidget):
         start_y = y1 + slope * (start_x - x1)
         end_y = y1 + slope * (end_x - x1)
         return ([start_x, end_x], [start_y, end_y])
+
+    def _arrow_line_segments(self, first: DrawingAnchor, second: DrawingAnchor) -> list[tuple[list[float], list[float]]]:
+        x1, y1 = float(first.x), float(first.y)
+        x2, y2 = float(second.x), float(second.y)
+        dx = x2 - x1
+        dy = y2 - y1
+        length = sqrt(dx * dx + dy * dy)
+        if length <= 0.0001:
+            return [([x1, x2], [y1, y2])]
+        head_length = min(max(length * 0.22, 0.8), 2.2)
+        head_width = head_length * 0.6
+        ux = dx / length
+        uy = dy / length
+        base_x = x2 - ux * head_length
+        base_y = y2 - uy * head_length
+        perp_x = -uy
+        perp_y = ux
+        left_x = base_x + perp_x * head_width
+        left_y = base_y + perp_y * head_width
+        right_x = base_x - perp_x * head_width
+        right_y = base_y - perp_y * head_width
+        return [
+            ([x1, x2], [y1, y2]),
+            ([left_x, x2], [left_y, y2]),
+            ([right_x, x2], [right_y, y2]),
+        ]
 
     def _rebuild_trade_geometry(self, trades: list[Trade] | None) -> None:
         if not self._bars or self._cursor < 0:

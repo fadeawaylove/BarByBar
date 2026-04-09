@@ -286,7 +286,7 @@ class DrawingPropertiesDialog(QDialog):
         self.extend_left_check.setChecked(bool(style["extend_left"]))
         self.extend_right_check = QCheckBox("向右延伸")
         self.extend_right_check.setChecked(bool(style["extend_right"]))
-        if drawing.tool_type in {DrawingToolType.TREND_LINE, DrawingToolType.RAY, DrawingToolType.EXTENDED_LINE}:
+        if drawing.tool_type in {DrawingToolType.TREND_LINE, DrawingToolType.EXTENDED_LINE}:
             form.addRow("", self.extend_left_check)
             form.addRow("", self.extend_right_check)
 
@@ -671,6 +671,7 @@ class MainWindow(QMainWindow):
         self._selected_trade_number: int | None = None
         self._selected_trade_view: str = "entry"
         self._trade_history_dialog: TradeHistoryDialog | None = None
+        self._drawing_style_presets: dict[DrawingToolType, dict[str, object]] = {}
 
         self._build_ui()
         self._autoload_recent_session()
@@ -726,11 +727,11 @@ class MainWindow(QMainWindow):
             timeframe_toolbar.addWidget(button)
         for label, tool in [
             ("线段", DrawingToolType.TREND_LINE),
+            ("箭头线", DrawingToolType.RAY),
             ("斐波那契", DrawingToolType.FIB_RETRACEMENT),
             ("水平线", DrawingToolType.HORIZONTAL_LINE),
             ("矩形", DrawingToolType.RECTANGLE),
             ("文字", DrawingToolType.TEXT),
-            ("箭头线", DrawingToolType.RAY),
         ]:
             button = QPushButton("")
             button.setCheckable(True)
@@ -758,6 +759,7 @@ class MainWindow(QMainWindow):
         self.chart_widget.protectiveOrderCreated.connect(self._handle_chart_protective_order_created)
         self.chart_widget.orderPreviewConfirmed.connect(self._handle_order_preview_confirmed)
         self.chart_widget.orderLineActionRequested.connect(self._handle_order_line_action_requested)
+        self._apply_drawing_style_presets()
         layout.addWidget(self.chart_widget)
 
         controls = QHBoxLayout()
@@ -1150,6 +1152,10 @@ class MainWindow(QMainWindow):
         self.price_spin.setValue(0.0)
         self.price_spin.blockSignals(False)
         self._sync_draw_order_controls()
+
+    def _apply_drawing_style_presets(self) -> None:
+        for tool, style in self._drawing_style_presets.items():
+            self.chart_widget.set_drawing_style_preset(tool, style)
 
     def _update_ui_from_engine(self) -> None:
         if not self.engine:
@@ -1878,6 +1884,14 @@ class MainWindow(QMainWindow):
         )
         if choice is QMessageBox.StandardButton.Yes:
             self.chart_widget.clear_lines()
+            if self.engine:
+                try:
+                    self.save_session(trigger="clear_drawings")
+                except KeyError:
+                    logger.bind(component="session", session_id=self.current_session_id or -1).warning(
+                        "event=clear_drawings_immediate_save_unavailable_fallback_to_autosave"
+                    )
+                    self._schedule_auto_save("clear_drawings")
 
     def _handle_tick_size_changed(self, value: float) -> None:
         tick_size = max(round(float(value), 2), 0.01)
@@ -2022,6 +2036,11 @@ class MainWindow(QMainWindow):
             self.chart_widget.delete_drawing(drawing.id, drawing_index)
             return
         self.chart_widget.update_drawing_style(drawing.id, style, drawing_index)
+        preset_style = normalize_drawing_style(drawing.tool_type, dict(style))
+        if drawing.tool_type is DrawingToolType.TEXT:
+            preset_style["text"] = ""
+        self._drawing_style_presets[drawing.tool_type] = preset_style
+        self.chart_widget.set_drawing_style_preset(drawing.tool_type, preset_style)
 
     @staticmethod
     def _order_type_label(order_type: OrderLineType) -> str:

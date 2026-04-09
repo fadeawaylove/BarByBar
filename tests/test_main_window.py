@@ -4,7 +4,7 @@ from time import perf_counter
 from uuid import uuid4
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QMessageBox, QPushButton, QVBoxLayout
 
 from barbybar.data.csv_importer import MissingColumnsError
@@ -19,6 +19,22 @@ from barbybar.ui.main_window import DataSetManagerDialog, DrawingPropertiesDialo
 def _app() -> QApplication:
     app = QApplication.instance()
     return app or QApplication([])
+
+
+class _FakeSceneClick:
+    def __init__(self, scene_pos: QPointF, button: Qt.MouseButton = Qt.MouseButton.LeftButton) -> None:
+        self._scene_pos = scene_pos
+        self._button = button
+        self._accepted = False
+
+    def scenePos(self):
+        return self._scene_pos
+
+    def button(self):
+        return self._button
+
+    def accept(self) -> None:
+        self._accepted = True
 
 
 @pytest.fixture(scope="module")
@@ -110,6 +126,18 @@ def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None
         assert button.text() == ""
         assert button.minimumWidth() >= 48 or button.width() >= 48
         assert button.minimumHeight() >= 36 or button.height() >= 36
+
+
+def test_drawing_toolbar_places_arrow_line_immediately_after_trend_line(window: MainWindow) -> None:
+    buttons = list(window._drawing_tool_buttons)
+    assert buttons == [
+        DrawingToolType.TREND_LINE,
+        DrawingToolType.RAY,
+        DrawingToolType.FIB_RETRACEMENT,
+        DrawingToolType.HORIZONTAL_LINE,
+        DrawingToolType.RECTANGLE,
+        DrawingToolType.TEXT,
+    ]
 
 
 def test_main_window_has_no_autoplay_controls(window: MainWindow) -> None:
@@ -350,16 +378,31 @@ def test_confirm_clear_drawings_cancels_without_side_effect(window: MainWindow, 
 
 def test_confirm_clear_drawings_confirms_and_clears(window: MainWindow, monkeypatch) -> None:
     _seed_engine(window)
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
     window.chart_widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 100.0)])])
     monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.warning", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    captured: list[str] = []
+
+    def _record_save(*, trigger: str = "manual") -> None:
+        captured.append(trigger)
+        window._auto_save_timer.stop()
+        window._session_dirty = False
+
+    monkeypatch.setattr(window, "save_session", _record_save)
     window._session_dirty = False
     window._auto_save_timer.stop()
 
     window.confirm_clear_drawings()
 
     assert window.chart_widget.drawings() == []
-    assert window._session_dirty is True
-    assert window._auto_save_timer.isActive() is True
+    assert "clear_drawings" in captured
+    assert window._session_dirty is False
+    assert window._auto_save_timer.isActive() is False
     window._auto_save_timer.stop()
     window._session_dirty = False
 
@@ -411,6 +454,75 @@ def test_drawing_properties_request_updates_style_and_marks_session_dirty(window
     assert window.chart_widget.drawings()[0].style["width"] == 3
     assert window._session_dirty is True
     assert window._auto_save_timer.isActive() is True
+    assert window.chart_widget.drawing_style_preset(DrawingToolType.TREND_LINE)["color"] == "#3366ff"
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_new_drawing_reuses_last_style_for_same_tool(window, app: QApplication, monkeypatch) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
+    window.chart_widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(12.0, 103.0)])])
+
+    class _FakeDialog:
+        def __init__(self, drawing, parent):
+            self.drawing = drawing
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def style_payload(self):
+            return {"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35}
+
+    monkeypatch.setattr("barbybar.ui.main_window.DrawingPropertiesDialog", _FakeDialog)
+    window._handle_drawing_properties_requested(window.chart_widget.drawings()[0], 0)
+
+    window.chart_widget.set_drawings([])
+    window._toggle_drawing_tool(DrawingToolType.RECTANGLE, True)
+    app.processEvents()
+    window.chart_widget._handle_scene_click(_FakeSceneClick(window.chart_widget.price_plot.vb.mapViewToScene(QPointF(14, 101))))
+    window.chart_widget._handle_scene_click(_FakeSceneClick(window.chart_widget.price_plot.vb.mapViewToScene(QPointF(16, 104))))
+
+    drawing = window.chart_widget.drawings()[0]
+    assert drawing.style["color"] == "#3366ff"
+    assert drawing.style["width"] == 3
+    assert drawing.style["fill_opacity"] == 0.35
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_text_preset_stores_style_without_reusing_content(window, monkeypatch) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
+    window.chart_widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TEXT, anchors=[DrawingAnchor(10.0, 100.0)], style={"text": ""})])
+
+    class _FakeDialog:
+        def __init__(self, drawing, parent):
+            self.drawing = drawing
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def style_payload(self):
+            return {"text": "hello", "font_size": 18, "text_color": "#3366ff", "color": "#3366ff"}
+
+    monkeypatch.setattr("barbybar.ui.main_window.DrawingPropertiesDialog", _FakeDialog)
+    window._handle_drawing_properties_requested(window.chart_widget.drawings()[0], 0)
+
+    preset = window.chart_widget.drawing_style_preset(DrawingToolType.TEXT)
+    assert preset["font_size"] == 18
+    assert preset["text_color"] == "#3366ff"
+    assert preset["text"] == ""
     window._auto_save_timer.stop()
     window._session_dirty = False
 
