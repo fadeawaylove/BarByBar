@@ -807,6 +807,7 @@ class ChartWidget(QWidget):
         preview = self._current_preview_drawing()
         if preview is not None:
             self._add_drawing_items(preview, preview=True)
+        self._add_snap_preview_item()
 
     def _rebuild_trade_marker_items(self) -> None:
         for item in list(self.price_plot.items):
@@ -1738,6 +1739,24 @@ class ChartWidget(QWidget):
             item._barbybar_drawing_tool = drawing.tool_type.value
             item.setZValue(20)
             self.price_plot.addItem(item)
+
+    def _add_snap_preview_item(self) -> None:
+        if self._active_drawing_tool is None or self._drawing_preview_anchor is None:
+            return
+        if not (self._current_keyboard_modifiers() & Qt.KeyboardModifier.ControlModifier):
+            return
+        item = pg.ScatterPlotItem(
+            [self._drawing_preview_anchor.x],
+            [self._drawing_preview_anchor.y],
+            symbol="o",
+            size=11,
+            brush=pg.mkBrush("#fff7cc"),
+            pen=pg.mkPen("#f5b700", width=2.4),
+        )
+        item._barbybar_line = True
+        item._barbybar_snap_preview = True
+        item.setZValue(21)
+        self.price_plot.addItem(item)
 
     def _segment_distance_to_scene_pos(self, first: DrawingAnchor, second: DrawingAnchor, scene_pos) -> float:
         start = self.price_plot.vb.mapViewToScene(QPointF(first.x, first.y))

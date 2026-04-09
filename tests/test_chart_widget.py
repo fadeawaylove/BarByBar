@@ -559,6 +559,57 @@ def test_ctrl_preview_anchor_uses_same_snap_rule(widget: ChartWidget, app: QAppl
     assert anchor.y == widget._bars[11].high
 
 
+def test_ctrl_preview_shows_snap_highlight_item(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(11.3, 111.7)),))
+
+    snap_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_snap_preview", False)]
+    assert len(snap_items) == 1
+
+
+def test_preview_does_not_show_snap_highlight_without_ctrl(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.NoModifier)
+    app.processEvents()
+
+    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(11.3, 111.7)),))
+
+    snap_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_snap_preview", False)]
+    assert snap_items == []
+
+
+def test_ctrl_preview_snap_highlight_clears_outside_chart(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    inside = widget.price_plot.vb.mapViewToScene(QPointF(11.3, 111.7))
+    widget._handle_mouse_moved((inside,))
+    snap_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_snap_preview", False)]
+    assert len(snap_items) == 1
+
+    outside = widget.price_plot.sceneBoundingRect().topLeft() - QPointF(20.0, 20.0)
+    widget._handle_mouse_moved((outside,))
+
+    snap_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_snap_preview", False)]
+    assert snap_items == []
+
+
 def test_anchor_remains_free_without_ctrl(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
     widget.resize(900, 600)
     widget.show()

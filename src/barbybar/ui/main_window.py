@@ -6,7 +6,7 @@ from pathlib import Path
 from time import perf_counter
 
 from loguru import logger
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QPointF, QRectF, QSize, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QColor, QCloseEvent, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 
 from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
 from barbybar.data.tick_size import format_price, price_decimals_for_tick, snap_price
@@ -643,6 +643,9 @@ class TradeHistoryDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
+    _DRAWING_TOOL_ICON_SIZE = QSize(26, 20)
+    _DRAWING_TOOL_BUTTON_SIZE = QSize(48, 36)
+
     def __init__(self, repo: Repository) -> None:
         super().__init__()
         self.repo = repo
@@ -730,11 +733,14 @@ class MainWindow(QMainWindow):
             ("通道", DrawingToolType.PARALLEL_CHANNEL),
             ("文字", DrawingToolType.TEXT),
         ]:
-            button = QPushButton(self._drawing_tool_icon(tool))
+            button = QPushButton("")
             button.setCheckable(True)
             button.setToolTip(label)
             button.setAccessibleName(label)
-            button.setFixedWidth(34)
+            button.setIcon(self._drawing_tool_icon(tool))
+            button.setIconSize(self._DRAWING_TOOL_ICON_SIZE)
+            button.setFixedSize(self._DRAWING_TOOL_BUTTON_SIZE)
+            button.setStyleSheet(self._drawing_tool_button_stylesheet())
             button.clicked.connect(lambda checked, drawing_tool=tool: self._toggle_drawing_tool(drawing_tool, checked))
             self._drawing_tool_buttons[tool] = button
             chart_toolbar.addWidget(button)
@@ -2046,18 +2052,189 @@ class MainWindow(QMainWindow):
         return labels[tool]
 
     @staticmethod
-    def _drawing_tool_icon(tool: DrawingToolType) -> str:
-        icons = {
-            DrawingToolType.TREND_LINE: "/",
-            DrawingToolType.RAY: "↗",
-            DrawingToolType.EXTENDED_LINE: "↔",
-            DrawingToolType.FIB_RETRACEMENT: "ƒ",
-            DrawingToolType.HORIZONTAL_LINE: "─",
-            DrawingToolType.HORIZONTAL_RAY: "⇢",
-            DrawingToolType.VERTICAL_LINE: "│",
-            DrawingToolType.PARALLEL_CHANNEL: "∥",
-            DrawingToolType.RECTANGLE: "▭",
-            DrawingToolType.PRICE_RANGE: "◫",
-            DrawingToolType.TEXT: "T",
-        }
-        return icons[tool]
+    def _drawing_tool_button_stylesheet() -> str:
+        return (
+            "QPushButton {"
+            " background: #f8fafc;"
+            " border: 1px solid #cbd5e1;"
+            " border-radius: 7px;"
+            " padding: 0px;"
+            "}"
+            "QPushButton:hover {"
+            " background: #eef4fb;"
+            " border-color: #94a3b8;"
+            "}"
+            "QPushButton:pressed {"
+            " background: #e2e8f0;"
+            " border-color: #64748b;"
+            "}"
+            "QPushButton:checked {"
+            " background: #dbeafe;"
+            " border: 1px solid #3b82f6;"
+            "}"
+            "QPushButton:disabled {"
+            " background: #f8fafc;"
+            " border-color: #d7dee8;"
+            "}"
+        )
+
+    @classmethod
+    def _drawing_tool_icon(cls, tool: DrawingToolType) -> QIcon:
+        icon = QIcon()
+        for state, palette in [
+            (QIcon.State.Off, ("#1f2937", "#1f2937", "#ffffff", "#cbd5e1", "#f8fafc")),
+            (QIcon.State.On, ("#0f172a", "#2563eb", "#eff6ff", "#60a5fa", "#dbeafe")),
+        ]:
+            icon.addPixmap(cls._draw_drawing_tool_icon(tool, *palette), QIcon.Mode.Normal, state)
+        disabled = cls._draw_drawing_tool_icon(tool, "#94a3b8", "#94a3b8", "#ffffff", "#d7dee8", "#f8fafc")
+        icon.addPixmap(disabled, QIcon.Mode.Disabled, QIcon.State.Off)
+        icon.addPixmap(disabled, QIcon.Mode.Disabled, QIcon.State.On)
+        return icon
+
+    @classmethod
+    def _draw_drawing_tool_icon(
+        cls,
+        tool: DrawingToolType,
+        line_color: str,
+        accent_color: str,
+        fill_color: str,
+        secondary_color: str,
+        accent_fill: str,
+    ) -> QPixmap:
+        size = cls._DRAWING_TOOL_ICON_SIZE
+        pixmap = QPixmap(size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+
+        line_pen = QPen(QColor(line_color), 2.1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        accent_pen = QPen(QColor(accent_color), 2.1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        secondary_pen = QPen(QColor(secondary_color), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        fill_brush = QColor(fill_color)
+        accent_brush = QColor(accent_fill)
+        center_x = size.width() / 2
+        center_y = size.height() / 2
+
+        def draw_anchor(point: QPointF, radius: float = 2.1) -> None:
+            painter.setPen(QPen(QColor(accent_color), 1.4))
+            painter.setBrush(fill_brush)
+            painter.drawEllipse(point, radius, radius)
+
+        def draw_arrow_tip(tip: QPointF, angle: float = 0.0, length: float = 4.2) -> None:
+            painter.setPen(accent_pen)
+            direction = QPointF(length, length * 0.72)
+            points = [
+                tip,
+                QPointF(tip.x() - direction.x(), tip.y() + direction.y()),
+                QPointF(tip.x() - direction.y(), tip.y() + direction.x()),
+            ]
+            if angle != 0.0:
+                transform = []
+                from math import cos, sin
+
+                cos_v = cos(angle)
+                sin_v = sin(angle)
+                for point in points:
+                    dx = point.x() - tip.x()
+                    dy = point.y() - tip.y()
+                    transform.append(QPointF(tip.x() + dx * cos_v - dy * sin_v, tip.y() + dx * sin_v + dy * cos_v))
+                points = transform
+            painter.setBrush(QColor(accent_color))
+            painter.drawPolygon(QPolygonF(points))
+
+        painter.setPen(line_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        if tool is DrawingToolType.TREND_LINE:
+            start = QPointF(4, size.height() - 4)
+            end = QPointF(size.width() - 4, 4)
+            painter.drawLine(start, end)
+            draw_anchor(start)
+            draw_anchor(end)
+        elif tool is DrawingToolType.RAY:
+            start = QPointF(4, size.height() - 5)
+            end = QPointF(size.width() - 5, 5)
+            painter.drawLine(start, end)
+            draw_anchor(start)
+            draw_arrow_tip(end, angle=0.32)
+        elif tool is DrawingToolType.EXTENDED_LINE:
+            start = QPointF(3, size.height() - 5)
+            end = QPointF(size.width() - 3, 5)
+            painter.drawLine(start, end)
+            draw_arrow_tip(start, angle=3.46)
+            draw_arrow_tip(end, angle=0.32)
+        elif tool is DrawingToolType.FIB_RETRACEMENT:
+            left = 5.0
+            right = size.width() - 5.0
+            top = 4.0
+            bottom = size.height() - 4.0
+            painter.setPen(accent_pen)
+            painter.drawLine(QPointF(left, top), QPointF(left, bottom))
+            painter.drawLine(QPointF(right, top), QPointF(right, bottom))
+            painter.setPen(line_pen)
+            for ratio in (0.0, 0.236, 0.382, 0.5, 0.618, 1.0):
+                y = top + (bottom - top) * ratio
+                painter.drawLine(QPointF(left + 2, y), QPointF(right - 2, y))
+            draw_anchor(QPointF(left, top), radius=1.8)
+            draw_anchor(QPointF(right, bottom), radius=1.8)
+        elif tool is DrawingToolType.HORIZONTAL_LINE:
+            painter.setPen(accent_pen)
+            painter.drawLine(QPointF(3, center_y), QPointF(size.width() - 3, center_y))
+        elif tool is DrawingToolType.HORIZONTAL_RAY:
+            start = QPointF(4, center_y)
+            end = QPointF(size.width() - 5, center_y)
+            painter.setPen(accent_pen)
+            painter.drawLine(start, end)
+            draw_anchor(start)
+            draw_arrow_tip(end)
+        elif tool is DrawingToolType.VERTICAL_LINE:
+            painter.setPen(accent_pen)
+            painter.drawLine(QPointF(center_x, 3), QPointF(center_x, size.height() - 3))
+        elif tool is DrawingToolType.RECTANGLE:
+            rect = QRectF(4.5, 4.5, size.width() - 9.0, size.height() - 9.0)
+            painter.setPen(accent_pen)
+            painter.drawRect(rect)
+            painter.setPen(secondary_pen)
+            painter.drawLine(QPointF(rect.left(), rect.top()), QPointF(rect.left() + 4, rect.top()))
+            painter.drawLine(QPointF(rect.left(), rect.top()), QPointF(rect.left(), rect.top() + 4))
+            painter.drawLine(QPointF(rect.right(), rect.bottom()), QPointF(rect.right() - 4, rect.bottom()))
+            painter.drawLine(QPointF(rect.right(), rect.bottom()), QPointF(rect.right(), rect.bottom() - 4))
+        elif tool is DrawingToolType.PRICE_RANGE:
+            rect = QRectF(5.0, 4.5, size.width() - 10.0, size.height() - 9.0)
+            painter.setPen(accent_pen)
+            painter.setBrush(accent_brush)
+            painter.drawRect(rect)
+            painter.setPen(line_pen)
+            painter.drawLine(QPointF(rect.left() + 2, rect.center().y()), QPointF(rect.right() - 2, rect.center().y()))
+        elif tool is DrawingToolType.PARALLEL_CHANNEL:
+            painter.setPen(accent_pen)
+            upper_start = QPointF(4, size.height() - 8)
+            upper_end = QPointF(size.width() - 4, 4)
+            lower_start = QPointF(4, size.height() - 4)
+            lower_end = QPointF(size.width() - 4, 8)
+            painter.drawLine(upper_start, upper_end)
+            painter.drawLine(lower_start, lower_end)
+            path = QPainterPath()
+            path.moveTo(upper_start)
+            path.lineTo(upper_end)
+            path.lineTo(lower_end)
+            path.lineTo(lower_start)
+            path.closeSubpath()
+            painter.fillPath(path, QColor(accent_fill))
+        elif tool is DrawingToolType.TEXT:
+            bubble = QRectF(4.0, 4.5, size.width() - 8.0, size.height() - 8.0)
+            painter.setPen(accent_pen)
+            painter.setBrush(QColor(fill_color))
+            painter.drawRoundedRect(bubble, 4.0, 4.0)
+            tail = QPolygonF([QPointF(8, bubble.bottom()), QPointF(11, bubble.bottom() + 4), QPointF(14, bubble.bottom())])
+            painter.setBrush(QColor(fill_color))
+            painter.drawPolygon(tail)
+            text_pen = QPen(QColor(line_color), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(text_pen)
+            painter.drawLine(QPointF(center_x, 8), QPointF(center_x, bubble.bottom() - 4))
+            painter.drawLine(QPointF(center_x - 4, 8), QPointF(center_x + 4, 8))
+
+        painter.end()
+        return pixmap

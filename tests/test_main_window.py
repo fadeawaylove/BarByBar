@@ -110,6 +110,11 @@ def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None
         DrawingToolType.PRICE_RANGE,
         DrawingToolType.TEXT,
     }
+    for button in window._drawing_tool_buttons.values():
+        assert button.icon().isNull() is False
+        assert button.text() == ""
+        assert button.minimumWidth() >= 48 or button.width() >= 48
+        assert button.minimumHeight() >= 36 or button.height() >= 36
 
 
 def test_main_window_has_no_autoplay_controls(window: MainWindow) -> None:
@@ -167,7 +172,8 @@ def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
     drawing_tooltips = {button.toolTip() for button in window._drawing_tool_buttons.values()}
     assert drawing_tooltips == {"趋势线", "射线", "扩展线", "斐波", "水平线", "水平射线", "垂直线", "矩形", "价格区间", "通道", "文字"}
     for button in window._drawing_tool_buttons.values():
-        assert button.text() != button.toolTip()
+        assert button.text() == ""
+        assert button.icon().isNull() is False
     assert "图上开多线" not in button_texts
     assert "图上开空线" not in button_texts
     assert "加仓" not in button_texts
