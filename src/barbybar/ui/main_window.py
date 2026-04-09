@@ -1882,7 +1882,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
-        if choice is QMessageBox.StandardButton.Yes:
+        if choice == QMessageBox.StandardButton.Yes:
             self.chart_widget.clear_lines()
             if self.engine:
                 try:
