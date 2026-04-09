@@ -175,7 +175,7 @@ $nextVersion = Get-IncrementedVersion -Version $currentVersion -Part $normalized
 $updatedContent = [regex]::Replace(
     $versionFileContent,
     '__version__\s*=\s*"[^"]+"',
-    "__version__ = \"$nextVersion\"",
+    "__version__ = `"$nextVersion`"",
     1
 )
 Set-Content -Path $versionFile -Value $updatedContent -NoNewline
