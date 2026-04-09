@@ -711,6 +711,10 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         chart_toolbar = QHBoxLayout()
+        timeframe_toolbar = QHBoxLayout()
+        timeframe_toolbar.setSpacing(6)
+        drawing_toolbar = QHBoxLayout()
+        drawing_toolbar.setSpacing(6)
         self.timeframe_button_group = QButtonGroup(self)
         self.timeframe_button_group.setExclusive(True)
         for timeframe in ["1m", "5m", "15m", "30m", "60m"]:
@@ -719,19 +723,14 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda _, tf=timeframe: self.change_chart_timeframe(tf))
             self.timeframe_button_group.addButton(button)
             self.timeframe_buttons[timeframe] = button
-            chart_toolbar.addWidget(button)
+            timeframe_toolbar.addWidget(button)
         for label, tool in [
-            ("趋势线", DrawingToolType.TREND_LINE),
-            ("射线", DrawingToolType.RAY),
-            ("扩展线", DrawingToolType.EXTENDED_LINE),
-            ("斐波", DrawingToolType.FIB_RETRACEMENT),
+            ("线段", DrawingToolType.TREND_LINE),
+            ("斐波那契", DrawingToolType.FIB_RETRACEMENT),
             ("水平线", DrawingToolType.HORIZONTAL_LINE),
-            ("水平射线", DrawingToolType.HORIZONTAL_RAY),
-            ("垂直线", DrawingToolType.VERTICAL_LINE),
             ("矩形", DrawingToolType.RECTANGLE),
-            ("价格区间", DrawingToolType.PRICE_RANGE),
-            ("通道", DrawingToolType.PARALLEL_CHANNEL),
             ("文字", DrawingToolType.TEXT),
+            ("箭头线", DrawingToolType.RAY),
         ]:
             button = QPushButton("")
             button.setCheckable(True)
@@ -743,8 +742,10 @@ class MainWindow(QMainWindow):
             button.setStyleSheet(self._drawing_tool_button_stylesheet())
             button.clicked.connect(lambda checked, drawing_tool=tool: self._toggle_drawing_tool(drawing_tool, checked))
             self._drawing_tool_buttons[tool] = button
-            chart_toolbar.addWidget(button)
+            drawing_toolbar.addWidget(button)
+        chart_toolbar.addLayout(timeframe_toolbar)
         chart_toolbar.addStretch(1)
+        chart_toolbar.addLayout(drawing_toolbar)
         layout.addLayout(chart_toolbar)
 
         self.chart_widget = ChartWidget()
@@ -2037,10 +2038,10 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _drawing_tool_label(tool: DrawingToolType) -> str:
         labels = {
-            DrawingToolType.TREND_LINE: "趋势线",
-            DrawingToolType.RAY: "射线",
+            DrawingToolType.TREND_LINE: "线段",
+            DrawingToolType.RAY: "箭头线",
             DrawingToolType.EXTENDED_LINE: "扩展线",
-            DrawingToolType.FIB_RETRACEMENT: "斐波",
+            DrawingToolType.FIB_RETRACEMENT: "斐波那契",
             DrawingToolType.HORIZONTAL_LINE: "水平线",
             DrawingToolType.HORIZONTAL_RAY: "水平射线",
             DrawingToolType.VERTICAL_LINE: "垂直线",

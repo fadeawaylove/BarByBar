@@ -100,14 +100,9 @@ def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None
     assert set(window._drawing_tool_buttons) == {
         DrawingToolType.TREND_LINE,
         DrawingToolType.RAY,
-        DrawingToolType.EXTENDED_LINE,
         DrawingToolType.FIB_RETRACEMENT,
         DrawingToolType.HORIZONTAL_LINE,
-        DrawingToolType.HORIZONTAL_RAY,
-        DrawingToolType.VERTICAL_LINE,
-        DrawingToolType.PARALLEL_CHANNEL,
         DrawingToolType.RECTANGLE,
-        DrawingToolType.PRICE_RANGE,
         DrawingToolType.TEXT,
     }
     for button in window._drawing_tool_buttons.values():
@@ -170,7 +165,7 @@ def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
     assert "反" in button_texts
     assert "取消画线下单" in button_texts
     drawing_tooltips = {button.toolTip() for button in window._drawing_tool_buttons.values()}
-    assert drawing_tooltips == {"趋势线", "射线", "扩展线", "斐波", "水平线", "水平射线", "垂直线", "矩形", "价格区间", "通道", "文字"}
+    assert drawing_tooltips == {"线段", "箭头线", "斐波那契", "水平线", "矩形", "文字"}
     for button in window._drawing_tool_buttons.values():
         assert button.text() == ""
         assert button.icon().isNull() is False
@@ -204,6 +199,17 @@ def test_timeframe_buttons_render_above_chart(window: MainWindow) -> None:
 
     assert layout.itemAt(0).layout() is not None
     assert layout.itemAt(1).widget() is window.chart_widget
+
+
+def test_toolbar_separates_timeframes_from_drawing_buttons(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(0)
+    toolbar = center_panel.layout().itemAt(0).layout()
+
+    assert toolbar is not None
+    assert toolbar.count() == 3
+    assert toolbar.itemAt(0).layout() is not None
+    assert toolbar.itemAt(1).spacerItem() is not None
+    assert toolbar.itemAt(2).layout() is not None
 
 
 def test_main_window_autoloads_most_recent_session(app: QApplication) -> None:
