@@ -272,6 +272,45 @@ def test_main_window_autoloads_most_recent_session(app: QApplication) -> None:
         app.processEvents()
 
 
+def test_main_window_restores_drawing_style_presets_from_saved_session(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(180):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    dataset = repo.import_csv(csv_path, "IF", "1m")
+    session = repo.create_session(dataset.id or 0, start_index=10)
+    session.drawing_style_presets = {
+        DrawingToolType.RECTANGLE.value: {"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35},
+        DrawingToolType.TEXT.value: {"text": "", "font_size": 18, "text_color": "#3366ff", "color": "#3366ff"},
+    }
+    repo.save_session(session, [], [])
+
+    main_window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, main_window)
+        rectangle_style = main_window.chart_widget.drawing_style_preset(DrawingToolType.RECTANGLE)
+        text_style = main_window.chart_widget.drawing_style_preset(DrawingToolType.TEXT)
+        assert rectangle_style["color"] == "#3366ff"
+        assert rectangle_style["width"] == 3
+        assert rectangle_style["fill_opacity"] == 0.35
+        assert text_style["font_size"] == 18
+        assert text_style["text_color"] == "#3366ff"
+        assert text_style["text"] == ""
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
 def test_draw_order_controls_sync_position_state(window: MainWindow) -> None:
     _seed_engine(window)
 

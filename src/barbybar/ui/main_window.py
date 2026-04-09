@@ -1128,6 +1128,7 @@ class MainWindow(QMainWindow):
     def _clear_current_session(self) -> None:
         self.engine = None
         self.current_session_id = None
+        self._drawing_style_presets = {}
         self._trade_review_items = []
         self._selected_trade_number = None
         self._selected_trade_view = "entry"
@@ -1137,6 +1138,7 @@ class MainWindow(QMainWindow):
         self.chart_widget.set_position_direction(None)
         self.chart_widget.set_trade_focus(None)
         self.chart_widget.set_active_drawing_tool(None)
+        self.chart_widget.clear_drawing_style_presets()
         self.cancel_draw_order_preview()
         self.progress_label.setText("未开始")
         self.jump_spin.blockSignals(True)
@@ -1154,8 +1156,34 @@ class MainWindow(QMainWindow):
         self._sync_draw_order_controls()
 
     def _apply_drawing_style_presets(self) -> None:
+        self.chart_widget.clear_drawing_style_presets()
         for tool, style in self._drawing_style_presets.items():
             self.chart_widget.set_drawing_style_preset(tool, style)
+
+    def _load_drawing_style_presets(self, payload: dict[str, dict[str, object]] | None) -> None:
+        self._drawing_style_presets = {}
+        if not payload:
+            self._apply_drawing_style_presets()
+            return
+        for key, style in payload.items():
+            try:
+                tool = DrawingToolType(key)
+            except ValueError:
+                continue
+            normalized = normalize_drawing_style(tool, dict(style))
+            if tool is DrawingToolType.TEXT:
+                normalized["text"] = ""
+            self._drawing_style_presets[tool] = normalized
+        self._apply_drawing_style_presets()
+
+    def _serialize_drawing_style_presets(self) -> dict[str, dict[str, object]]:
+        payload: dict[str, dict[str, object]] = {}
+        for tool, style in self._drawing_style_presets.items():
+            normalized = normalize_drawing_style(tool, dict(style))
+            if tool is DrawingToolType.TEXT:
+                normalized["text"] = ""
+            payload[tool.value] = normalized
+        return payload
 
     def _update_ui_from_engine(self) -> None:
         if not self.engine:
@@ -1399,6 +1427,7 @@ class MainWindow(QMainWindow):
         if not self.engine:
             return
         self._auto_save_timer.stop()
+        self.engine.session.drawing_style_presets = self._serialize_drawing_style_presets()
         self.engine.session.current_bar_time = self.engine.current_bar.timestamp
         saved = self.repo.save_session(
             self.engine.session,
@@ -1600,6 +1629,7 @@ class MainWindow(QMainWindow):
             if anchor_time is not None:
                 session.current_bar_time = anchor_time
             self.current_dataset = dataset
+            self._load_drawing_style_presets(session.drawing_style_presets)
             choice_step = perf_counter()
             self._set_timeframe_choices(dataset.timeframe, chart_timeframe)
             log.bind(session_id=session.id, dataset_id=dataset.id).debug(

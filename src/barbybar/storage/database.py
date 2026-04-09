@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     status TEXT NOT NULL,
     notes TEXT NOT NULL DEFAULT '',
     tags_json TEXT NOT NULL DEFAULT '[]',
+    drawing_style_presets_json TEXT NOT NULL DEFAULT '{}',
     position_json TEXT NOT NULL DEFAULT '{}',
     stats_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -131,6 +132,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sessions ADD COLUMN current_bar_time TEXT")
     if "tick_size" not in columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN tick_size REAL NOT NULL DEFAULT 1.0")
+    if "drawing_style_presets_json" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN drawing_style_presets_json TEXT NOT NULL DEFAULT '{}'")
     order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
     if order_columns and "note" not in order_columns:
         conn.execute("ALTER TABLE order_lines ADD COLUMN note TEXT NOT NULL DEFAULT ''")

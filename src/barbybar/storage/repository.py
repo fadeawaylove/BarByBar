@@ -249,7 +249,7 @@ class Repository:
         self.conn.execute(
             """
             UPDATE sessions
-            SET current_index = ?, chart_timeframe = ?, current_bar_time = ?, tick_size = ?, status = ?, notes = ?, tags_json = ?, position_json = ?, stats_json = ?,
+            SET current_index = ?, chart_timeframe = ?, current_bar_time = ?, tick_size = ?, status = ?, notes = ?, tags_json = ?, drawing_style_presets_json = ?, position_json = ?, stats_json = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
@@ -261,6 +261,7 @@ class Repository:
                 session.status.value,
                 session.notes,
                 json.dumps(session.tags, ensure_ascii=False),
+                json.dumps(session.drawing_style_presets, ensure_ascii=False),
                 json.dumps(session.position.to_dict(), ensure_ascii=False),
                 json.dumps(session.stats.to_dict(), ensure_ascii=False),
                 session.id,
@@ -523,6 +524,7 @@ class Repository:
             status=SessionStatus(row["status"]),
             notes=row["notes"],
             tags=json.loads(row["tags_json"]),
+            drawing_style_presets=json.loads(row["drawing_style_presets_json"]) if "drawing_style_presets_json" in row.keys() else {},
             position=PositionState.from_dict(json.loads(row["position_json"])),
             stats=SessionStats.from_dict(json.loads(row["stats_json"])),
             created_at=_dt(row["created_at"]),

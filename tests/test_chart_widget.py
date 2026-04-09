@@ -6,7 +6,16 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction
-from barbybar.ui.chart_widget import BrowseMode, ChartWidget, DOWN_CANDLE_COLOR, HoverTargetType, InteractionMode, UP_CANDLE_COLOR
+from barbybar.ui.chart_widget import (
+    BrowseMode,
+    CANDLE_BODY_BORDER_WIDTH,
+    CANDLE_WICK_WIDTH,
+    ChartWidget,
+    DOWN_CANDLE_COLOR,
+    HoverTargetType,
+    InteractionMode,
+    UP_CANDLE_COLOR,
+)
 
 
 def _bars(count: int = 240) -> list[Bar]:
@@ -160,6 +169,11 @@ def test_hover_target_is_none_when_viewport_is_in_blank_space(widget: ChartWidge
 def test_candle_color_constants_match_white_up_black_down_theme() -> None:
     assert UP_CANDLE_COLOR == "#000000"
     assert DOWN_CANDLE_COLOR == "#000000"
+
+
+def test_candle_line_width_constants_use_integer_hard_edges() -> None:
+    assert CANDLE_WICK_WIDTH == 2
+    assert CANDLE_BODY_BORDER_WIDTH == 2
 
 
 def test_chart_background_grid_is_disabled(widget: ChartWidget) -> None:
@@ -762,6 +776,53 @@ def test_extended_line_tool_creates_drawing_after_two_clicks(widget: ChartWidget
     assert drawing.style["extend_right"] is True
 
 
+def test_trend_line_vertical_segment_stays_finite(widget: ChartWidget) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    drawing = ChartDrawing(
+        tool_type=DrawingToolType.TREND_LINE,
+        anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(10.0, 110.0)],
+    )
+
+    segments = widget._drawing_segments(drawing)
+
+    assert segments == [([10.0, 10.0], [100.0, 110.0])]
+
+
+def test_ray_vertical_segment_stays_finite(widget: ChartWidget) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    drawing = ChartDrawing(
+        tool_type=DrawingToolType.RAY,
+        anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(10.0, 110.0)],
+    )
+
+    segments = widget._drawing_segments(drawing)
+
+    assert segments[0] == ([10.0, 10.0], [100.0, 110.0])
+    assert len(segments) == 3
+
+
+def test_vertical_line_tool_still_uses_view_height(widget: ChartWidget) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    drawing = ChartDrawing(
+        tool_type=DrawingToolType.VERTICAL_LINE,
+        anchors=[DrawingAnchor(10.0, 105.0)],
+    )
+
+    segments = widget._drawing_segments(drawing)
+    low, high = widget.price_plot.viewRange()[1]
+
+    assert segments == [([10.0, 10.0], [low, high])]
+
+
 def test_price_range_tool_creates_drawing_after_two_clicks(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -1219,6 +1280,48 @@ def test_set_drawing_style_preset_applies_to_new_drawings(widget: ChartWidget, a
     assert drawing.style["fill_opacity"] == 0.35
 
 
+def test_preview_drawing_uses_line_style_preset(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawing_style_preset(DrawingToolType.TREND_LINE, {"color": "#3366ff", "width": 3, "line_style": "dash"})
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    app.processEvents()
+
+    widget._handle_scene_click(_FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(10, 100))))
+    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(15, 110)),))
+
+    preview = widget._current_preview_drawing()
+    assert preview is not None
+    assert preview.style["color"] == "#3366ff"
+    assert preview.style["width"] == 3
+    assert preview.style["line_style"] == "dash"
+
+
+def test_preview_drawing_uses_fill_style_preset(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawing_style_preset(
+        DrawingToolType.RECTANGLE,
+        {"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35},
+    )
+    widget.set_active_drawing_tool(DrawingToolType.RECTANGLE)
+    app.processEvents()
+
+    widget._handle_scene_click(_FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(10, 100))))
+    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(15, 110)),))
+
+    preview = widget._current_preview_drawing()
+    assert preview is not None
+    assert preview.style["color"] == "#3366ff"
+    assert preview.style["width"] == 3
+    assert preview.style["fill_color"] == "#3366ff"
+    assert preview.style["fill_opacity"] == 0.35
+
+
 def test_text_style_preset_does_not_reuse_previous_text_content(widget: ChartWidget) -> None:
     widget.set_drawing_style_preset(DrawingToolType.TEXT, {"text": "old", "font_size": 18, "text_color": "#3366ff"})
 
@@ -1226,6 +1329,24 @@ def test_text_style_preset_does_not_reuse_previous_text_content(widget: ChartWid
     assert style["text"] == ""
     assert style["font_size"] == 18
     assert style["text_color"] == "#3366ff"
+
+
+def test_text_preview_uses_style_preset_without_reusing_text_content(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawing_style_preset(DrawingToolType.TEXT, {"text": "old", "font_size": 18, "text_color": "#3366ff"})
+    widget.set_active_drawing_tool(DrawingToolType.TEXT)
+    app.processEvents()
+
+    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(10, 100)),))
+    widget._handle_scene_click(_FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(10, 100))))
+
+    drawing = widget.drawings()[0]
+    assert drawing.style["font_size"] == 18
+    assert drawing.style["text_color"] == "#3366ff"
+    assert drawing.style["text"] == ""
 
 
 def test_set_drawings_normalizes_legacy_empty_style(widget: ChartWidget) -> None:

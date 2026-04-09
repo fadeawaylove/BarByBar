@@ -429,6 +429,7 @@ class ReviewSession:
     title: str = ""
     notes: str = ""
     tags: list[str] = field(default_factory=list)
+    drawing_style_presets: dict[str, dict[str, Any]] = field(default_factory=dict)
     position: PositionState = field(default_factory=PositionState)
     stats: SessionStats = field(default_factory=SessionStats)
     created_at: datetime | None = None

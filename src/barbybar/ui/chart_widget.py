@@ -16,8 +16,8 @@ from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor,
 
 UP_CANDLE_COLOR = "#000000"
 DOWN_CANDLE_COLOR = "#000000"
-CANDLE_WICK_WIDTH = 1.4
-CANDLE_BODY_BORDER_WIDTH = 1.6
+CANDLE_WICK_WIDTH = 2
+CANDLE_BODY_BORDER_WIDTH = 2
 SESSION_MARKER_COLOR = "#d6dde6"
 SESSION_OPEN_TIMES = (time(9, 0), time(21, 0))
 EMA_LINE_COLOR = "#d84a4a"
@@ -146,6 +146,7 @@ class CandlestickItem(pg.GraphicsObject):
     def _rebuild_picture(self) -> None:
         picture = QPicture()
         painter = QPainter(picture)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         width = 0.35
         min_price = None
         max_price = None
@@ -518,6 +519,9 @@ class ChartWidget(QWidget):
         if tool is DrawingToolType.TEXT:
             normalized["text"] = ""
         self._drawing_style_defaults[tool] = normalized
+
+    def clear_drawing_style_presets(self) -> None:
+        self._drawing_style_defaults.clear()
 
     def drawing_style_preset(self, tool: DrawingToolType) -> dict[str, object]:
         style = normalize_drawing_style(tool, self._drawing_style_defaults.get(tool))
@@ -2278,7 +2282,7 @@ class ChartWidget(QWidget):
         needed = self._anchors_required(tool)
         while len(anchors) < needed:
             anchors.append(DrawingAnchor(preview_anchor.x, preview_anchor.y))
-        return ChartDrawing(tool_type=tool, anchors=anchors[:needed], style=normalize_drawing_style(tool))
+        return ChartDrawing(tool_type=tool, anchors=anchors[:needed], style=self.drawing_style_preset(tool))
 
     @staticmethod
     def _anchors_required(tool: DrawingToolType) -> int:
@@ -2464,8 +2468,10 @@ class ChartWidget(QWidget):
         x1, y1 = float(first.x), float(first.y)
         x2, y2 = float(second.x), float(second.y)
         if abs(x2 - x1) <= 0.0001:
-            low, high = self.price_plot.viewRange()[1]
-            return ([x1, x1], [low, high])
+            if extend_left or extend_right:
+                low, high = self.price_plot.viewRange()[1]
+                return ([x1, x1], [low, high])
+            return ([x1, x2], [y1, y2])
         slope = (y2 - y1) / (x2 - x1)
         start_x = left_bound if extend_left else x1
         end_x = right_bound if extend_right else x2

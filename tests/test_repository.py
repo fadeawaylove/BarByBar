@@ -435,3 +435,27 @@ def test_save_session_persists_drawings_by_session() -> None:
         assert len(loaded_second[0].anchors) == 1
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_save_session_persists_drawing_style_presets() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        session.drawing_style_presets = {
+            DrawingToolType.TREND_LINE.value: {"color": "#3366ff", "width": 3, "line_style": "dash"},
+            DrawingToolType.TEXT.value: {"text": "", "font_size": 18, "text_color": "#3366ff", "color": "#3366ff"},
+        }
+
+        repo.save_session(session, [], [])
+        loaded = repo.get_session(session.id or 0)
+
+        assert loaded.drawing_style_presets[DrawingToolType.TREND_LINE.value]["color"] == "#3366ff"
+        assert loaded.drawing_style_presets[DrawingToolType.TREND_LINE.value]["width"] == 3
+        assert loaded.drawing_style_presets[DrawingToolType.TEXT.value]["text"] == ""
+        assert loaded.drawing_style_presets[DrawingToolType.TEXT.value]["font_size"] == 18
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
