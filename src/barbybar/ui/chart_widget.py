@@ -33,6 +33,7 @@ ORDER_LINE_HIT_DISTANCE_PX = 16.0
 TRADE_LINK_WIN_COLOR = "#1f8b24"
 TRADE_LINK_LOSS_COLOR = "#d84a4a"
 TRADE_CLOSE_MARKER_COLOR = "#5f6b7a"
+Y_AXIS_DRAG_GUTTER_WIDTH_PX = 48.0
 
 
 @dataclass(slots=True)
@@ -236,6 +237,8 @@ class CandleViewBox(pg.ViewBox):
             )
             ev.ignore()
             return
+        if self.chart.handle_y_axis_drag_event(ev):
+            return
         if self.chart.handle_order_line_drag_event(ev):
             return
         if self.chart.handle_drawing_drag_event(ev):
@@ -376,6 +379,10 @@ class ChartWidget(QWidget):
         self._hovered_order_line_id: int | None = None
         self._hover_target = HoverTarget()
         self._active_drag_target = ActiveDragTarget()
+        self._y_range_override: tuple[float, float] | None = None
+        self._y_axis_drag_active = False
+        self._y_axis_drag_start_scene_y: float | None = None
+        self._y_axis_drag_start_range: tuple[float, float] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -387,8 +394,9 @@ class ChartWidget(QWidget):
         self.price_plot = self.graphics.addPlot(row=0, col=0, viewBox=self.view_box)
         self.price_plot.showGrid(x=False, y=False, alpha=0.0)
         self.price_plot.setMenuEnabled(False)
-        self.price_plot.setLabel("left", "Price")
-        self.price_plot.hideAxis("right")
+        self.price_plot.hideAxis("left")
+        self.price_plot.showAxis("right")
+        self.price_plot.setLabel("right", "Price")
         self.price_plot.setLabel("bottom", "Bar")
         self.price_plot.getAxis("bottom").setStyle(showValues=False)
         self.price_plot.hideButtons()
@@ -659,6 +667,7 @@ class ChartWidget(QWidget):
         self._viewport.max_bars_in_view = max(200, self._total_count or len(self._bars))
         self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         if not preserve_viewport:
+            self._clear_y_range_override()
             self._pending_drawing_anchors = []
             self._drawing_preview_anchor = None
             self._active_drawing_tool = None
@@ -692,6 +701,7 @@ class ChartWidget(QWidget):
         self._viewport.follow_latest = follow_latest
         self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         self._viewport.right_edge_index = self._cursor + 1 if self._cursor >= 0 else 0.0
+        self._clear_y_range_override()
         self._apply_viewport()
 
     def zoom_x(self, anchor_x: float, scale: float) -> None:
@@ -1077,6 +1087,10 @@ class ChartWidget(QWidget):
         return min_right, max_right
 
     def _apply_y_range(self, left: float, right_edge: float) -> bool:
+        if self._y_range_override is not None:
+            low, high = self._y_range_override
+            self.price_plot.setYRange(low, high, padding=0)
+            return True
         window = self._revealed_window_bars(left, right_edge)
         if not window:
             return False
@@ -1316,6 +1330,97 @@ class ChartWidget(QWidget):
         self._axis_price_label.setText(format_price(price, self._tick_size))
         self._position_axis_price_label(price)
         self._axis_price_label.show()
+
+    def _plot_scene_rect(self):
+        return self.price_plot.sceneBoundingRect()
+
+    def _is_in_y_axis_drag_gutter(self, scene_pos) -> bool:  # noqa: ANN001
+        rect = self._plot_scene_rect()
+        if not rect.contains(scene_pos):
+            return False
+        return float(scene_pos.x()) >= float(rect.right()) - Y_AXIS_DRAG_GUTTER_WIDTH_PX
+
+    def handle_y_axis_drag_event(self, ev) -> bool:  # noqa: ANN001
+        if ev.button() != Qt.MouseButton.LeftButton or self._active_drawing_tool is not None:
+            return False
+        scene_pos = ev.scenePos()
+        if self._y_axis_drag_active:
+            if ev.isFinish():
+                self._finish_y_axis_drag()
+                ev.accept()
+                return True
+            if ev.isStart():
+                ev.accept()
+                return True
+            self._update_y_axis_drag(scene_pos, ev.lastScenePos())
+            ev.accept()
+            return True
+        if ev.isFinish():
+            return False
+        if not self._is_in_y_axis_drag_gutter(scene_pos):
+            return False
+        if self._hover_target.target_type is HoverTargetType.ORDER_LINE:
+            return False
+        self._begin_y_axis_drag(scene_pos)
+        ev.accept()
+        return True
+
+    def _begin_y_axis_drag(self, scene_pos) -> None:  # noqa: ANN001
+        y_min, y_max = self.price_plot.viewRange()[1]
+        self._y_axis_drag_active = True
+        self._y_axis_drag_start_scene_y = float(scene_pos.y())
+        self._y_axis_drag_start_range = (float(y_min), float(y_max))
+        self._set_dragging(True)
+        self._log_interaction(
+            "begin_y_axis_drag",
+            scene_y=round(float(scene_pos.y()), 3),
+            y_min=round(float(y_min), 6),
+            y_max=round(float(y_max), 6),
+        )
+
+    def _update_y_axis_drag(self, scene_pos, last_scene_pos) -> None:  # noqa: ANN001
+        if not self._y_axis_drag_active or self._y_axis_drag_start_range is None:
+            return
+        current = self.price_plot.vb.mapSceneToView(scene_pos)
+        last = self.price_plot.vb.mapSceneToView(last_scene_pos)
+        delta_price = float(last.y() - current.y())
+        if abs(delta_price) <= 0:
+            return
+        self.pan_y(delta_price)
+        self._log_interaction(
+            "update_y_axis_drag",
+            scene_y=round(float(scene_pos.y()), 3),
+            last_scene_y=round(float(last_scene_pos.y()), 3),
+            delta_price=round(delta_price, 6),
+            y_min=round(float(self._y_range_override[0]), 6) if self._y_range_override else -1.0,
+            y_max=round(float(self._y_range_override[1]), 6) if self._y_range_override else -1.0,
+        )
+
+    def _finish_y_axis_drag(self) -> None:
+        self._log_interaction(
+            "finish_y_axis_drag",
+            y_min=round(float(self._y_range_override[0]), 6) if self._y_range_override else -1.0,
+            y_max=round(float(self._y_range_override[1]), 6) if self._y_range_override else -1.0,
+        )
+        self._y_axis_drag_active = False
+        self._y_axis_drag_start_scene_y = None
+        self._y_axis_drag_start_range = None
+        self._set_dragging(False)
+        self._suppress_next_left_click = True
+
+    def pan_y(self, delta_price: float) -> None:
+        y_min, y_max = self._y_range_override or tuple(float(value) for value in self.price_plot.viewRange()[1])
+        next_range = (float(y_min) + float(delta_price), float(y_max) + float(delta_price))
+        self._y_range_override = next_range
+        self.price_plot.setYRange(next_range[0], next_range[1], padding=0)
+        self._rebuild_order_line_items()
+        self._rebuild_trade_marker_items()
+
+    def _clear_y_range_override(self) -> None:
+        self._y_range_override = None
+        self._y_axis_drag_active = False
+        self._y_axis_drag_start_scene_y = None
+        self._y_axis_drag_start_range = None
 
     def _build_hover_card(self) -> None:
         self._hover_card = QFrame(self)

@@ -220,6 +220,11 @@ def test_chart_background_grid_is_disabled(widget: ChartWidget) -> None:
     assert widget.price_plot.ctrl.yGridCheck.isChecked() is False
 
 
+def test_chart_shows_right_price_axis_and_hides_left(widget: ChartWidget) -> None:
+    assert widget.price_plot.getAxis("right").isVisible() is True
+    assert widget.price_plot.getAxis("left").isVisible() is False
+
+
 def test_session_open_markers_render_for_0900_and_2100(widget: ChartWidget) -> None:
     bars = [
         Bar(timestamp=datetime(2025, 1, 1, 9, 30), open=1, high=2, low=0.5, close=1.5, volume=1),
@@ -445,6 +450,12 @@ class _FakeDragEvent:
         self.ignored = True
 
 
+def _y_axis_drag_scene_pos(widget: ChartWidget, price: float) -> QPointF:
+    rect = widget.price_plot.sceneBoundingRect()
+    point = widget.price_plot.vb.mapViewToScene(QPointF(widget._cursor, price))
+    return QPointF(rect.right() - 4.0, point.y())
+
+
 def test_widget_starts_in_browse_mode(widget: ChartWidget) -> None:
     assert widget.interaction_mode is InteractionMode.BROWSE
     assert widget._hover_card.isHidden()
@@ -503,6 +514,65 @@ def test_left_drag_pans_chart_temporarily(widget: ChartWidget, app: QApplication
     assert widget._suppress_next_left_click is True
 
 
+def test_dragging_right_side_gutter_pans_y_range(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    app.processEvents()
+    old_y_min, old_y_max = widget.price_plot.viewRange()[1]
+
+    start = _y_axis_drag_scene_pos(widget, 100.0)
+    move = start + QPointF(0.0, -40.0)
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    new_y_min, new_y_max = widget.price_plot.viewRange()[1]
+    assert widget.is_dragging is False
+    assert (new_y_max - new_y_min) == pytest.approx(old_y_max - old_y_min)
+    assert new_y_min != pytest.approx(old_y_min)
+    assert widget._suppress_next_left_click is True
+
+
+def test_manual_y_range_persists_across_apply_viewport(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    app.processEvents()
+
+    start = _y_axis_drag_scene_pos(widget, 100.0)
+    move = start + QPointF(0.0, -40.0)
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    dragged_y_range = widget.price_plot.viewRange()[1]
+
+    widget._apply_viewport()
+
+    assert widget.price_plot.viewRange()[1] == pytest.approx(dragged_y_range)
+
+
+def test_reset_viewport_clears_manual_y_range(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    app.processEvents()
+    auto_y_range = widget.price_plot.viewRange()[1]
+
+    start = _y_axis_drag_scene_pos(widget, 100.0)
+    move = start + QPointF(0.0, -40.0)
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    widget.reset_viewport(follow_latest=True)
+
+    assert widget._y_range_override is None
+    assert widget.price_plot.viewRange()[1] == pytest.approx(auto_y_range)
+
+
 def test_left_drag_pans_while_browse_hover_is_active(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -520,6 +590,25 @@ def test_left_drag_pans_while_browse_hover_is_active(widget: ChartWidget, app: Q
 
     assert widget.viewport_state.right_edge_index != old_right
     assert widget.interaction_mode is InteractionMode.BROWSE
+
+
+def test_main_plot_left_drag_still_pans_x_after_y_axis_drag_added(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    app.processEvents()
+    old_right = widget.viewport_state.right_edge_index
+    old_y_range = widget.price_plot.viewRange()[1]
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(100, 100))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(80, 100))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert widget.viewport_state.right_edge_index != old_right
+    assert widget.price_plot.viewRange()[1] == pytest.approx(old_y_range)
 
 
 def test_drag_end_next_mouse_move_restores_hover(widget: ChartWidget, app: QApplication) -> None:
