@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 from barbybar.domain.models import Bar
 
-MINUTE_TIMEFRAMES = ("1m", "5m", "15m", "30m", "60m")
+MINUTE_TIMEFRAMES = ("1m", "2m", "5m", "15m", "30m", "60m")
 SUPPORTED_REPLAY_TIMEFRAMES = MINUTE_TIMEFRAMES
 
 
@@ -13,11 +13,13 @@ def normalize_timeframe(value: str) -> str:
     timeframe = value.strip().lower()
     aliases = {
         "1": "1m",
+        "2": "2m",
         "5": "5m",
         "15": "15m",
         "30": "30m",
         "60": "60m",
         "1min": "1m",
+        "2min": "2m",
         "5min": "5m",
         "15min": "15m",
         "30min": "30m",

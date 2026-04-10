@@ -138,11 +138,42 @@ def test_aggregate_bars_resets_after_session_gap_and_keeps_close_time() -> None:
 
 def test_normalize_timeframe_accepts_numeric_aliases() -> None:
     assert normalize_timeframe("1") == "1m"
+    assert normalize_timeframe("2") == "2m"
+    assert normalize_timeframe("2min") == "2m"
     assert normalize_timeframe("5") == "5m"
 
 
 def test_supported_replay_timeframes_excludes_1d() -> None:
-    assert supported_replay_timeframes("1m") == ["1m", "5m", "15m", "30m", "60m"]
+    assert supported_replay_timeframes("1m") == ["1m", "2m", "5m", "15m", "30m", "60m"]
+
+
+def test_supported_replay_timeframes_for_2m_only_include_integer_multiples() -> None:
+    assert supported_replay_timeframes("2m") == ["2m", "30m", "60m"]
+
+
+def test_aggregate_bars_supports_2m_timeframe() -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    source = [
+        Bar(
+            timestamp=start + timedelta(minutes=idx),
+            open=100 + idx,
+            high=101 + idx,
+            low=99 + idx,
+            close=100.5 + idx,
+            volume=10 + idx,
+        )
+        for idx in range(4)
+    ]
+
+    aggregated = aggregate_bars(source, "1m", "2m")
+
+    assert len(aggregated) == 2
+    assert aggregated[0].timestamp == start + timedelta(minutes=1)
+    assert aggregated[0].open == 100
+    assert aggregated[0].close == 101.5
+    assert aggregated[0].high == 102
+    assert aggregated[0].low == 99
+    assert aggregated[0].volume == 21
 
 
 def test_find_bar_index_for_timestamp_aligns_to_containing_bar() -> None:

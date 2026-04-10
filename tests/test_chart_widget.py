@@ -243,7 +243,46 @@ def test_session_open_markers_render_for_0900_and_2100(widget: ChartWidget) -> N
 
     assert len(line_markers) == 2
     assert sorted(round(marker.value(), 2) for marker in line_markers) == [-0.5, 2.5]
-    assert sorted(item.toPlainText() for item in label_markers) == ["夜盘", "日盘"]
+    assert sorted(item.toPlainText() for item in label_markers) == ["夜", "日"]
+    y_min, y_max = widget.price_plot.viewRange()[1]
+    assert all(item.pos().y() < (y_min + y_max) / 2 for item in label_markers)
+
+
+def test_bar_count_labels_are_hidden_by_default(widget: ChartWidget) -> None:
+    widget.set_window_data(_bars(10), cursor=9, total_count=10, global_start_index=0)
+
+    labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
+
+    assert labels == []
+
+
+def test_bar_count_labels_render_even_numbers_only_when_enabled(widget: ChartWidget) -> None:
+    widget.set_bar_count_labels_visible(True)
+    widget.set_window_data(_bars(10), cursor=9, total_count=10, global_start_index=0)
+
+    labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
+
+    assert [item.toPlainText() for item in labels] == ["2", "4", "6", "8", "10"]
+    y_min, y_max = widget.price_plot.viewRange()[1]
+    assert all(item.pos().y() < (y_min + y_max) / 2 for item in labels)
+
+
+def test_bar_count_labels_reset_between_day_and_night_sessions(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=1, high=2, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=1, high=2, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=1, high=2, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 21, 0), open=1, high=2, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 21, 1), open=1, high=2, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 21, 2), open=1, high=2, low=0.5, close=1.5, volume=1),
+    ]
+
+    widget.set_bar_count_labels_visible(True)
+    widget.set_window_data(bars, cursor=5, total_count=6, global_start_index=0)
+
+    labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
+
+    assert [item.toPlainText() for item in labels] == ["2", "2"]
 
 
 def test_hover_bar_returns_none_for_future_blank_space(widget: ChartWidget) -> None:

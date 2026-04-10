@@ -119,7 +119,14 @@ def _wait_for_batch_import(app: QApplication, window: MainWindow, timeout_s: flo
 
 
 def test_main_window_uses_timeframe_shortcut_buttons(window: MainWindow) -> None:
-    assert set(window.timeframe_buttons) == {"1m", "5m", "15m", "30m", "60m"}
+    assert set(window.timeframe_buttons) == {"1m", "2m", "5m", "15m", "30m", "60m"}
+
+
+def test_main_window_exposes_bar_count_toggle_button(window: MainWindow) -> None:
+    assert window.bar_count_toggle_button is not None
+    assert window.bar_count_toggle_button.text() == "K线序号"
+    assert window.bar_count_toggle_button.isCheckable() is True
+    assert window.chart_widget.bar_count_labels_visible is False
 
 
 def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None:
@@ -248,6 +255,22 @@ def test_toolbar_separates_timeframes_from_drawing_buttons(window: MainWindow) -
     assert toolbar.itemAt(0).layout() is not None
     assert toolbar.itemAt(1).spacerItem() is not None
     assert toolbar.itemAt(2).layout() is not None
+
+
+def test_bar_count_toggle_button_is_placed_in_timeframe_toolbar(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(0)
+    toolbar = center_panel.layout().itemAt(0).layout()
+    timeframe_toolbar = toolbar.itemAt(0).layout()
+
+    assert timeframe_toolbar is not None
+    assert timeframe_toolbar.itemAt(timeframe_toolbar.count() - 1).widget() is window.bar_count_toggle_button
+
+
+def test_set_timeframe_choices_supports_2m(window: MainWindow) -> None:
+    window._set_timeframe_choices("1m", "2m")
+
+    assert window.timeframe_buttons["2m"].isEnabled()
+    assert window.timeframe_buttons["2m"].isChecked()
 
 
 def test_main_window_autoloads_most_recent_session(app: QApplication) -> None:

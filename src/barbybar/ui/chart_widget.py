@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import time
+from datetime import datetime, time, timedelta
 from enum import Enum
 from math import ceil, floor, hypot, sqrt
 
@@ -20,6 +20,8 @@ CANDLE_WICK_WIDTH = 2
 CANDLE_BODY_BORDER_WIDTH = 2
 SESSION_MARKER_COLOR = "#d6dde6"
 SESSION_OPEN_TIMES = (time(9, 0), time(21, 0))
+SESSION_LABEL_COLOR = "#6b7280"
+BAR_COUNT_LABEL_COLOR = "#9aa1ab"
 EMA_LINE_COLOR = "#d84a4a"
 ENTRY_LONG_LINE_COLOR = "#2979ff"
 ENTRY_SHORT_LINE_COLOR = "#ff9f1c"
@@ -350,6 +352,7 @@ class ChartWidget(QWidget):
         self._trade_markers: list[TradeMarker] = []
         self._trade_markers_visible = True
         self._trade_links_visible = True
+        self._bar_count_labels_visible = False
         self._focused_trade_number: int | None = None
         self._focused_trade_points: tuple[int, float, int, float] | None = None
         self._preview_order_type: str | None = None
@@ -424,6 +427,7 @@ class ChartWidget(QWidget):
         )
         self._preview_line.setZValue(19)
         self.price_plot.addItem(self._preview_line)
+        self._preview_line.isHidden = lambda item=self._preview_line: not item.isVisible()
         self._drag_order_label = pg.TextItem("", color="#2c2c2c", fill=pg.mkBrush(255, 243, 191, 245), anchor=(1, 0.5))
         self._drag_order_label.setZValue(22)
         self.price_plot.addItem(self._drag_order_label)
@@ -474,6 +478,10 @@ class ChartWidget(QWidget):
     @property
     def is_dragging(self) -> bool:
         return self._is_dragging
+
+    @property
+    def bar_count_labels_visible(self) -> bool:
+        return self._bar_count_labels_visible
 
     @property
     def viewport_state(self) -> ViewportState:
@@ -648,6 +656,10 @@ class ChartWidget(QWidget):
         self._trade_links_visible = bool(visible)
         self._rebuild_trade_marker_items()
 
+    def set_bar_count_labels_visible(self, visible: bool) -> None:
+        self._bar_count_labels_visible = bool(visible)
+        self._rebuild_session_markers()
+
     def set_full_data(self, bars: list[Bar]) -> None:
         self.set_window_data(bars, len(bars) - 1 if bars else -1, len(bars), 0)
 
@@ -725,6 +737,9 @@ class ChartWidget(QWidget):
     def pan_x(self, delta_bars: float) -> None:
         if self._cursor < 0:
             return
+        if self._y_range_override is None:
+            current_y_range = self.price_plot.viewRange()[1]
+            self._y_range_override = (float(current_y_range[0]), float(current_y_range[1]))
         previous_right = float(self._viewport.right_edge_index)
         previous_follow_latest = bool(self._viewport.follow_latest)
         self._viewport.right_edge_index += delta_bars
@@ -820,38 +835,56 @@ class ChartWidget(QWidget):
 
     def _rebuild_session_markers(self) -> None:
         for item in list(self.price_plot.items):
-            if getattr(item, "_barbybar_session_marker", False):
+            if getattr(item, "_barbybar_session_marker", False) or getattr(item, "_barbybar_bar_count_label", False):
                 self.price_plot.removeItem(item)
         if not self._bars:
             return
         timeframe_minutes = self._infer_timeframe_minutes()
         local_cursor = self._cursor - self._global_start_index if self._cursor >= 0 else -1
         stop = min(len(self._bars), local_cursor + 1)
-        y_top = self.price_plot.viewRange()[1][1]
+        session_label_y = self._annotation_y_position(0.035)
+        bar_count_label_y = self._annotation_y_position(0.105)
+        session_counts: dict[tuple[str, datetime], int] = {}
         for index in range(stop):
             bar = self._bars[index]
-            session_label = self._session_marker_label(bar.timestamp.time(), timeframe_minutes)
-            if session_label is None:
+            session_key = self._session_key(bar.timestamp)
+            session_counts[session_key] = session_counts.get(session_key, 0) + 1
+            session_label = self._session_marker_label(bar.timestamp, timeframe_minutes)
+            if session_label is not None:
+                marker = pg.InfiniteLine(
+                    pos=self._global_start_index + index - 0.5,
+                    angle=90,
+                    movable=False,
+                    pen=pg.mkPen(SESSION_MARKER_COLOR, width=1, style=Qt.PenStyle.DashLine),
+                )
+                marker.setZValue(-10)
+                marker._barbybar_session_marker = True
+                self.price_plot.addItem(marker, ignoreBounds=True)
+                label = pg.TextItem(
+                    session_label,
+                    color=SESSION_LABEL_COLOR,
+                    fill=pg.mkBrush(255, 255, 255, 220),
+                    anchor=(0.5, 1),
+                )
+                label._barbybar_session_marker = True
+                label.setZValue(5)
+                label.setPos(self._global_start_index + index - 0.5, session_label_y)
+                self.price_plot.addItem(label, ignoreBounds=True)
+            if not self._bar_count_labels_visible:
                 continue
-            marker = pg.InfiniteLine(
-                pos=self._global_start_index + index - 0.5,
-                angle=90,
-                movable=False,
-                pen=pg.mkPen(SESSION_MARKER_COLOR, width=1, style=Qt.PenStyle.DashLine),
+            bar_count = session_counts[session_key]
+            if bar_count % 2 != 0:
+                continue
+            count_label = pg.TextItem(
+                str(bar_count),
+                color=BAR_COUNT_LABEL_COLOR,
+                fill=pg.mkBrush(255, 255, 255, 210),
+                anchor=(0.5, 1),
             )
-            marker.setZValue(-10)
-            marker._barbybar_session_marker = True
-            self.price_plot.addItem(marker)
-            label = pg.TextItem(
-                session_label,
-                color="#6b7280",
-                fill=pg.mkBrush(255, 255, 255, 220),
-                anchor=(0.5, 0),
-            )
-            label._barbybar_session_marker = True
-            label.setZValue(5)
-            label.setPos(self._global_start_index + index - 0.5, y_top)
-            self.price_plot.addItem(label)
+            count_label._barbybar_bar_count_label = True
+            count_label.setZValue(4)
+            count_label.setPos(float(self._global_start_index + index), bar_count_label_y)
+            self.price_plot.addItem(count_label, ignoreBounds=True)
 
     def _rebuild_line_items(self) -> None:
         for item in list(self.price_plot.items):
@@ -1052,6 +1085,7 @@ class ChartWidget(QWidget):
             right = self._viewport.right_edge_index + self._right_padding
             self.price_plot.setXRange(left, right, padding=0)
             visible_window_has_bars = self._apply_y_range(left, self._viewport.right_edge_index)
+            self._rebuild_session_markers()
             self._rebuild_order_line_items()
             self._rebuild_trade_geometry(None)
             self._rebuild_trade_marker_items()
@@ -1413,6 +1447,7 @@ class ChartWidget(QWidget):
         next_range = (float(y_min) + float(delta_price), float(y_max) + float(delta_price))
         self._y_range_override = next_range
         self.price_plot.setYRange(next_range[0], next_range[1], padding=0)
+        self._rebuild_session_markers()
         self._rebuild_order_line_items()
         self._rebuild_trade_marker_items()
 
@@ -1560,8 +1595,10 @@ class ChartWidget(QWidget):
             None,
         )
 
-    def _compute_hover_target(self, scene_pos) -> HoverTarget:  # noqa: ANN001
-        if self._cursor < 0 or not self.price_plot.sceneBoundingRect().contains(scene_pos):
+    def _compute_hover_target(self, scene_pos, *, allow_outside_plot: bool = False) -> HoverTarget:  # noqa: ANN001
+        if self._cursor < 0:
+            return self._empty_hover_target(scene_pos=scene_pos)
+        if not allow_outside_plot and not self.price_plot.sceneBoundingRect().contains(scene_pos):
             return self._empty_hover_target(scene_pos=scene_pos)
         view_pos = self.price_plot.vb.mapSceneToView(scene_pos)
         order_target = self._order_line_hover_target(scene_pos, view_pos)
@@ -2066,6 +2103,8 @@ class ChartWidget(QWidget):
         if self._drawing_drag_mode is None:
             if ev.isFinish():
                 return False
+            if ev.isStart():
+                self._apply_hover_target(self._compute_hover_target(ev.scenePos(), allow_outside_plot=True))
             if not self._begin_drawing_drag():
                 return False
             ev.accept()
@@ -2158,6 +2197,8 @@ class ChartWidget(QWidget):
         if self._protective_drag_order_type is None and not self._protective_drag_from_average:
             if ev.isFinish():
                 return False
+            if ev.isStart():
+                self._apply_hover_target(self._compute_hover_target(ev.scenePos(), allow_outside_plot=True))
             if not self._begin_order_line_drag():
                 return False
             ev.accept()
@@ -2199,6 +2240,9 @@ class ChartWidget(QWidget):
                 order_line_type=line.order_type,
             )
             self._set_dragging(True)
+            self._show_axis_price_label(snapped_price)
+            self._update_drag_order_label(snapped_price)
+            self._rebuild_order_line_items()
             self._log_interaction(
                 "begin_order_line_drag_existing_line",
                 order_line_id=editable_order_id,
@@ -2239,6 +2283,9 @@ class ChartWidget(QWidget):
                 order_line_type=line.order_type,
             )
             self._set_dragging(True)
+            self._show_axis_price_label(snapped_price)
+            self._update_drag_order_label(snapped_price)
+            self._rebuild_order_line_items()
             self._log_interaction(
                 "begin_order_line_drag_transient_protective_line",
                 order_type=line.order_type.value,
@@ -2263,6 +2310,7 @@ class ChartWidget(QWidget):
         self._hide_drag_order_label()
         self._active_drag_target = ActiveDragTarget(target_type=ActiveDragTargetType.ORDER_LINE, order_line_type=OrderLineType.AVERAGE_PRICE)
         self._set_dragging(True)
+        self._rebuild_order_line_items()
         self._log_interaction(
             "begin_order_line_drag_average_line",
             start_price=round(float(line.price), 6),
@@ -2323,6 +2371,7 @@ class ChartWidget(QWidget):
         self._active_drag_target = ActiveDragTarget()
         self._clear_protective_drag_state()
         self._apply_hover_target(hovered_target)
+        self._rebuild_order_line_items()
         if order_type is None or price is None or start_price is None:
             self._log_interaction("finish_order_line_drag_aborted_incomplete_state")
             return
@@ -2880,7 +2929,7 @@ class ChartWidget(QWidget):
         }
         payload.update(fields)
         field_text = " ".join(f"{key}={value}" for key, value in payload.items())
-        logger.bind(component="chart_interaction", **payload).debug("event={} {}", event, field_text)
+        logger.bind(component="chart_interaction", event=event, **payload).debug(f"event={event} {field_text}")
 
     def _is_near_latest(self, right_edge_index: float) -> bool:
         return abs((self._cursor + 1) - right_edge_index) <= max(1.0, self._right_padding)
@@ -2904,16 +2953,35 @@ class ChartWidget(QWidget):
 
     @staticmethod
     def _is_session_open_marker(bar_time: time, timeframe_minutes: int) -> bool:
-        return ChartWidget._session_marker_label(bar_time, timeframe_minutes) is not None
+        sample_timestamp = datetime.combine(datetime.now().date(), bar_time)
+        return ChartWidget._session_marker_label(sample_timestamp, timeframe_minutes) is not None
 
     @staticmethod
-    def _session_marker_label(bar_time: time, timeframe_minutes: int) -> str | None:
-        current_minutes = bar_time.hour * 60 + bar_time.minute
-        for session_open, label in zip(SESSION_OPEN_TIMES, ("日盘", "夜盘")):
-            open_minutes = session_open.hour * 60 + session_open.minute
-            if 0 <= current_minutes - open_minutes <= timeframe_minutes:
-                return label
+    def _session_marker_label(timestamp: datetime, timeframe_minutes: int) -> str | None:
+        session_name, session_open = ChartWidget._session_info(timestamp)
+        elapsed_minutes = int((timestamp - session_open).total_seconds() // 60)
+        if 0 <= elapsed_minutes <= timeframe_minutes:
+            return "日" if session_name == "day" else "夜"
         return None
+
+    @staticmethod
+    def _session_key(timestamp: datetime) -> tuple[str, datetime]:
+        return ChartWidget._session_info(timestamp)
+
+    @staticmethod
+    def _session_info(timestamp: datetime) -> tuple[str, datetime]:
+        bar_time = timestamp.time()
+        if bar_time >= SESSION_OPEN_TIMES[1]:
+            return "night", timestamp.replace(hour=21, minute=0, second=0, microsecond=0)
+        if bar_time >= SESSION_OPEN_TIMES[0]:
+            return "day", timestamp.replace(hour=9, minute=0, second=0, microsecond=0)
+        previous_day = timestamp - timedelta(days=1)
+        return "night", previous_day.replace(hour=21, minute=0, second=0, microsecond=0)
+
+    def _annotation_y_position(self, offset_ratio: float) -> float:
+        y_min, y_max = self.price_plot.viewRange()[1]
+        span = max(float(y_max) - float(y_min), 1.0)
+        return float(y_min) + span * float(offset_ratio)
 
     @staticmethod
     def _ema(values: list[float], period: int) -> list[float]:

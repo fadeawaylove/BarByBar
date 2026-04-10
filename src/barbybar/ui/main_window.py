@@ -818,6 +818,7 @@ class MainWindow(QMainWindow):
         self.current_dataset: DataSet | None = None
         self.current_session_id: int | None = None
         self.timeframe_buttons: dict[str, QPushButton] = {}
+        self.bar_count_toggle_button: QPushButton | None = None
         self._busy_overlay: BusyOverlay | None = None
         self._busy_cursor_active = False
         self._active_loader_thread: QThread | None = None
@@ -885,13 +886,16 @@ class MainWindow(QMainWindow):
         drawing_toolbar.setSpacing(6)
         self.timeframe_button_group = QButtonGroup(self)
         self.timeframe_button_group.setExclusive(True)
-        for timeframe in ["1m", "5m", "15m", "30m", "60m"]:
+        for timeframe in ["1m", "2m", "5m", "15m", "30m", "60m"]:
             button = QPushButton(timeframe)
             button.setCheckable(True)
             button.clicked.connect(lambda _, tf=timeframe: self.change_chart_timeframe(tf))
             self.timeframe_button_group.addButton(button)
             self.timeframe_buttons[timeframe] = button
             timeframe_toolbar.addWidget(button)
+        self.bar_count_toggle_button = QPushButton("K线序号")
+        self.bar_count_toggle_button.setCheckable(True)
+        timeframe_toolbar.addWidget(self.bar_count_toggle_button)
         for label, tool in [
             ("线段", DrawingToolType.TREND_LINE),
             ("箭头线", DrawingToolType.RAY),
@@ -917,6 +921,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(chart_toolbar)
 
         self.chart_widget = ChartWidget()
+        if self.bar_count_toggle_button is not None:
+            self.bar_count_toggle_button.clicked.connect(self.chart_widget.set_bar_count_labels_visible)
         self.chart_widget.drawingsChanged.connect(self._handle_chart_drawings_changed)
         self.chart_widget.drawingToolChanged.connect(self._sync_drawing_tool_buttons)
         self.chart_widget.drawingPropertiesRequested.connect(self._handle_drawing_properties_requested)
