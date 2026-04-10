@@ -724,7 +724,7 @@ def test_dragging_right_side_gutter_pans_y_range(widget: ChartWidget, app: QAppl
     assert widget._suppress_next_left_click is True
 
 
-def test_manual_y_range_reverts_to_auto_fit_on_apply_viewport(widget: ChartWidget, app: QApplication) -> None:
+def test_manual_y_offset_is_reapplied_on_apply_viewport(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
     widget.set_full_data(_bars())
@@ -737,11 +737,13 @@ def test_manual_y_range_reverts_to_auto_fit_on_apply_viewport(widget: ChartWidge
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, start, is_start=True))
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
     dragged_y_range = widget.price_plot.viewRange()[1]
+    offset = dragged_y_range[0] - auto_y_range[0]
 
     widget._apply_viewport()
 
     assert dragged_y_range != pytest.approx(auto_y_range)
-    assert widget.price_plot.viewRange()[1] == pytest.approx(auto_y_range)
+    assert widget._y_axis_offset == pytest.approx(offset)
+    assert widget.price_plot.viewRange()[1] == pytest.approx(dragged_y_range)
 
 
 def test_reset_viewport_clears_manual_y_range(widget: ChartWidget, app: QApplication) -> None:
@@ -760,11 +762,11 @@ def test_reset_viewport_clears_manual_y_range(widget: ChartWidget, app: QApplica
 
     widget.reset_viewport(follow_latest=True)
 
-    assert widget._y_range_override is None
+    assert widget._y_axis_offset == pytest.approx(0.0)
     assert widget.price_plot.viewRange()[1] == pytest.approx(auto_y_range)
 
 
-def test_set_cursor_clears_manual_y_range_and_refits_visible_bars(widget: ChartWidget, app: QApplication) -> None:
+def test_set_cursor_preserves_y_offset_and_refits_visible_bars(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
     bars = _bars()
@@ -777,14 +779,46 @@ def test_set_cursor_clears_manual_y_range_and_refits_visible_bars(widget: ChartW
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, start, is_start=True))
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+    preserved_offset = widget._y_axis_offset
 
     widget.set_cursor(150)
 
     y_min, y_max = widget.price_plot.viewRange()[1]
     visible = widget._revealed_window_bars(*widget.current_x_range())
-    assert widget._y_range_override is None
-    assert y_min <= min(bar.low for _, bar in visible)
-    assert y_max >= max(bar.high for _, bar in visible)
+    auto_low = min(bar.low for _, bar in visible)
+    auto_high = max(bar.high for _, bar in visible)
+    height = max(auto_high - auto_low, max(abs(auto_high) * 0.01, 1.0))
+    padding = max(height * 0.06, 0.5)
+    assert widget._y_axis_offset == pytest.approx(preserved_offset)
+    assert y_min == pytest.approx(auto_low - padding + preserved_offset)
+    assert y_max == pytest.approx(auto_high + padding + preserved_offset)
+
+
+def test_pan_x_preserves_y_offset_and_recomputes_auto_range(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    app.processEvents()
+
+    start = _y_axis_drag_scene_pos(widget, 100.0)
+    move = start + QPointF(0.0, -40.0)
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+    preserved_offset = widget._y_axis_offset
+
+    widget.pan_x(-30)
+
+    visible = widget._revealed_window_bars(*widget.current_x_range())
+    low = min(bar.low for _, bar in visible)
+    high = max(bar.high for _, bar in visible)
+    height = max(high - low, max(abs(high) * 0.01, 1.0))
+    padding = max(height * 0.06, 0.5)
+    y_min, y_max = widget.price_plot.viewRange()[1]
+    assert widget._y_axis_offset == pytest.approx(preserved_offset)
+    assert y_min == pytest.approx(low - padding + preserved_offset)
+    assert y_max == pytest.approx(high + padding + preserved_offset)
 
 
 def test_left_drag_pans_while_browse_hover_is_active(widget: ChartWidget, app: QApplication) -> None:

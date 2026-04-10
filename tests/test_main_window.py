@@ -532,14 +532,19 @@ def test_step_forward_refits_y_axis_after_manual_vertical_drag(window: MainWindo
         window.engine.window_start_index,
     )
     window.chart_widget.pan_y(10.0)
+    preserved_offset = window.chart_widget._y_axis_offset
 
     window.step_forward()
 
     visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
     y_min, y_max = window.chart_widget.price_plot.viewRange()[1]
-    assert window.chart_widget._y_range_override is None
-    assert y_min <= min(bar.low for _, bar in visible)
-    assert y_max >= max(bar.high for _, bar in visible)
+    low = min(bar.low for _, bar in visible)
+    high = max(bar.high for _, bar in visible)
+    height = max(high - low, max(abs(high) * 0.01, 1.0))
+    padding = max(height * 0.06, 0.5)
+    assert window.chart_widget._y_axis_offset == pytest.approx(preserved_offset)
+    assert y_min == pytest.approx(low - padding + preserved_offset)
+    assert y_max == pytest.approx(high + padding + preserved_offset)
     window._auto_save_timer.stop()
     window._session_dirty = False
 

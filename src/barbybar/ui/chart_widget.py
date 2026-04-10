@@ -383,7 +383,7 @@ class ChartWidget(QWidget):
         self._hovered_order_line_id: int | None = None
         self._hover_target = HoverTarget()
         self._active_drag_target = ActiveDragTarget()
-        self._y_range_override: tuple[float, float] | None = None
+        self._y_axis_offset = 0.0
         self._y_axis_drag_active = False
         self._y_axis_drag_start_scene_y: float | None = None
         self._y_axis_drag_start_range: tuple[float, float] | None = None
@@ -677,7 +677,8 @@ class ChartWidget(QWidget):
         self._global_start_index = max(0, global_start_index)
         self._total_count = max(0, total_count)
         self._cursor = cursor if self._bars else -1
-        self._clear_y_range_override()
+        if not preserve_viewport:
+            self._reset_y_axis_offset()
         self._viewport.max_bars_in_view = max(200, self._total_count or len(self._bars))
         self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         if not preserve_viewport:
@@ -704,7 +705,6 @@ class ChartWidget(QWidget):
             self._cursor = -1
             self._sync_plot_data()
             return
-        self._clear_y_range_override()
         self._cursor = max(self._global_start_index, min(index, self.window_end_index))
         self._sync_plot_data()
         if self._viewport.follow_latest:
@@ -715,13 +715,12 @@ class ChartWidget(QWidget):
         self._viewport.follow_latest = follow_latest
         self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         self._viewport.right_edge_index = self._cursor + 1 if self._cursor >= 0 else 0.0
-        self._clear_y_range_override()
+        self._reset_y_axis_offset()
         self._apply_viewport()
 
     def zoom_x(self, anchor_x: float, scale: float) -> None:
         if self._cursor < 0:
             return
-        self._clear_y_range_override()
         old_bars = self._viewport.bars_in_view
         new_bars = int(round(old_bars * scale))
         new_bars = self._clamp_bars_in_view(new_bars)
@@ -740,7 +739,6 @@ class ChartWidget(QWidget):
     def pan_x(self, delta_bars: float) -> None:
         if self._cursor < 0:
             return
-        self._clear_y_range_override()
         previous_right = float(self._viewport.right_edge_index)
         previous_follow_latest = bool(self._viewport.follow_latest)
         self._viewport.right_edge_index += delta_bars
@@ -1139,7 +1137,9 @@ class ChartWidget(QWidget):
         high = max(bar.high for _, bar in window)
         height = max(high - low, max(abs(high) * 0.01, 1.0))
         padding = max(height * 0.06, 0.5)
-        self.price_plot.setYRange(low - padding, high + padding, padding=0)
+        auto_low = low - padding
+        auto_high = high + padding
+        self.price_plot.setYRange(auto_low + self._y_axis_offset, auto_high + self._y_axis_offset, padding=0)
         return True
 
     def _revealed_window_bars(self, left: float, right_edge: float) -> list[tuple[int, Bar]]:
@@ -1431,15 +1431,13 @@ class ChartWidget(QWidget):
             scene_y=round(float(scene_pos.y()), 3),
             last_scene_y=round(float(last_scene_pos.y()), 3),
             delta_price=round(delta_price, 6),
-            y_min=round(float(self._y_range_override[0]), 6) if self._y_range_override else -1.0,
-            y_max=round(float(self._y_range_override[1]), 6) if self._y_range_override else -1.0,
+            y_offset=round(float(self._y_axis_offset), 6),
         )
 
     def _finish_y_axis_drag(self) -> None:
         self._log_interaction(
             "finish_y_axis_drag",
-            y_min=round(float(self._y_range_override[0]), 6) if self._y_range_override else -1.0,
-            y_max=round(float(self._y_range_override[1]), 6) if self._y_range_override else -1.0,
+            y_offset=round(float(self._y_axis_offset), 6),
         )
         self._y_axis_drag_active = False
         self._y_axis_drag_start_scene_y = None
@@ -1448,16 +1446,16 @@ class ChartWidget(QWidget):
         self._suppress_next_left_click = True
 
     def pan_y(self, delta_price: float) -> None:
-        y_min, y_max = self._y_range_override or tuple(float(value) for value in self.price_plot.viewRange()[1])
+        y_min, y_max = tuple(float(value) for value in self.price_plot.viewRange()[1])
         next_range = (float(y_min) + float(delta_price), float(y_max) + float(delta_price))
-        self._y_range_override = next_range
+        self._y_axis_offset += float(delta_price)
         self.price_plot.setYRange(next_range[0], next_range[1], padding=0)
         self._rebuild_session_markers()
         self._rebuild_order_line_items()
         self._rebuild_trade_marker_items()
 
-    def _clear_y_range_override(self) -> None:
-        self._y_range_override = None
+    def _reset_y_axis_offset(self) -> None:
+        self._y_axis_offset = 0.0
         self._y_axis_drag_active = False
         self._y_axis_drag_start_scene_y = None
         self._y_axis_drag_start_range = None
