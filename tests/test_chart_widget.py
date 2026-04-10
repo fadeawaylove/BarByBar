@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction
 from barbybar.ui.chart_widget import (
+    AVERAGE_PRICE_LINE_COLOR,
     BrowseMode,
     CANDLE_BODY_BORDER_WIDTH,
     CANDLE_WICK_WIDTH,
@@ -15,6 +16,8 @@ from barbybar.ui.chart_widget import (
     DOWN_CANDLE_COLOR,
     HoverTargetType,
     InteractionMode,
+    STOP_LOSS_LINE_COLOR,
+    TAKE_PROFIT_LINE_COLOR,
     UP_CANDLE_COLOR,
 )
 
@@ -509,6 +512,27 @@ def test_trade_marker_hover_returns_action_details(widget: ChartWidget, app: QAp
     assert "开多" in widget._hover_time_label.text()
 
 
+def test_trade_link_hover_uses_open_hand_cursor(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
+        ]
+    )
+    app.processEvents()
+    link = widget._trade_links[0]
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
+
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._hover_target.target_type is HoverTargetType.TRADE_LINK
+    assert widget.cursor().shape() == Qt.CursorShape.OpenHandCursor
+
+
 def test_multiple_trade_actions_same_bar_are_staggered(widget: ChartWidget) -> None:
     widget.set_full_data(_bars())
     widget.set_cursor(20)
@@ -688,12 +712,13 @@ def test_dragging_right_side_gutter_pans_y_range(widget: ChartWidget, app: QAppl
     assert widget._suppress_next_left_click is True
 
 
-def test_manual_y_range_persists_across_apply_viewport(widget: ChartWidget, app: QApplication) -> None:
+def test_manual_y_range_reverts_to_auto_fit_on_apply_viewport(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
     widget.set_full_data(_bars())
     widget.set_cursor(150)
     app.processEvents()
+    auto_y_range = widget.price_plot.viewRange()[1]
 
     start = _y_axis_drag_scene_pos(widget, 100.0)
     move = start + QPointF(0.0, -40.0)
@@ -703,7 +728,8 @@ def test_manual_y_range_persists_across_apply_viewport(widget: ChartWidget, app:
 
     widget._apply_viewport()
 
-    assert widget.price_plot.viewRange()[1] == pytest.approx(dragged_y_range)
+    assert dragged_y_range != pytest.approx(auto_y_range)
+    assert widget.price_plot.viewRange()[1] == pytest.approx(auto_y_range)
 
 
 def test_reset_viewport_clears_manual_y_range(widget: ChartWidget, app: QApplication) -> None:
@@ -724,6 +750,29 @@ def test_reset_viewport_clears_manual_y_range(widget: ChartWidget, app: QApplica
 
     assert widget._y_range_override is None
     assert widget.price_plot.viewRange()[1] == pytest.approx(auto_y_range)
+
+
+def test_set_cursor_clears_manual_y_range_and_refits_visible_bars(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    bars = _bars()
+    widget.set_full_data(bars)
+    widget.set_cursor(60)
+    app.processEvents()
+
+    start = _y_axis_drag_scene_pos(widget, 100.0)
+    move = start + QPointF(0.0, -40.0)
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    widget.set_cursor(150)
+
+    y_min, y_max = widget.price_plot.viewRange()[1]
+    visible = widget._revealed_window_bars(*widget.current_x_range())
+    assert widget._y_range_override is None
+    assert y_min <= min(bar.low for _, bar in visible)
+    assert y_max >= max(bar.high for _, bar in visible)
 
 
 def test_left_drag_pans_while_browse_hover_is_active(widget: ChartWidget, app: QApplication) -> None:
@@ -761,7 +810,7 @@ def test_main_plot_left_drag_still_pans_x_after_y_axis_drag_added(widget: ChartW
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
 
     assert widget.viewport_state.right_edge_index != old_right
-    assert widget.price_plot.viewRange()[1] == pytest.approx(old_y_range)
+    assert widget.price_plot.viewRange()[1] != pytest.approx(old_y_range)
 
 
 def test_drag_end_next_mouse_move_restores_hover(widget: ChartWidget, app: QApplication) -> None:
@@ -1798,6 +1847,57 @@ def test_protective_order_label_includes_difference_from_average_price() -> None
     assert widget._order_line_label(widget._order_lines[1]) == "止损 1手 7675 (-4)"
     widget.close()
     widget.deleteLater()
+
+
+def test_order_line_style_uses_expected_colors() -> None:
+    widget = ChartWidget()
+    average_pen, average_color, average_movable = widget._order_line_style(
+        OrderLine(
+            order_type=OrderLineType.AVERAGE_PRICE,
+            price=100.0,
+            quantity=1,
+            created_bar_index=0,
+            active_from_bar_index=0,
+            created_at=datetime(2025, 1, 1, 9, 0),
+        )
+    )
+    stop_pen, stop_color, stop_movable = widget._order_line_style(
+        OrderLine(
+            order_type=OrderLineType.STOP_LOSS,
+            price=99.0,
+            quantity=1,
+            created_bar_index=0,
+            active_from_bar_index=1,
+            created_at=datetime(2025, 1, 1, 9, 0),
+        )
+    )
+    take_pen, take_color, take_movable = widget._order_line_style(
+        OrderLine(
+            order_type=OrderLineType.TAKE_PROFIT,
+            price=101.0,
+            quantity=1,
+            created_bar_index=0,
+            active_from_bar_index=1,
+            created_at=datetime(2025, 1, 1, 9, 0),
+        )
+    )
+
+    assert average_color == AVERAGE_PRICE_LINE_COLOR
+    assert average_pen.color().name() == AVERAGE_PRICE_LINE_COLOR
+    assert average_movable is False
+    assert stop_color == STOP_LOSS_LINE_COLOR
+    assert stop_pen.color().name() == STOP_LOSS_LINE_COLOR
+    assert stop_movable is True
+    assert take_color == TAKE_PROFIT_LINE_COLOR
+    assert take_pen.color().name() == TAKE_PROFIT_LINE_COLOR
+    assert take_movable is True
+    widget.close()
+    widget.deleteLater()
+
+
+def test_protective_drag_color_matches_updated_order_line_colors(widget: ChartWidget) -> None:
+    assert widget._protective_drag_color(OrderLineType.STOP_LOSS) == STOP_LOSS_LINE_COLOR
+    assert widget._protective_drag_color(OrderLineType.TAKE_PROFIT) == TAKE_PROFIT_LINE_COLOR
 
 
 def test_protective_order_label_falls_back_to_reference_price() -> None:

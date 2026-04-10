@@ -523,6 +523,27 @@ def test_update_ui_from_engine_syncs_trade_markers(window: MainWindow) -> None:
     assert len(window.chart_widget._trade_links) == 1
 
 
+def test_step_forward_refits_y_axis_after_manual_vertical_drag(window: MainWindow) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
+    window.chart_widget.pan_y(10.0)
+
+    window.step_forward()
+
+    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
+    y_min, y_max = window.chart_widget.price_plot.viewRange()[1]
+    assert window.chart_widget._y_range_override is None
+    assert y_min <= min(bar.low for _, bar in visible)
+    assert y_max >= max(bar.high for _, bar in visible)
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
 def test_trade_marker_visibility_toggle_updates_chart_widget(window: MainWindow) -> None:
     _seed_engine(window)
 

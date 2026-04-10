@@ -25,8 +25,8 @@ BAR_COUNT_LABEL_COLOR = "#b7bfca"
 EMA_LINE_COLOR = "#d84a4a"
 ENTRY_LONG_LINE_COLOR = "#2979ff"
 ENTRY_SHORT_LINE_COLOR = "#ff9f1c"
-STOP_LOSS_LINE_COLOR = "#d84a4a"
-TAKE_PROFIT_LINE_COLOR = "#1f8b24"
+STOP_LOSS_LINE_COLOR = "#1f8b24"
+TAKE_PROFIT_LINE_COLOR = "#d84a4a"
 AVERAGE_PRICE_LINE_COLOR = "#5f6b7a"
 DRAWING_HIT_DISTANCE_PX = 10.0
 DRAWING_ANCHOR_HIT_DISTANCE_PX = 12.0
@@ -677,10 +677,10 @@ class ChartWidget(QWidget):
         self._global_start_index = max(0, global_start_index)
         self._total_count = max(0, total_count)
         self._cursor = cursor if self._bars else -1
+        self._clear_y_range_override()
         self._viewport.max_bars_in_view = max(200, self._total_count or len(self._bars))
         self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         if not preserve_viewport:
-            self._clear_y_range_override()
             self._pending_drawing_anchors = []
             self._drawing_preview_anchor = None
             self._active_drawing_tool = None
@@ -704,6 +704,7 @@ class ChartWidget(QWidget):
             self._cursor = -1
             self._sync_plot_data()
             return
+        self._clear_y_range_override()
         self._cursor = max(self._global_start_index, min(index, self.window_end_index))
         self._sync_plot_data()
         if self._viewport.follow_latest:
@@ -720,6 +721,7 @@ class ChartWidget(QWidget):
     def zoom_x(self, anchor_x: float, scale: float) -> None:
         if self._cursor < 0:
             return
+        self._clear_y_range_override()
         old_bars = self._viewport.bars_in_view
         new_bars = int(round(old_bars * scale))
         new_bars = self._clamp_bars_in_view(new_bars)
@@ -738,9 +740,7 @@ class ChartWidget(QWidget):
     def pan_x(self, delta_bars: float) -> None:
         if self._cursor < 0:
             return
-        if self._y_range_override is None:
-            current_y_range = self.price_plot.viewRange()[1]
-            self._y_range_override = (float(current_y_range[0]), float(current_y_range[1]))
+        self._clear_y_range_override()
         previous_right = float(self._viewport.right_edge_index)
         previous_follow_latest = bool(self._viewport.follow_latest)
         self._viewport.right_edge_index += delta_bars
@@ -1126,10 +1126,6 @@ class ChartWidget(QWidget):
         return min_right, max_right
 
     def _apply_y_range(self, left: float, right_edge: float) -> bool:
-        if self._y_range_override is not None:
-            low, high = self._y_range_override
-            self.price_plot.setYRange(low, high, padding=0)
-            return True
         window = self._revealed_window_bars(left, right_edge)
         if not window:
             return False
@@ -2918,7 +2914,11 @@ class ChartWidget(QWidget):
             cursor = Qt.CursorShape.ClosedHandCursor
         elif self._hover_target.target_type is HoverTargetType.ORDER_LINE:
             cursor = Qt.CursorShape.SizeVerCursor
-        elif self._hover_target.target_type in {HoverTargetType.DRAWING_ANCHOR, HoverTargetType.DRAWING_BODY}:
+        elif self._hover_target.target_type in {
+            HoverTargetType.DRAWING_ANCHOR,
+            HoverTargetType.DRAWING_BODY,
+            HoverTargetType.TRADE_LINK,
+        }:
             cursor = Qt.CursorShape.OpenHandCursor
         elif self._crosshair_enabled and self._interaction_mode in {InteractionMode.BROWSE, InteractionMode.ORDER_PREVIEW}:
             cursor = Qt.CursorShape.CrossCursor
