@@ -910,19 +910,25 @@ class ChartWidget(QWidget):
             return
         if self._trade_links_visible:
             for link in self._trade_links:
+                is_hovered = (
+                    self._hover_target.target_type is HoverTargetType.TRADE_LINK
+                    and self._hover_target.trade_link is link
+                )
                 is_focused = link.trade_number is not None and link.trade_number == self._focused_trade_number
+                is_highlighted = is_hovered or is_focused
                 item = pg.PlotCurveItem(
                     [link.x1, link.x2],
                     [link.y1, link.y2],
                     pen=pg.mkPen(
-                        "#ffd166" if is_focused else (TRADE_LINK_WIN_COLOR if link.pnl >= 0 else TRADE_LINK_LOSS_COLOR),
-                        width=3 if is_focused else 1,
+                        "#ffd166" if is_highlighted else (TRADE_LINK_WIN_COLOR if link.pnl >= 0 else TRADE_LINK_LOSS_COLOR),
+                        width=3 if is_highlighted else 1,
                         style=Qt.PenStyle.SolidLine,
                     ),
                 )
-                item.setOpacity(0.85 if is_focused else 0.55)
+                item.setOpacity(0.9 if is_highlighted else 0.55)
                 item._barbybar_trade_marker = True
-                item.setZValue(15 if is_focused else 13)
+                item._barbybar_trade_link_highlighted = is_highlighted
+                item.setZValue(15 if is_highlighted else 13)
                 self.price_plot.addItem(item)
         if self._trade_markers_visible:
             for marker in self._trade_markers:
@@ -1286,9 +1292,7 @@ class ChartWidget(QWidget):
             return
         if self._hover_target.target_type is HoverTargetType.TRADE_LINK and self._hover_target.trade_link is not None:
             link = self._hover_target.trade_link
-            hover_price = link.y2
-            hover_x = int(round(link.x2))
-            self._update_crosshair(hover_x, hover_price)
+            self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
             self._update_trade_hover_info(link.detail_lines)
             return
         if self._hover_target.target_type is not HoverTargetType.BAR or self._hover_target.bar is None or self._hover_target.bar_index is None:
@@ -1569,6 +1573,7 @@ class ChartWidget(QWidget):
         )
         self._rebuild_order_line_items()
         self._rebuild_line_items()
+        self._rebuild_trade_marker_items()
         self._sync_cursor()
 
     def _is_hovered_order_line(self, line: OrderLine) -> bool:

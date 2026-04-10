@@ -528,9 +528,21 @@ def test_trade_link_hover_uses_open_hand_cursor(widget: ChartWidget, app: QAppli
     scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
 
     widget._handle_mouse_moved((scene_pos,))
+    highlighted_link_items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_trade_marker", False) and item.__class__.__name__ == "PlotCurveItem"
+    ]
 
     assert widget._hover_target.target_type is HoverTargetType.TRADE_LINK
     assert widget.cursor().shape() == Qt.CursorShape.OpenHandCursor
+    assert widget._v_line.isVisible() is False
+    assert widget._h_line.isVisible() is False
+    assert widget._hover_card.isHidden() is False
+    assert "09:05" in widget._hover_time_label.text()
+    assert "09:08" in widget._hover_time_label.text()
+    assert highlighted_link_items
+    assert any(item.opts["pen"].widthF() == 3.0 for item in highlighted_link_items)
 
 
 def test_multiple_trade_actions_same_bar_are_staggered(widget: ChartWidget) -> None:
