@@ -90,10 +90,13 @@ def normalize_drawing_style(tool_type: DrawingToolType, style: dict[str, Any] | 
     payload["fill_opacity"] = min(max(float(payload.get("fill_opacity", DEFAULT_DRAWING_STYLE["fill_opacity"])), 0.0), 1.0)
     payload["show_price_label"] = bool(payload.get("show_price_label", False))
     fib_levels = payload.get("fib_levels", DEFAULT_DRAWING_STYLE["fib_levels"])
+    normalized_fib_levels: list[float] = []
     if isinstance(fib_levels, list):
-        payload["fib_levels"] = [float(item) for item in fib_levels]
-    else:
-        payload["fib_levels"] = list(DEFAULT_DRAWING_STYLE["fib_levels"])
+        try:
+            normalized_fib_levels = [float(item) for item in fib_levels]
+        except (TypeError, ValueError):
+            normalized_fib_levels = []
+    payload["fib_levels"] = normalized_fib_levels or list(DEFAULT_DRAWING_STYLE["fib_levels"])
     payload["show_level_labels"] = bool(payload.get("show_level_labels", True))
     payload["show_price_labels"] = bool(payload.get("show_price_labels", True))
     payload["text"] = str(payload.get("text", ""))
@@ -246,6 +249,38 @@ class ChartDrawing:
             tool_type=tool_type,
             anchors=[DrawingAnchor.from_dict(item) for item in payload.get("anchors", [])],
             style=normalize_drawing_style(tool_type, dict(payload.get("style", {}))),
+        )
+
+
+@dataclass(slots=True)
+class DrawingTemplate:
+    slot: int
+    tool_type: DrawingToolType
+    note: str
+    style: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "slot": int(self.slot),
+            "tool_type": self.tool_type.value,
+            "note": self.note,
+            "style": normalize_drawing_style(self.tool_type, dict(self.style)),
+        }
+        if self.tool_type is DrawingToolType.TEXT:
+            payload["style"]["text"] = ""
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DrawingTemplate":
+        tool_type = DrawingToolType(str(payload["tool_type"]))
+        style = normalize_drawing_style(tool_type, dict(payload.get("style", {})))
+        if tool_type is DrawingToolType.TEXT:
+            style["text"] = ""
+        return cls(
+            slot=max(1, min(6, int(payload["slot"]))),
+            tool_type=tool_type,
+            note=str(payload.get("note", "")).strip(),
+            style=style,
         )
 
 

@@ -20,8 +20,8 @@ CANDLE_WICK_WIDTH = 2
 CANDLE_BODY_BORDER_WIDTH = 2
 SESSION_MARKER_COLOR = "#d6dde6"
 SESSION_OPEN_TIMES = (time(9, 0), time(21, 0))
-SESSION_LABEL_COLOR = "#6b7280"
-BAR_COUNT_LABEL_COLOR = "#9aa1ab"
+SESSION_LABEL_COLOR = "#a7b1bf"
+BAR_COUNT_LABEL_COLOR = "#b7bfca"
 EMA_LINE_COLOR = "#d84a4a"
 ENTRY_LONG_LINE_COLOR = "#2979ff"
 ENTRY_SHORT_LINE_COLOR = "#ff9f1c"
@@ -316,6 +316,7 @@ class ChartWidget(QWidget):
     drawingsChanged = Signal()
     drawingToolChanged = Signal(object)
     drawingPropertiesRequested = Signal(object, int)
+    drawingTemplateSaveRequested = Signal(object, int)
     interactionModeChanged = Signal(object)
     viewportChanged = Signal()
     orderLineCreated = Signal(str, float)
@@ -842,8 +843,7 @@ class ChartWidget(QWidget):
         timeframe_minutes = self._infer_timeframe_minutes()
         local_cursor = self._cursor - self._global_start_index if self._cursor >= 0 else -1
         stop = min(len(self._bars), local_cursor + 1)
-        session_label_y = self._annotation_y_position(0.035)
-        bar_count_label_y = self._annotation_y_position(0.105)
+        session_label_y = self._annotation_y_position(0.03)
         session_counts: dict[tuple[str, datetime], int] = {}
         for index in range(stop):
             bar = self._bars[index]
@@ -875,15 +875,20 @@ class ChartWidget(QWidget):
             bar_count = session_counts[session_key]
             if bar_count % 2 != 0:
                 continue
+            x_pos = float(self._global_start_index + index)
+            y_pos = self._bar_count_label_y(index)
             count_label = pg.TextItem(
                 str(bar_count),
                 color=BAR_COUNT_LABEL_COLOR,
                 fill=pg.mkBrush(255, 255, 255, 210),
                 anchor=(0.5, 1),
             )
+            font = count_label.textItem.font()
+            font.setPointSize(max(8, font.pointSize() - 2))
+            count_label.textItem.setFont(font)
             count_label._barbybar_bar_count_label = True
             count_label.setZValue(4)
-            count_label.setPos(float(self._global_start_index + index), bar_count_label_y)
+            count_label.setPos(x_pos, y_pos)
             self.price_plot.addItem(count_label, ignoreBounds=True)
 
     def _rebuild_line_items(self) -> None:
@@ -1820,16 +1825,22 @@ class ChartWidget(QWidget):
     def _show_drawing_context_menu(self, drawing_index: int, scene_pos) -> None:  # noqa: ANN001
         if not (0 <= drawing_index < len(self._drawings)):
             return
-        drawing = self._drawings[drawing_index]
         local_pos = self.graphics.mapFromScene(scene_pos)
-        menu = QMenu(self)
-        properties_action = menu.addAction("属性...")
-        delete_action = menu.addAction("删除画线")
+        menu, properties_action, save_template_action, delete_action = self._build_drawing_context_menu()
         chosen = menu.exec(self.graphics.mapToGlobal(local_pos))
         if chosen is properties_action:
             self.drawingPropertiesRequested.emit(self.drawings()[drawing_index], drawing_index)
+        elif chosen is save_template_action:
+            self.drawingTemplateSaveRequested.emit(self.drawings()[drawing_index], drawing_index)
         elif chosen is delete_action:
-            self.delete_drawing(drawing.id, drawing_index)
+            self.delete_drawing(self._drawings[drawing_index].id, drawing_index)
+
+    def _build_drawing_context_menu(self) -> tuple[QMenu, object, object, object]:
+        menu = QMenu(self)
+        properties_action = menu.addAction("属性...")
+        save_template_action = menu.addAction("加入常用模板...")
+        delete_action = menu.addAction("删除画线")
+        return menu, properties_action, save_template_action, delete_action
 
     def _drawing_at_scene_pos(self, scene_pos) -> tuple[int, ChartDrawing] | None:  # noqa: ANN001
         hit_index: int | None = None
@@ -2982,6 +2993,21 @@ class ChartWidget(QWidget):
         y_min, y_max = self.price_plot.viewRange()[1]
         span = max(float(y_max) - float(y_min), 1.0)
         return float(y_min) + span * float(offset_ratio)
+
+    def _bar_count_label_y(self, bar_index: int) -> float:
+        y_min, y_max = self.price_plot.viewRange()[1]
+        span = max(float(y_max) - float(y_min), 1.0)
+        if not (0 <= bar_index < len(self._bars)):
+            return float(y_min) + span * 0.02
+        bar = self._bars[bar_index]
+        window_start = max(0, bar_index - 5)
+        recent_ranges = [max(float(item.high) - float(item.low), 0.0) for item in self._bars[window_start : bar_index + 1]]
+        average_range = (sum(recent_ranges) / len(recent_ranges)) if recent_ranges else 0.0
+        min_offset = span * 0.022
+        range_offset = average_range * 0.55
+        edge_margin = span * 0.02
+        offset = max(min_offset, range_offset)
+        return max(float(bar.low) - offset, float(y_min) + edge_margin)
 
     @staticmethod
     def _ema(values: list[float], period: int) -> list[float]:

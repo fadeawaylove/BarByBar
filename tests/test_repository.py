@@ -318,7 +318,7 @@ def test_repository_roundtrip_fib_and_text_styles() -> None:
             ChartDrawing(
                 tool_type=DrawingToolType.FIB_RETRACEMENT,
                 anchors=[DrawingAnchor(1.0, 100.0), DrawingAnchor(3.0, 110.0)],
-                style={"fib_levels": [0.0, 0.5, 1.0, 2.0], "show_level_labels": True, "show_price_labels": True},
+                style={"fib_levels": [0.0, 0.382, 0.5, 0.618, 1.0, 2.0], "show_level_labels": True, "show_price_labels": True},
             ),
             ChartDrawing(
                 tool_type=DrawingToolType.TEXT,
@@ -331,7 +331,7 @@ def test_repository_roundtrip_fib_and_text_styles() -> None:
         loaded = repo.get_drawings(session.id or 0)
 
         assert loaded[0].tool_type is DrawingToolType.FIB_RETRACEMENT
-        assert loaded[0].style["fib_levels"] == [0.0, 0.5, 1.0, 2.0]
+        assert loaded[0].style["fib_levels"] == [0.0, 0.382, 0.5, 0.618, 1.0, 2.0]
         assert loaded[1].tool_type is DrawingToolType.TEXT
         assert loaded[1].style["text"] == "观察回撤"
         assert loaded[1].style["font_size"] == 14

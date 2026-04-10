@@ -263,8 +263,13 @@ def test_bar_count_labels_render_even_numbers_only_when_enabled(widget: ChartWid
     labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
 
     assert [item.toPlainText() for item in labels] == ["2", "4", "6", "8", "10"]
-    y_min, y_max = widget.price_plot.viewRange()[1]
-    assert all(item.pos().y() < (y_min + y_max) / 2 for item in labels)
+    label_map = {int(item.toPlainText()): item for item in labels}
+    bars = _bars(10)
+    assert label_map[2].pos().y() < bars[1].low
+    assert label_map[4].pos().y() < bars[3].low
+    font_sizes = {item.textItem.font().pointSize() for item in labels}
+    assert len(font_sizes) == 1
+    assert next(iter(font_sizes)) <= 10
 
 
 def test_bar_count_labels_reset_between_day_and_night_sessions(widget: ChartWidget) -> None:
@@ -283,6 +288,115 @@ def test_bar_count_labels_reset_between_day_and_night_sessions(widget: ChartWidg
     labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
 
     assert [item.toPlainText() for item in labels] == ["2", "2"]
+
+
+def test_bar_count_labels_stay_below_bar_when_low_side_is_close_to_view_bottom(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=104, low=99, close=103, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=103, high=105, low=100, close=104, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=104, high=106, low=99.2, close=99.8, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 3), open=99.2, high=100.5, low=98.0, close=100, volume=1),
+    ]
+    widget.set_bar_count_labels_visible(True)
+    widget.set_window_data(bars, cursor=3, total_count=4, global_start_index=0)
+
+    labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
+    label_map = {int(item.toPlainText()): item for item in labels}
+
+    assert label_map[2].pos().y() < bars[1].low
+    assert label_map[4].pos().y() < bars[3].low
+    assert label_map[4].pos().y() >= widget.price_plot.viewRange()[1][0]
+
+
+def test_bar_count_label_offset_scales_with_visible_y_range(widget: ChartWidget) -> None:
+    bars = _bars(12)
+    widget.set_bar_count_labels_visible(True)
+    widget.set_window_data(bars, cursor=11, total_count=12, global_start_index=0)
+
+    labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
+    label_map = {int(item.toPlainText()): item for item in labels}
+    initial_y_range = widget.price_plot.viewRange()[1]
+    initial_gap = bars[1].low - label_map[2].pos().y()
+
+    widget.price_plot.setYRange(initial_y_range[0] - 50.0, initial_y_range[1] + 50.0, padding=0)
+    widget._rebuild_session_markers()
+
+    labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
+    label_map = {int(item.toPlainText()): item for item in labels}
+    expanded_y_range = widget.price_plot.viewRange()[1]
+    expanded_gap = bars[1].low - label_map[2].pos().y()
+
+    assert expanded_gap > initial_gap
+    assert label_map[2].pos().y() < bars[1].low
+    assert expanded_y_range[0] < initial_y_range[0]
+
+
+def test_bar_count_labels_use_recent_six_bar_average_range_for_offset(widget: ChartWidget) -> None:
+    bars_with_small_history = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100.0, high=100.2, low=99.9, close=100.1, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100.1, high=100.3, low=100.0, close=100.2, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=100.2, high=100.4, low=100.1, close=100.3, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 3), open=100.3, high=100.5, low=100.2, close=100.4, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 4), open=100.4, high=100.6, low=100.3, close=100.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 5), open=100.5, high=100.7, low=100.4, close=100.6, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 6), open=101.0, high=101.2, low=100.8, close=101.1, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 7), open=101.1, high=101.3, low=100.9, close=101.2, volume=1),
+    ]
+    bars_with_large_history = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100.0, high=102.0, low=99.0, close=101.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=101.0, high=103.0, low=100.0, close=102.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=102.0, high=104.0, low=101.0, close=103.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 3), open=103.0, high=105.0, low=102.0, close=104.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 4), open=104.0, high=106.0, low=103.0, close=105.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 5), open=105.0, high=107.0, low=104.0, close=106.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 6), open=101.0, high=101.2, low=100.8, close=101.1, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 7), open=101.1, high=101.3, low=100.9, close=101.2, volume=1),
+    ]
+    widget.set_bar_count_labels_visible(True)
+    widget.set_window_data(bars_with_small_history, cursor=7, total_count=8, global_start_index=0)
+    widget.price_plot.setYRange(95.0, 110.0, padding=0)
+    widget._rebuild_session_markers()
+    small_gap = bars_with_small_history[7].low - widget._bar_count_label_y(7)
+
+    widget.set_window_data(bars_with_large_history, cursor=7, total_count=8, global_start_index=0)
+    widget.price_plot.setYRange(95.0, 110.0, padding=0)
+    widget._rebuild_session_markers()
+    large_gap = bars_with_large_history[7].low - widget._bar_count_label_y(7)
+
+    assert large_gap > small_gap
+
+
+def test_bar_count_label_offset_uses_available_bars_when_fewer_than_six(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100.0, high=101.0, low=99.5, close=100.4, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100.4, high=101.6, low=99.8, close=101.1, volume=1),
+    ]
+    widget.set_bar_count_labels_visible(True)
+    widget.set_window_data(bars, cursor=1, total_count=2, global_start_index=0)
+    widget.price_plot.setYRange(95.0, 110.0, padding=0)
+    widget._rebuild_session_markers()
+
+    labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
+
+    assert len(labels) == 1
+    gap = bars[1].low - labels[0].pos().y()
+    average_range = ((bars[0].high - bars[0].low) + (bars[1].high - bars[1].low)) / 2
+    assert gap == pytest.approx(max((110.0 - 95.0) * 0.022, average_range * 0.55))
+
+
+def test_bar_count_labels_keep_minimum_gap_for_small_range_bar(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100.0, high=100.05, low=99.98, close=100.01, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100.01, high=100.04, low=99.99, close=100.02, volume=1),
+    ]
+    widget.set_bar_count_labels_visible(True)
+    widget.set_window_data(bars, cursor=1, total_count=2, global_start_index=0)
+
+    labels = [item for item in widget.price_plot.items if getattr(item, "_barbybar_bar_count_label", False)]
+
+    assert len(labels) == 1
+    assert labels[0].pos().y() < bars[1].low
+    assert (bars[1].low - labels[0].pos().y()) > 0.01
 
 
 def test_hover_bar_returns_none_for_future_blank_space(widget: ChartWidget) -> None:
@@ -1430,6 +1544,36 @@ def test_right_click_on_drawing_opens_drawing_context_menu(widget: ChartWidget, 
     widget._handle_scene_click(click)
 
     assert click.accepted is True
+    assert captured == [0]
+
+
+def test_drawing_context_menu_includes_save_template_action(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+    app.processEvents()
+    menu, _properties_action, _save_template_action, _delete_action = widget._build_drawing_context_menu()
+
+    assert [action.text() for action in menu.actions()] == ["属性...", "加入常用模板...", "删除画线"]
+
+
+def test_selecting_save_template_action_emits_signal(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+    app.processEvents()
+    captured: list[int] = []
+    widget.drawingTemplateSaveRequested.connect(lambda _drawing, index: captured.append(index))
+    _menu, _properties_action, save_template_action, _delete_action = widget._build_drawing_context_menu()
+    monkeypatch.setattr(widget, "_build_drawing_context_menu", lambda: (_menu, _properties_action, save_template_action, _delete_action))
+    monkeypatch.setattr(_menu, "exec", lambda *_args, **_kwargs: save_template_action)
+
+    widget._show_drawing_context_menu(0, widget.price_plot.vb.mapViewToScene(QPointF(12.0, 102.0)))
+
     assert captured == [0]
 
 

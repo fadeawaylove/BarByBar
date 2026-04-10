@@ -37,3 +37,7 @@ def default_log_dir() -> Path:
     root = default_data_root() / "logs"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def default_drawing_templates_path() -> Path:
+    return default_data_root() / "drawing_templates.json"

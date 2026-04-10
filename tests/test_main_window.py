@@ -7,13 +7,14 @@ import pytest
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QMessageBox, QPushButton, QVBoxLayout
 
+from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
 from barbybar.data.tick_size import default_tick_size_for_symbol, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, WindowBars
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, WindowBars
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
-from barbybar.ui.main_window import BatchImportOutcome, BatchImportProgress, DataSetManagerDialog, DrawingPropertiesDialog, MainWindow, SessionLibraryDialog
+from barbybar.ui.main_window import BatchImportOutcome, BatchImportProgress, DataSetManagerDialog, DrawingPropertiesDialog, DrawingTemplateDialog, MainWindow, SessionLibraryDialog
 
 
 def _app() -> QApplication:
@@ -43,11 +44,12 @@ def app() -> QApplication:
 
 
 @pytest.fixture()
-def window(app: QApplication) -> MainWindow:
+def window(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> MainWindow:
     temp_root = Path("C:/code/BarByBar/.pytest-temp")
     temp_root.mkdir(exist_ok=True)
     case_dir = temp_root / uuid4().hex
     case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
     repo = Repository(case_dir / "barbybar.db")
     start = datetime(2025, 1, 1, 9, 0)
     csv_path = case_dir / "sample.csv"
@@ -127,6 +129,19 @@ def test_main_window_exposes_bar_count_toggle_button(window: MainWindow) -> None
     assert window.bar_count_toggle_button.text() == "K线序号"
     assert window.bar_count_toggle_button.isCheckable() is True
     assert window.chart_widget.bar_count_labels_visible is False
+
+
+def test_main_window_exposes_six_drawing_template_buttons(window: MainWindow) -> None:
+    assert set(window._drawing_template_buttons) == {1, 2, 3, 4, 5, 6}
+    assert [window._drawing_template_buttons[index].text() for index in range(1, 7)] == [
+        "模板1",
+        "模板2",
+        "模板3",
+        "模板4",
+        "模板5",
+        "模板6",
+    ]
+    assert all(window._drawing_template_buttons[index].isEnabled() is False for index in range(1, 7))
 
 
 def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None:
@@ -251,10 +266,11 @@ def test_toolbar_separates_timeframes_from_drawing_buttons(window: MainWindow) -
     toolbar = center_panel.layout().itemAt(0).layout()
 
     assert toolbar is not None
-    assert toolbar.count() == 3
+    assert toolbar.count() == 4
     assert toolbar.itemAt(0).layout() is not None
-    assert toolbar.itemAt(1).spacerItem() is not None
-    assert toolbar.itemAt(2).layout() is not None
+    assert toolbar.itemAt(1).layout() is not None
+    assert toolbar.itemAt(2).spacerItem() is not None
+    assert toolbar.itemAt(3).layout() is not None
 
 
 def test_bar_count_toggle_button_is_placed_in_timeframe_toolbar(window: MainWindow) -> None:
@@ -342,6 +358,137 @@ def test_main_window_restores_drawing_style_presets_from_saved_session(app: QApp
         main_window.close()
         main_window.deleteLater()
         app.processEvents()
+
+
+def test_main_window_loads_global_drawing_templates_from_store(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    templates_path = paths.default_drawing_templates_path()
+    templates_path.write_text(
+        '{"templates":{"2":{"slot":2,"tool_type":"rectangle","note":"阻力区","style":{"color":"#3366ff","width":3,"fill_opacity":0.35}}}}',
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        button = main_window._drawing_template_buttons[2]
+        assert button.isEnabled() is True
+        assert button.text() == "阻力区"
+        assert "矩形" in button.toolTip()
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_ignores_invalid_global_drawing_template_store(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_drawing_templates_path().write_text("{broken", encoding="utf-8")
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert all(button.isEnabled() is False for button in main_window._drawing_template_buttons.values())
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_clicking_drawing_template_button_activates_tool_and_style(window: MainWindow) -> None:
+    window._drawing_templates[1] = DrawingTemplate(
+        slot=1,
+        tool_type=DrawingToolType.RECTANGLE,
+        note="阻力区",
+        style={"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35},
+    )
+    window._refresh_drawing_template_buttons()
+
+    window._drawing_template_buttons[1].click()
+
+    assert window.chart_widget.active_drawing_tool is DrawingToolType.RECTANGLE
+    preset = window.chart_widget.drawing_style_preset(DrawingToolType.RECTANGLE)
+    assert preset["color"] == "#3366ff"
+    assert preset["width"] == 3
+    assert preset["fill_opacity"] == 0.35
+
+
+def test_saving_drawing_template_updates_buttons_and_store(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(DrawingTemplateDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(DrawingTemplateDialog, "template_slot", lambda self: 2)
+    monkeypatch.setattr(DrawingTemplateDialog, "template_note", lambda self: "阻力区")
+    monkeypatch.setattr(DrawingTemplateDialog, "clear_requested", lambda self: False)
+
+    original_save = window._save_global_drawing_templates
+
+    def _capture_save() -> None:
+        original_save()
+        captured["content"] = window._drawing_templates_path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(window, "_save_global_drawing_templates", _capture_save)
+
+    drawing = ChartDrawing(
+        tool_type=DrawingToolType.RECTANGLE,
+        anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(12.0, 103.0)],
+        style={"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35},
+    )
+
+    window._handle_drawing_template_save_requested(drawing, 0)
+
+    assert window._drawing_template_buttons[2].text() == "阻力区"
+    assert '"tool_type": "rectangle"' in str(captured["content"])
+    assert '"note": "阻力区"' in str(captured["content"])
+
+
+def test_template_drawing_auto_exits_after_completion(window: MainWindow, app: QApplication) -> None:
+    _seed_engine(window)
+    window.chart_widget.resize(900, 600)
+    window.chart_widget.show()
+    window._update_ui_from_engine()
+    window._drawing_templates[1] = DrawingTemplate(
+        slot=1,
+        tool_type=DrawingToolType.RECTANGLE,
+        note="阻力区",
+        style={"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35},
+    )
+    window._refresh_drawing_template_buttons()
+    window._drawing_template_buttons[1].click()
+    app.processEvents()
+
+    window.chart_widget._consume_drawing_click(DrawingAnchor(10.0, 100.0))
+    window.chart_widget._consume_drawing_click(DrawingAnchor(12.0, 103.0))
+
+    assert window.chart_widget.active_drawing_tool is None
+    drawing = window.chart_widget.drawings()[0]
+    assert drawing.tool_type is DrawingToolType.RECTANGLE
+    assert drawing.style["color"] == "#3366ff"
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_text_template_button_reuses_style_without_reusing_content(window: MainWindow) -> None:
+    window._drawing_templates[1] = DrawingTemplate(
+        slot=1,
+        tool_type=DrawingToolType.TEXT,
+        note="标注",
+        style={"text": "", "font_size": 18, "text_color": "#3366ff", "color": "#3366ff"},
+    )
+    window._refresh_drawing_template_buttons()
+
+    window._drawing_template_buttons[1].click()
+
+    preset = window.chart_widget.drawing_style_preset(DrawingToolType.TEXT)
+    assert preset["font_size"] == 18
+    assert preset["text_color"] == "#3366ff"
+    assert preset["text"] == ""
 
 
 def test_draw_order_controls_sync_position_state(window: MainWindow) -> None:
@@ -633,6 +780,120 @@ def test_text_drawing_dialog_focuses_text_input(app: QApplication) -> None:
     dialog.close()
     dialog.deleteLater()
     app.processEvents()
+
+
+def test_fib_drawing_dialog_exposes_current_levels_and_parses_custom_levels() -> None:
+    dialog = DrawingPropertiesDialog(
+        ChartDrawing(
+            tool_type=DrawingToolType.FIB_RETRACEMENT,
+            anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(12.0, 110.0)],
+            style={"fib_levels": [0.0, 0.382, 0.5, 0.618, 1.0, 2.0], "show_level_labels": True, "show_price_labels": True},
+        )
+    )
+    dialog.fib_levels_edit.setText("0, 0.382, 0.5, 0.618, 1, 2")
+
+    payload = dialog.style_payload()
+
+    assert dialog.fib_levels_edit.text() == "0, 0.382, 0.5, 0.618, 1, 2"
+    assert payload["fib_levels"] == [0.0, 0.382, 0.5, 0.618, 1.0, 2.0]
+    dialog.close()
+    dialog.deleteLater()
+
+
+def test_fib_drawing_dialog_rejects_invalid_levels() -> None:
+    dialog = DrawingPropertiesDialog(
+        ChartDrawing(
+            tool_type=DrawingToolType.FIB_RETRACEMENT,
+            anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(12.0, 110.0)],
+            style={"fib_levels": [0.0, 0.5, 1.0, 2.0]},
+        )
+    )
+    dialog.fib_levels_edit.setText("0, abc, 1")
+
+    with pytest.raises(ValueError, match="斐波那契档位格式无效"):
+        dialog.style_payload()
+
+    dialog.close()
+    dialog.deleteLater()
+
+
+def test_drawing_properties_request_preserves_custom_fib_levels(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_drawings(
+        [
+            ChartDrawing(
+                tool_type=DrawingToolType.FIB_RETRACEMENT,
+                anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(12.0, 110.0)],
+                style={"fib_levels": [0.0, 0.5, 1.0, 2.0], "show_level_labels": True, "show_price_labels": True},
+            )
+        ]
+    )
+    window._session_dirty = False
+    window._auto_save_timer.stop()
+
+    class _FakeDialog:
+        def __init__(self, drawing, parent):
+            self.drawing = drawing
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def style_payload(self):
+            return {
+                "color": "#ff9f1c",
+                "width": 1,
+                "line_style": "solid",
+                "fib_levels": [0.0, 0.382, 0.5, 0.618, 1.0, 2.0],
+                "show_level_labels": True,
+                "show_price_labels": True,
+            }
+
+    monkeypatch.setattr("barbybar.ui.main_window.DrawingPropertiesDialog", _FakeDialog)
+
+    window._handle_drawing_properties_requested(window.chart_widget.drawings()[0], 0)
+
+    assert window.chart_widget.drawings()[0].style["fib_levels"] == [0.0, 0.382, 0.5, 0.618, 1.0, 2.0]
+    assert window.chart_widget.drawing_style_preset(DrawingToolType.FIB_RETRACEMENT)["fib_levels"] == [
+        0.0,
+        0.382,
+        0.5,
+        0.618,
+        1.0,
+        2.0,
+    ]
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_drawing_properties_request_shows_warning_for_invalid_fib_levels(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_drawings(
+        [
+            ChartDrawing(
+                tool_type=DrawingToolType.FIB_RETRACEMENT,
+                anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(12.0, 110.0)],
+                style={"fib_levels": [0.0, 0.5, 1.0, 2.0]},
+            )
+        ]
+    )
+    warnings: list[tuple[str, str]] = []
+
+    class _FakeDialog:
+        def __init__(self, drawing, parent):
+            self.drawing = drawing
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def style_payload(self):
+            raise ValueError("斐波那契档位格式无效，请使用逗号分隔的数字。")
+
+    monkeypatch.setattr("barbybar.ui.main_window.DrawingPropertiesDialog", _FakeDialog)
+    monkeypatch.setattr(QMessageBox, "warning", lambda _parent, title, text: warnings.append((title, text)))
+
+    window._handle_drawing_properties_requested(window.chart_widget.drawings()[0], 0)
+
+    assert warnings == [("属性无效", "斐波那契档位格式无效，请使用逗号分隔的数字。")]
 
 
 def test_clear_current_session_resets_to_browse_mode(window: MainWindow) -> None:
