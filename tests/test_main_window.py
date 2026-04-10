@@ -15,6 +15,7 @@ from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor,
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
 from barbybar.ui.main_window import BatchImportOutcome, BatchImportProgress, DataSetManagerDialog, DrawingPropertiesDialog, DrawingTemplateDialog, MainWindow, SessionLibraryDialog
+from barbybar.update_service import UpdateInfo
 
 
 def _app() -> QApplication:
@@ -179,12 +180,18 @@ def test_main_window_has_no_autoplay_controls(window: MainWindow) -> None:
     assert not hasattr(window, "speed_combo")
 
 
+def test_main_window_exposes_check_update_button(window: MainWindow) -> None:
+    assert window.check_update_button is not None
+    assert window.check_update_button.text() == "检查更新"
+
+
 def test_main_window_uses_manager_buttons_instead_of_left_lists(window: MainWindow) -> None:
     button_texts = {button.text() for button in window.findChildren(QPushButton)}
 
     assert "导入 CSV" not in button_texts
     assert "数据集" in button_texts
     assert "案例库" in button_texts
+    assert "检查更新" in button_texts
     assert not hasattr(window, "dataset_list")
     assert not hasattr(window, "session_list")
 
@@ -557,6 +564,88 @@ def test_trade_marker_visibility_toggle_updates_chart_widget(window: MainWindow)
 
     assert window.chart_widget._trade_markers_visible is False
     assert window.chart_widget._trade_links_visible is False
+
+
+def test_clicking_check_update_button_starts_update_check(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[bool] = []
+    monkeypatch.setattr(window, "_start_update_check", lambda: started.append(True))
+
+    window.check_update_button.click()
+
+    assert started == [True]
+
+
+def test_handle_update_check_finished_shows_latest_message(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = []
+    window._active_update_check_token = 1
+    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *_args: messages.append(_args[2]))
+
+    window._handle_update_check_finished(1, None)
+
+    assert messages
+    assert "当前已是最新版本" in messages[0]
+    assert window.check_update_button.isEnabled() is True
+
+
+def test_handle_update_check_finished_starts_download_when_confirmed(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    window._active_update_check_token = 1
+    update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Bug fixes",
+        installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
+        installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
+        asset_size=1024,
+    )
+    started: list[UpdateInfo] = []
+    monkeypatch.setattr(window, "_confirm_update_download", lambda info: True)
+    monkeypatch.setattr(window, "_start_update_download", lambda info: started.append(info))
+
+    window._handle_update_check_finished(1, update_info)
+
+    assert started == [update_info]
+
+
+def test_handle_update_download_finished_launches_installer_when_confirmed(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    window._active_update_download_token = 1
+    update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Bug fixes",
+        installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
+        installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
+    )
+    launched: list[str] = []
+    closed: list[bool] = []
+    monkeypatch.setattr(window, "_confirm_install_downloaded_update", lambda info, path: True)
+    monkeypatch.setattr(window, "_launch_installer", lambda path: launched.append(str(path)))
+    monkeypatch.setattr(window, "close", lambda: closed.append(True))
+
+    window._handle_update_download_finished(1, update_info, "C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")
+
+    assert [Path(path) for path in launched] == [Path("C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")]
+    assert closed == [True]
+
+
+def test_handle_update_download_finished_does_not_close_when_install_cancelled(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    window._active_update_download_token = 1
+    update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Bug fixes",
+        installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
+        installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
+    )
+    launched: list[str] = []
+    closed: list[bool] = []
+    monkeypatch.setattr(window, "_confirm_install_downloaded_update", lambda info, path: False)
+    monkeypatch.setattr(window, "_launch_installer", lambda path: launched.append(str(path)))
+    monkeypatch.setattr(window, "close", lambda: closed.append(True))
+
+    window._handle_update_download_finished(1, update_info, "C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")
+
+    assert launched == []
+    assert closed == []
 
 
 def test_order_preview_confirmed_uses_selected_quantity(window: MainWindow, monkeypatch) -> None:

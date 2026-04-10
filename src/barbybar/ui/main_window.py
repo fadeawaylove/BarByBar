@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor, QCloseEvent, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 
+from barbybar import __version__
 from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
 from barbybar.data.tick_size import format_price, price_decimals_for_tick, snap_price
 from barbybar.data.timeframe import normalize_timeframe, supported_replay_timeframes
@@ -59,9 +61,10 @@ from barbybar.domain.models import (
     WindowBars,
     normalize_drawing_style,
 )
-from barbybar.paths import default_drawing_templates_path
+from barbybar.paths import default_drawing_templates_path, default_updates_dir
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import ChartWidget
+from barbybar.update_service import UpdateInfo, check_for_update, download_installer
 
 REQUIRED_IMPORT_FIELDS = ["datetime", "open", "high", "low", "close", "volume"]
 INITIAL_WINDOW_BEFORE = 150
@@ -271,6 +274,47 @@ class SessionLoadWorker(QObject):
         except Exception as exc:  # noqa: BLE001
             log.exception("event=session_load_failed error={error}", error=str(exc))
             self.failed.emit(self.load_id, str(exc))
+
+
+class UpdateCheckWorker(QObject):
+    finished = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(self, task_id: int) -> None:
+        super().__init__()
+        self.task_id = task_id
+
+    def run(self) -> None:
+        try:
+            update_info = check_for_update(__version__)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(self.task_id, str(exc))
+            return
+        self.finished.emit(self.task_id, update_info)
+
+
+class UpdateDownloadWorker(QObject):
+    progress = Signal(int, int, int)
+    finished = Signal(int, str)
+    failed = Signal(int, str)
+
+    def __init__(self, task_id: int, update_info: UpdateInfo, target_path: str | Path) -> None:
+        super().__init__()
+        self.task_id = task_id
+        self.update_info = update_info
+        self.target_path = Path(target_path)
+
+    def run(self) -> None:
+        try:
+            downloaded_path = download_installer(
+                self.update_info,
+                self.target_path,
+                progress_callback=lambda current, total: self.progress.emit(self.task_id, current, total),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(self.task_id, str(exc))
+            return
+        self.finished.emit(self.task_id, str(downloaded_path))
 
 
 class ColumnMappingDialog(QDialog):
@@ -914,6 +958,7 @@ class MainWindow(QMainWindow):
         self.current_session_id: int | None = None
         self.timeframe_buttons: dict[str, QPushButton] = {}
         self.bar_count_toggle_button: QPushButton | None = None
+        self.check_update_button: QPushButton | None = None
         self._busy_overlay: BusyOverlay | None = None
         self._busy_cursor_active = False
         self._active_loader_thread: QThread | None = None
@@ -922,6 +967,13 @@ class MainWindow(QMainWindow):
         self._active_batch_import_thread: QThread | None = None
         self._active_batch_import_worker: BatchImportWorker | None = None
         self._active_batch_import_token = 0
+        self._active_update_check_thread: QThread | None = None
+        self._active_update_check_worker: UpdateCheckWorker | None = None
+        self._active_update_check_token = 0
+        self._active_update_download_thread: QThread | None = None
+        self._active_update_download_worker: UpdateDownloadWorker | None = None
+        self._active_update_download_token = 0
+        self._updates_dir = default_updates_dir()
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._perform_auto_save)
@@ -960,6 +1012,9 @@ class MainWindow(QMainWindow):
         session_button = QPushButton("案例库")
         session_button.clicked.connect(self.open_session_library)
         top_bar.addWidget(session_button)
+        self.check_update_button = QPushButton("检查更新")
+        self.check_update_button.clicked.connect(self._start_update_check)
+        top_bar.addWidget(self.check_update_button)
         top_bar.addStretch(1)
         container_layout.addLayout(top_bar)
 
@@ -1986,6 +2041,161 @@ class MainWindow(QMainWindow):
             self._log_ui_thread("resize_busy_overlay")
             self._busy_overlay.setGeometry(self.centralWidget().rect())
 
+    def _set_update_button_state(self, enabled: bool, text: str | None = None) -> None:
+        if self.check_update_button is None:
+            return
+        self.check_update_button.setEnabled(enabled)
+        self.check_update_button.setText(text or "检查更新")
+
+    def _format_release_notes(self, notes: str) -> str:
+        stripped = notes.strip()
+        if not stripped:
+            return "本次发布未提供更新说明。"
+        lines = [line.rstrip() for line in stripped.splitlines()]
+        summary = "\n".join(lines[:12]).strip()
+        if len(lines) > 12:
+            summary += "\n..."
+        return summary
+
+    def _confirm_update_download(self, update_info: UpdateInfo) -> bool:
+        detail = self._format_release_notes(update_info.release_notes)
+        answer = QMessageBox.question(
+            self,
+            "发现新版本",
+            f"当前版本：{__version__}\n最新版本：{update_info.version}\n\n更新说明：\n{detail}\n\n是否开始下载更新安装包？",
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _confirm_install_downloaded_update(self, update_info: UpdateInfo, installer_path: Path) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "安装更新",
+            f"已下载完成：{installer_path.name}\n是否立即关闭程序并启动安装器更新到 {update_info.version}？",
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _launch_installer(self, installer_path: Path) -> None:
+        subprocess.Popen([str(installer_path)])  # noqa: S603
+
+    def _start_update_check(self) -> None:
+        if self._active_update_check_thread is not None or self._active_update_download_thread is not None:
+            QMessageBox.information(self, "检查更新", "已有更新任务正在进行，请稍候。")
+            return
+        self._active_update_check_token += 1
+        token = self._active_update_check_token
+        self._set_update_button_state(False, "检查中...")
+        self.show_busy_overlay("检查更新", "正在检查最新版本...")
+        if self._busy_overlay is not None:
+            self._busy_overlay.set_indeterminate()
+        thread = QThread(self)
+        worker = UpdateCheckWorker(token)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._handle_update_check_finished, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(self._handle_update_check_failed, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._handle_update_check_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._active_update_check_thread = thread
+        self._active_update_check_worker = worker
+        thread.start()
+
+    def _start_update_download(self, update_info: UpdateInfo) -> None:
+        self._active_update_download_token += 1
+        token = self._active_update_download_token
+        target_path = self._updates_dir / update_info.installer_name
+        self._set_update_button_state(False, "下载中...")
+        self.show_busy_overlay("下载更新", f"正在下载 {update_info.installer_name}")
+        if self._busy_overlay is not None:
+            self._busy_overlay.set_progress(0, max(update_info.asset_size or 1, 1))
+        thread = QThread(self)
+        worker = UpdateDownloadWorker(token, update_info, target_path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._handle_update_download_progress, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(
+            lambda finished_token, path, info=update_info: self._handle_update_download_finished(finished_token, info, path),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        worker.failed.connect(self._handle_update_download_failed, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._handle_update_download_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._active_update_download_thread = thread
+        self._active_update_download_worker = worker
+        thread.start()
+
+    @Slot(int, object)
+    def _handle_update_check_finished(self, token: int, payload: object) -> None:
+        if token != self._active_update_check_token:
+            return
+        self.hide_busy_overlay()
+        self._set_update_button_state(True)
+        update_info = payload if isinstance(payload, UpdateInfo) else None
+        if update_info is None:
+            QMessageBox.information(self, "检查更新", f"当前已是最新版本：{__version__}")
+            return
+        if not self._confirm_update_download(update_info):
+            return
+        self._start_update_download(update_info)
+
+    @Slot(int, str)
+    def _handle_update_check_failed(self, token: int, message: str) -> None:
+        if token != self._active_update_check_token:
+            return
+        self.hide_busy_overlay()
+        self._set_update_button_state(True)
+        QMessageBox.warning(self, "检查更新失败", message)
+
+    @Slot()
+    def _handle_update_check_thread_finished(self) -> None:
+        self._active_update_check_thread = None
+        self._active_update_check_worker = None
+
+    @Slot(int, int, int)
+    def _handle_update_download_progress(self, token: int, current: int, total: int) -> None:
+        if token != self._active_update_download_token:
+            return
+        if self._busy_overlay is not None:
+            if total > 0:
+                self._busy_overlay.set_progress(current, total)
+                self._busy_overlay.set_message("下载更新", f"正在下载... {current}/{total}")
+            else:
+                self._busy_overlay.set_indeterminate()
+                self._busy_overlay.set_message("下载更新", "正在下载...")
+
+    @Slot(int, str)
+    def _handle_update_download_finished(self, token: int, update_info: UpdateInfo, installer_path: str) -> None:
+        if token != self._active_update_download_token:
+            return
+        self.hide_busy_overlay()
+        self._set_update_button_state(True)
+        path = Path(installer_path)
+        if not self._confirm_install_downloaded_update(update_info, path):
+            return
+        self._flush_pending_auto_save("install_update")
+        self._launch_installer(path)
+        self.close()
+
+    @Slot(int, str)
+    def _handle_update_download_failed(self, token: int, message: str) -> None:
+        if token != self._active_update_download_token:
+            return
+        self.hide_busy_overlay()
+        self._set_update_button_state(True)
+        QMessageBox.warning(self, "下载更新失败", message)
+
+    @Slot()
+    def _handle_update_download_thread_finished(self) -> None:
+        self._active_update_download_thread = None
+        self._active_update_download_worker = None
+
     def _start_session_load(
         self,
         session_id: int,
@@ -2126,6 +2336,14 @@ class MainWindow(QMainWindow):
             logger.bind(component="session_load").warning("event=close_waiting_for_loader_thread")
             self._active_loader_thread.quit()
             self._active_loader_thread.wait(2000)
+        if self._active_update_check_thread and self._active_update_check_thread.isRunning():
+            logger.bind(component="update_check").warning("event=close_waiting_for_update_check_thread")
+            self._active_update_check_thread.quit()
+            self._active_update_check_thread.wait(2000)
+        if self._active_update_download_thread and self._active_update_download_thread.isRunning():
+            logger.bind(component="update_download").warning("event=close_waiting_for_update_download_thread")
+            self._active_update_download_thread.quit()
+            self._active_update_download_thread.wait(2000)
         super().closeEvent(event)
 
     def _log_ui_thread(self, operation: str) -> None:
