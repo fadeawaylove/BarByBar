@@ -901,6 +901,17 @@ def test_visible_rightmost_bar_uses_aligned_visible_window(widget: ChartWidget) 
     assert widget._visible_rightmost_bar_x() == float(visible[-1][0])
 
 
+def test_revealed_window_bars_excludes_bar_touching_left_midpoint_boundary(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(30)
+
+    visible = widget._revealed_window_bars(3.5, 10.5)
+
+    assert visible
+    assert visible[0][0] == 4
+    assert all(index >= 4 for index, _bar in visible)
+
+
 def test_y_range_includes_bars_visible_in_right_padding(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()

@@ -1145,8 +1145,9 @@ class ChartWidget(QWidget):
     def _revealed_window_bars(self, left: float, right_edge: float) -> list[tuple[int, Bar]]:
         if self._cursor < 0:
             return []
-        start = max(self._global_start_index, int(floor(left)))
-        stop = min(self._cursor + 1, int(ceil(right_edge)))
+        epsilon = 1e-9
+        start = max(self._global_start_index, int(ceil(left - BAR_SLOT_HALF_WIDTH + epsilon)))
+        stop = min(self._cursor + 1, int(ceil(right_edge + BAR_SLOT_HALF_WIDTH - epsilon)))
         result: list[tuple[int, Bar]] = []
         for global_index in range(start, stop):
             local_index = global_index - self._global_start_index
