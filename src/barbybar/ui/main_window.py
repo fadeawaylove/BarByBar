@@ -973,6 +973,7 @@ class MainWindow(QMainWindow):
         self._active_update_download_thread: QThread | None = None
         self._active_update_download_worker: UpdateDownloadWorker | None = None
         self._active_update_download_token = 0
+        self._pending_download_update_info: UpdateInfo | None = None
         self._updates_dir = default_updates_dir()
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
@@ -2075,7 +2076,9 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _launch_installer(self, installer_path: Path) -> None:
+        logger.info("event=launch_installer_start path={}", installer_path)
         subprocess.Popen([str(installer_path)])  # noqa: S603
+        logger.info("event=launch_installer_done path={}", installer_path)
 
     def _start_update_check(self) -> None:
         if self._active_update_check_thread is not None or self._active_update_download_thread is not None:
@@ -2107,6 +2110,8 @@ class MainWindow(QMainWindow):
         self._active_update_download_token += 1
         token = self._active_update_download_token
         target_path = self._updates_dir / update_info.installer_name
+        self._pending_download_update_info = update_info
+        logger.info("event=start_update_download token={} version={} path={}", token, update_info.version, target_path)
         self._set_update_button_state(False, "下载中...")
         self.show_busy_overlay("下载更新", f"正在下载 {update_info.installer_name}")
         if self._busy_overlay is not None:
@@ -2116,10 +2121,7 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._handle_update_download_progress, Qt.ConnectionType.QueuedConnection)
-        worker.finished.connect(
-            lambda finished_token, path, info=update_info: self._handle_update_download_finished(finished_token, info, path),
-            Qt.ConnectionType.QueuedConnection,
-        )
+        worker.finished.connect(self._handle_update_download_finished, Qt.ConnectionType.QueuedConnection)
         worker.failed.connect(self._handle_update_download_failed, Qt.ConnectionType.QueuedConnection)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
@@ -2171,22 +2173,37 @@ class MainWindow(QMainWindow):
                 self._busy_overlay.set_message("下载更新", "正在下载...")
 
     @Slot(int, str)
-    def _handle_update_download_finished(self, token: int, update_info: UpdateInfo, installer_path: str) -> None:
+    def _handle_update_download_finished(self, token: int, installer_path: str) -> None:
         if token != self._active_update_download_token:
             return
+        logger.info("event=update_download_finished token={} path={}", token, installer_path)
         self.hide_busy_overlay()
         self._set_update_button_state(True)
+        update_info = self._pending_download_update_info
+        self._pending_download_update_info = None
+        if update_info is None:
+            logger.warning("event=update_download_finished_missing_context token={}", token)
+            QMessageBox.warning(self, "下载更新失败", "下载已完成，但缺少安装上下文，请重新检查更新。")
+            return
         path = Path(installer_path)
+        logger.info("event=update_download_confirm_prompt token={} version={} path={}", token, update_info.version, path)
         if not self._confirm_install_downloaded_update(update_info, path):
             return
         self._flush_pending_auto_save("install_update")
-        self._launch_installer(path)
+        logger.info("event=update_download_confirmed token={} version={} path={}", token, update_info.version, path)
+        try:
+            self._launch_installer(path)
+        except OSError as exc:
+            logger.exception("event=launch_installer_failed path={} error={}", path, str(exc))
+            QMessageBox.warning(self, "安装更新失败", f"安装器启动失败：{path}\n\n{exc}")
+            return
         self.close()
 
     @Slot(int, str)
     def _handle_update_download_failed(self, token: int, message: str) -> None:
         if token != self._active_update_download_token:
             return
+        self._pending_download_update_info = None
         self.hide_busy_overlay()
         self._set_update_button_state(True)
         QMessageBox.warning(self, "下载更新失败", message)

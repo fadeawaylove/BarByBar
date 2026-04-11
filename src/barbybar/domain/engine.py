@@ -211,9 +211,8 @@ class ReviewEngine:
         if order_type in {OrderLineType.EXIT, OrderLineType.REVERSE} and not self.session.position.is_open:
             raise ValueError("当前没有持仓，无法创建平仓/反手条件线。")
         if order_type in {OrderLineType.STOP_LOSS, OrderLineType.TAKE_PROFIT}:
-            self._upsert_protective_line(order_type, price, quantity, note)
-            line = self._get_active_line(order_type)
-            assert line is not None
+            line = self._create_protective_line(order_type, price, quantity, note)
+            self._sync_position_from_lines()
             self._refresh_stats()
             return line
         line = OrderLine(
@@ -244,10 +243,8 @@ class ReviewEngine:
         if line.is_entry:
             line.reference_price_at_creation = self.current_bar.close
             line.trigger_mode = OrderTriggerMode.TOUCH
-        if line.order_type is OrderLineType.STOP_LOSS:
-            self.session.position.stop_loss = price
-        elif line.order_type is OrderLineType.TAKE_PROFIT:
-            self.session.position.take_profit = price
+        if line.is_protective:
+            self._sync_position_from_lines()
         self._refresh_stats()
         return line
 
@@ -272,6 +269,8 @@ class ReviewEngine:
             return
         self._save_snapshot()
         self._cancel_line(line)
+        if line.is_protective:
+            self._sync_position_from_lines()
         self._refresh_stats()
 
     def cancel_entry_order_lines(self) -> None:
@@ -424,9 +423,11 @@ class ReviewEngine:
         elif action.action_type is ActionType.CLOSE:
             self._close_position_partially(position.quantity, price, action.timestamp)
         elif action.action_type is ActionType.SET_STOP_LOSS:
-            self._upsert_protective_line(OrderLineType.STOP_LOSS, price, position.quantity or quantity, action.note)
+            self._create_protective_line(OrderLineType.STOP_LOSS, price, position.quantity or quantity, action.note)
+            self._sync_position_from_lines()
         elif action.action_type is ActionType.SET_TAKE_PROFIT:
-            self._upsert_protective_line(OrderLineType.TAKE_PROFIT, price, position.quantity or quantity, action.note)
+            self._create_protective_line(OrderLineType.TAKE_PROFIT, price, position.quantity or quantity, action.note)
+            self._sync_position_from_lines()
         elif action.action_type is ActionType.NOTE and action.note:
             self.session.notes = f"{self.session.notes}\n{action.note}".strip()
 
@@ -495,8 +496,8 @@ class ReviewEngine:
         if not protective_lines:
             self._update_drawdown(bar.close)
             return False
-        stop_line = self._get_active_line(OrderLineType.STOP_LOSS)
-        take_line = self._get_active_line(OrderLineType.TAKE_PROFIT)
+        stop_line = self._select_triggered_protective_line(OrderLineType.STOP_LOSS, index, bar)
+        take_line = self._select_triggered_protective_line(OrderLineType.TAKE_PROFIT, index, bar)
         hit_line: OrderLine | None = None
         if position.direction == "long":
             if stop_line and bar.low <= stop_line.price:
@@ -721,48 +722,35 @@ class ReviewEngine:
         self._refresh_stats()
 
     def _sync_position_from_lines(self) -> None:
-        stop_line = self._get_active_line(OrderLineType.STOP_LOSS)
-        take_line = self._get_active_line(OrderLineType.TAKE_PROFIT)
+        stop_line = self._select_display_protective_line(OrderLineType.STOP_LOSS)
+        take_line = self._select_display_protective_line(OrderLineType.TAKE_PROFIT)
         self.session.position.stop_loss = stop_line.price if stop_line else None
         self.session.position.take_profit = take_line.price if take_line else None
 
-    def _upsert_protective_line(self, order_type: OrderLineType, price: float, quantity: float, note: str = "") -> None:
+    def _create_protective_line(self, order_type: OrderLineType, price: float, quantity: float, note: str = "") -> OrderLine:
         position = self.session.position
         if not position.is_open:
             raise ValueError("当前没有持仓，无法设置保护线。")
-        line = self._get_active_line(order_type)
-        if line is None:
-            line = OrderLine(
-                order_type=order_type,
-                price=price,
-                quantity=position.quantity if quantity <= 0 else quantity,
-                created_bar_index=self.session.current_index,
-                active_from_bar_index=self.session.current_index + 1,
-                created_at=self.current_bar.timestamp,
-                trigger_mode=OrderTriggerMode.TOUCH,
-                reference_price_at_creation=self.current_bar.close,
-                note=note,
-                session_id=self.session.id,
-            )
-            self.order_lines.append(line)
-        else:
-            line.price = price
-            line.quantity = position.quantity if quantity <= 0 else quantity
-            line.active_from_bar_index = self.session.current_index + 1
-            if note:
-                line.note = note
-        if order_type is OrderLineType.STOP_LOSS:
-            position.stop_loss = price
-        elif order_type is OrderLineType.TAKE_PROFIT:
-            position.take_profit = price
-
+        line = OrderLine(
+            order_type=order_type,
+            price=price,
+            quantity=position.quantity if quantity <= 0 else quantity,
+            created_bar_index=self.session.current_index,
+            active_from_bar_index=self.session.current_index + 1,
+            created_at=self.current_bar.timestamp,
+            trigger_mode=OrderTriggerMode.TOUCH,
+            reference_price_at_creation=self.current_bar.close,
+            note=note,
+            session_id=self.session.id,
+        )
+        self.order_lines.append(line)
+        return line
 
     def _remove_protective_lines(self) -> None:
         for line in self.order_lines:
             if line.is_active and line.is_protective:
                 self._cancel_line(line)
-        self.session.position.stop_loss = None
-        self.session.position.take_profit = None
+        self._sync_position_from_lines()
 
     def _cancel_entry_lines(self) -> None:
         for line in self.order_lines:
@@ -793,6 +781,47 @@ class ReviewEngine:
             if line.order_type is order_type and line.is_active:
                 return line
         return None
+
+    def _active_protective_lines(self, order_type: OrderLineType) -> list[OrderLine]:
+        return [
+            line
+            for line in self.order_lines
+            if line.order_type is order_type and line.is_active
+        ]
+
+    def _select_display_protective_line(self, order_type: OrderLineType) -> OrderLine | None:
+        lines = self._active_protective_lines(order_type)
+        if not lines:
+            return None
+        position = self.session.position
+        if position.direction == "long":
+            if order_type is OrderLineType.STOP_LOSS:
+                return max(lines, key=lambda line: line.price)
+            return min(lines, key=lambda line: line.price)
+        if order_type is OrderLineType.STOP_LOSS:
+            return min(lines, key=lambda line: line.price)
+        return max(lines, key=lambda line: line.price)
+
+    def _select_triggered_protective_line(self, order_type: OrderLineType, index: int, bar: Bar) -> OrderLine | None:
+        position = self.session.position
+        candidates = [
+            line
+            for line in self._active_protective_lines(order_type)
+            if index >= line.active_from_bar_index
+        ]
+        if not candidates:
+            return None
+        if position.direction == "long":
+            if order_type is OrderLineType.STOP_LOSS:
+                hit_lines = [line for line in candidates if bar.low <= line.price]
+                return max(hit_lines, key=lambda line: line.price, default=None)
+            hit_lines = [line for line in candidates if bar.high >= line.price]
+            return min(hit_lines, key=lambda line: line.price, default=None)
+        if order_type is OrderLineType.STOP_LOSS:
+            hit_lines = [line for line in candidates if bar.high >= line.price]
+            return min(hit_lines, key=lambda line: line.price, default=None)
+        hit_lines = [line for line in candidates if bar.low <= line.price]
+        return max(hit_lines, key=lambda line: line.price, default=None)
 
     def _cancel_line(self, line: OrderLine) -> None:
         line.status = OrderStatus.CANCELLED

@@ -615,13 +615,14 @@ def test_handle_update_download_finished_launches_installer_when_confirmed(windo
         installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
         installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
     )
+    window._pending_download_update_info = update_info
     launched: list[str] = []
     closed: list[bool] = []
     monkeypatch.setattr(window, "_confirm_install_downloaded_update", lambda info, path: True)
     monkeypatch.setattr(window, "_launch_installer", lambda path: launched.append(str(path)))
     monkeypatch.setattr(window, "close", lambda: closed.append(True))
 
-    window._handle_update_download_finished(1, update_info, "C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")
+    window._handle_update_download_finished(1, "C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")
 
     assert [Path(path) for path in launched] == [Path("C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")]
     assert closed == [True]
@@ -636,15 +637,58 @@ def test_handle_update_download_finished_does_not_close_when_install_cancelled(w
         installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
         installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
     )
+    window._pending_download_update_info = update_info
     launched: list[str] = []
     closed: list[bool] = []
     monkeypatch.setattr(window, "_confirm_install_downloaded_update", lambda info, path: False)
     monkeypatch.setattr(window, "_launch_installer", lambda path: launched.append(str(path)))
     monkeypatch.setattr(window, "close", lambda: closed.append(True))
 
-    window._handle_update_download_finished(1, update_info, "C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")
+    window._handle_update_download_finished(1, "C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")
 
     assert launched == []
+    assert closed == []
+
+
+def test_update_download_finished_signal_uses_pending_context_to_prompt_install(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    window._active_update_download_token = 1
+    update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Bug fixes",
+        installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
+        installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
+    )
+    window._pending_download_update_info = update_info
+    prompted: list[tuple[str, Path]] = []
+    monkeypatch.setattr(window, "_confirm_install_downloaded_update", lambda info, path: prompted.append((info.version, path)) or False)
+
+    window._handle_update_download_finished(1, "C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")
+
+    assert prompted == [("0.3.0", Path("C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe"))]
+
+
+def test_handle_update_download_finished_shows_error_and_stays_open_when_launch_fails(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    window._active_update_download_token = 1
+    update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Bug fixes",
+        installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
+        installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
+    )
+    window._pending_download_update_info = update_info
+    warnings: list[str] = []
+    closed: list[bool] = []
+    monkeypatch.setattr(window, "_confirm_install_downloaded_update", lambda info, path: True)
+    monkeypatch.setattr(window, "_launch_installer", lambda path: (_ for _ in ()).throw(OSError("boom")))
+    monkeypatch.setattr(window, "close", lambda: closed.append(True))
+    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.warning", lambda *_args: warnings.append(_args[2]))
+
+    window._handle_update_download_finished(1, "C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")
+
+    assert warnings
+    assert "安装器启动失败" in warnings[0]
     assert closed == []
 
 
@@ -1223,6 +1267,21 @@ def test_handle_chart_protective_order_created_places_protective_line(window: Ma
     window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 104.2)
 
     assert captured == [(OrderLineType.TAKE_PROFIT, 104.2)]
+
+
+def test_dragging_average_price_can_create_multiple_protective_lines(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=101)
+    monkeypatch.setattr(window, "save_session", lambda **kwargs: None)
+
+    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 104.2)
+    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 105.8)
+
+    take_profit_lines = [
+        line for line in window.engine.active_order_lines if line.order_type is OrderLineType.TAKE_PROFIT
+    ]
+
+    assert [line.price for line in take_profit_lines] == [104.0, 106.0]
 
 
 def test_place_order_line_saves_before_refreshing_chart(window: MainWindow, monkeypatch) -> None:

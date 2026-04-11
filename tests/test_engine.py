@@ -104,6 +104,34 @@ def test_stop_loss_line_has_priority_over_take_profit_on_same_bar() -> None:
     assert engine.trades[-1].exit_price == 99
 
 
+def test_multiple_stop_loss_lines_can_coexist() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+
+    first = engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+    second = engine.place_order_line(OrderLineType.STOP_LOSS, price=97, quantity=1)
+
+    active_stop_lines = [line for line in engine.active_order_lines if line.order_type is OrderLineType.STOP_LOSS]
+
+    assert [line.price for line in active_stop_lines] == [99, 97]
+    assert engine.session.position.stop_loss == 99
+    assert first is not second
+
+
+def test_nearest_long_stop_loss_triggers_first_when_multiple_lines_are_hit() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+    engine.place_order_line(OrderLineType.STOP_LOSS, price=97, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].exit_price == 99
+
+
 def test_exit_order_line_closes_existing_position() -> None:
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
     engine = ReviewEngine(session, sample_bars())
