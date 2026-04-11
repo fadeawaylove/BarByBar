@@ -63,7 +63,7 @@ from barbybar.domain.models import (
 )
 from barbybar.paths import default_drawing_templates_path, default_ui_settings_path, default_updates_dir
 from barbybar.storage.repository import Repository
-from barbybar.ui.chart_widget import ChartWidget
+from barbybar.ui.chart_widget import ChartWidget, DEFAULT_RIGHT_PADDING
 from barbybar.update_service import UpdateInfo, check_for_update, download_installer
 
 REQUIRED_IMPORT_FIELDS = ["datetime", "open", "high", "low", "close", "volume"]
@@ -1728,6 +1728,7 @@ class MainWindow(QMainWindow):
         current = self.engine.session.current_index
         total = self.engine.total_count
         bar = self.engine.current_bar
+        self.chart_widget.set_right_padding(DEFAULT_RIGHT_PADDING)
         self.chart_widget.set_tick_size(self.engine.session.tick_size)
         self.chart_widget.set_position_direction(self.engine.session.position.direction)
         self.chart_widget.set_cursor(current)
@@ -1844,23 +1845,47 @@ class MainWindow(QMainWindow):
         if not self.engine:
             return
         if target_index < self.engine.window_start_index or target_index > self.engine.window_end_index:
-            if not self.current_session_id:
+            if not self._ensure_window_contains_index(target_index):
                 return
-            anchor_time = self.repo.get_chart_bar_time(self.current_session_id, self.engine.session.chart_timeframe, target_index)
-            self._start_session_load(
-                self.current_session_id,
-                chart_timeframe=self.engine.session.chart_timeframe,
-                anchor_time=anchor_time,
-                title="正在定位交易...",
-                detail="正在加载目标交易附近的 K 线",
-            )
-            return
-        self.chart_widget.set_cursor(target_index)
-        self.chart_widget.reset_viewport(follow_latest=False)
+        viewport = self.chart_widget.viewport_state
+        viewport.follow_latest = False
+        self.chart_widget.set_right_padding(0.0)
+        viewport.right_edge_index = max(float(target_index) + 1.0, 0.0)
+        self.chart_widget._apply_viewport()
         local_index = target_index - self.engine.window_start_index
         if 0 <= local_index < len(self.engine.bars):
             timestamp = self.engine.bars[local_index].timestamp
             self.progress_label.setText(f"查看交易 #{item.trade_number} | Bar {target_index + 1} | {timestamp:%Y-%m-%d %H:%M}")
+
+    def _ensure_window_contains_index(self, target_index: int) -> bool:
+        if not self.engine or not self.current_session_id:
+            return False
+        current_index = self.engine.session.current_index
+        if self.engine.window_start_index <= target_index <= self.engine.window_end_index:
+            return True
+        before_count = INITIAL_WINDOW_BEFORE
+        after_count = INITIAL_WINDOW_AFTER
+        if target_index < current_index:
+            before_count = max(before_count, current_index - target_index + INITIAL_WINDOW_BEFORE)
+        else:
+            after_count = max(after_count, target_index - current_index + INITIAL_WINDOW_AFTER)
+        anchor_time = self.engine.session.current_bar_time or self.engine.current_bar.timestamp
+        window = self.repo.get_chart_window(
+            self.current_session_id,
+            self.engine.session.chart_timeframe,
+            anchor_time,
+            before_count,
+            after_count,
+        )
+        self.engine.replace_window(window.bars, window.global_start_index, window.total_count)
+        self.chart_widget.set_window_data(
+            self.engine.bars,
+            self.engine.session.current_index,
+            self.engine.total_count,
+            self.engine.window_start_index,
+        )
+        self._update_ui_from_engine()
+        return self.engine.window_start_index <= target_index <= self.engine.window_end_index
 
     def step_forward(self) -> None:
         if not self.engine:

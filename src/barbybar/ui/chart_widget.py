@@ -38,6 +38,7 @@ TRADE_LINK_WIN_COLOR = "#1f8b24"
 TRADE_LINK_LOSS_COLOR = "#d84a4a"
 TRADE_CLOSE_MARKER_COLOR = "#5f6b7a"
 Y_AXIS_DRAG_GUTTER_WIDTH_PX = 48.0
+DEFAULT_RIGHT_PADDING = 3.0
 
 
 @dataclass(slots=True)
@@ -338,7 +339,7 @@ class ChartWidget(QWidget):
         self._drawing_style_defaults: dict[DrawingToolType, dict[str, object]] = {}
         self._drawing_preview_anchor: DrawingAnchor | None = None
         self._viewport = ViewportState()
-        self._right_padding = 3.0
+        self._right_padding = DEFAULT_RIGHT_PADDING
         self._left_padding = 3.0
         self._is_applying_viewport = False
         self._crosshair_enabled = True
@@ -493,6 +494,11 @@ class ChartWidget(QWidget):
         self._crosshair_enabled = enabled
         if not enabled:
             self._hide_crosshair()
+
+    def set_right_padding(self, padding: float) -> None:
+        self._right_padding = max(float(padding), 0.0)
+        if self._bars:
+            self._apply_viewport()
 
     def toggle_browse_mode(self) -> None:
         self._set_interaction_mode(InteractionMode.BROWSE)

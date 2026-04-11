@@ -12,7 +12,7 @@ from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
 from barbybar.data.tick_size import default_tick_size_for_symbol, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, WindowBars
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, WindowBars
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
 from barbybar.ui.main_window import BatchImportOutcome, BatchImportProgress, DataSetManagerDialog, DrawingPropertiesDialog, DrawingTemplateDialog, MainWindow, SessionLibraryDialog
@@ -1312,14 +1312,50 @@ def test_trade_history_click_and_toggle_jump_between_entry_and_exit(window: Main
     item = window._trade_history_dialog.trade_history_list.item(0)
     window._trade_history_dialog._handle_item_clicked(item)
 
-    assert window.chart_widget._cursor == exit_index
+    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
+    assert window.chart_widget._cursor == window.engine.session.current_index
+    assert visible[-1][0] == exit_index
     assert window.chart_widget._focused_trade_points is None
     assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到入场"
 
     window._trade_history_dialog._toggle_selected_trade_focus()
 
-    assert window.chart_widget._cursor == entry_index
+    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
+    assert window.chart_widget._cursor == window.engine.session.current_index
+    assert visible[-1][0] == entry_index
     assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到出场"
+
+
+def test_trade_history_jump_outside_window_keeps_training_cursor(window: MainWindow, app: QApplication) -> None:
+    session = window.repo.create_session(1, start_index=0)
+    start = datetime(2025, 1, 1, 9, 0)
+    session.current_index = 170
+    session.current_bar_time = start + timedelta(minutes=170)
+    actions = [
+        SessionAction(ActionType.OPEN_LONG, 5, start + timedelta(minutes=5), price=100.5, quantity=1),
+        SessionAction(ActionType.CLOSE, 10, start + timedelta(minutes=10), price=101.5, quantity=1),
+    ]
+    window.repo.save_session(session, actions, [])
+    window._load_session(session.id or 0)
+    _wait_for_loaded_session(app, window)
+    assert window.engine is not None
+
+    exit_index = 10
+    current_index = window.engine.session.current_index
+    assert current_index == 170
+    assert exit_index < window.engine.window_start_index
+
+    window._update_ui_from_engine()
+    window.open_trade_history_dialog()
+
+    assert window._trade_history_dialog is not None
+    item = window._trade_history_dialog.trade_history_list.item(window._trade_history_dialog.trade_history_list.count() - 1)
+    window._trade_history_dialog._handle_item_clicked(item)
+
+    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
+    assert window.engine.session.current_index == current_index
+    assert window.chart_widget._cursor == current_index
+    assert visible[-1][0] == exit_index
 
 
 def test_tick_size_change_snaps_price_input(window: MainWindow) -> None:
