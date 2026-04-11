@@ -878,7 +878,6 @@ class ChartWidget(QWidget):
             count_label = pg.TextItem(
                 str(bar_count),
                 color=BAR_COUNT_LABEL_COLOR,
-                fill=pg.mkBrush(255, 255, 255, 210),
                 anchor=(0.5, 1),
             )
             font = count_label.textItem.font()
@@ -3006,9 +3005,9 @@ class ChartWidget(QWidget):
         window_start = max(0, bar_index - 5)
         recent_ranges = [max(float(item.high) - float(item.low), 0.0) for item in self._bars[window_start : bar_index + 1]]
         average_range = (sum(recent_ranges) / len(recent_ranges)) if recent_ranges else 0.0
-        min_offset = span * 0.022
-        range_offset = average_range * 0.55
-        edge_margin = span * 0.02
+        min_offset = span * 0.03
+        range_offset = average_range * 0.72
+        edge_margin = span * 0.025
         offset = max(min_offset, range_offset)
         return max(float(bar.low) - offset, float(y_min) + edge_margin)
 

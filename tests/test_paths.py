@@ -21,3 +21,12 @@ def test_default_data_root_honors_env_override(monkeypatch, tmp_path: Path) -> N
 
     assert root == custom_root.resolve()
     assert root.exists()
+
+
+def test_default_ui_settings_path_uses_data_root(monkeypatch, tmp_path: Path) -> None:
+    custom_root = tmp_path / "portable-data"
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(custom_root))
+
+    path = paths.default_ui_settings_path()
+
+    assert path == custom_root.resolve() / "ui_settings.json"

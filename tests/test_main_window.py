@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import perf_counter
@@ -5,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QMessageBox, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
@@ -129,7 +130,8 @@ def test_main_window_exposes_bar_count_toggle_button(window: MainWindow) -> None
     assert window.bar_count_toggle_button is not None
     assert window.bar_count_toggle_button.text() == "K线序号"
     assert window.bar_count_toggle_button.isCheckable() is True
-    assert window.chart_widget.bar_count_labels_visible is False
+    assert window.bar_count_toggle_button.isChecked() is True
+    assert window.chart_widget.bar_count_labels_visible is True
 
 
 def test_main_window_exposes_six_drawing_template_buttons(window: MainWindow) -> None:
@@ -274,19 +276,146 @@ def test_toolbar_separates_timeframes_from_drawing_buttons(window: MainWindow) -
 
     assert toolbar is not None
     assert toolbar.count() == 4
-    assert toolbar.itemAt(0).layout() is not None
-    assert toolbar.itemAt(1).layout() is not None
+    assert toolbar.itemAt(0).widget() is window._timeframe_toolbar_group
+    assert toolbar.itemAt(1).widget() is window._template_toolbar_group
     assert toolbar.itemAt(2).spacerItem() is not None
-    assert toolbar.itemAt(3).layout() is not None
+    assert toolbar.itemAt(3).widget() is window._drawing_toolbar_group
 
 
-def test_bar_count_toggle_button_is_placed_in_timeframe_toolbar(window: MainWindow) -> None:
+def test_toolbar_uses_distinct_group_widgets_for_timeframe_template_and_drawing(window: MainWindow) -> None:
     center_panel = window.splitter.widget(0)
     toolbar = center_panel.layout().itemAt(0).layout()
-    timeframe_toolbar = toolbar.itemAt(0).layout()
 
-    assert timeframe_toolbar is not None
-    assert timeframe_toolbar.itemAt(timeframe_toolbar.count() - 1).widget() is window.bar_count_toggle_button
+    assert window._timeframe_toolbar_group is not None
+    assert window._template_toolbar_group is not None
+    assert window._drawing_toolbar_group is not None
+    assert toolbar.itemAt(0).widget() is not window._template_toolbar_group
+    assert toolbar.itemAt(1).widget() is not window._drawing_toolbar_group
+
+
+def test_toolbar_groups_do_not_render_title_labels(window: MainWindow) -> None:
+    for group in [window._timeframe_toolbar_group, window._template_toolbar_group, window._drawing_toolbar_group]:
+        assert group is not None
+        assert not any(
+            child.property("toolbarGroupTitle") is True
+            for child in group.findChildren(QLabel)
+        )
+
+
+def test_bar_count_toggle_button_is_placed_beside_clear_drawings(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(0)
+    controls = center_panel.layout().itemAt(2).layout()
+
+    assert controls is not None
+    clear_index = next(index for index in range(controls.count()) if controls.itemAt(index).widget() is window.clear_lines_button)
+    assert controls.itemAt(clear_index + 1).widget() is window.bar_count_toggle_button
+
+
+def test_dataset_session_and_update_buttons_are_placed_before_prev_button(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(0)
+    controls = center_panel.layout().itemAt(2).layout()
+
+    assert controls is not None
+    prev_index = next(index for index in range(controls.count()) if controls.itemAt(index).widget() is window.prev_button)
+    leading_widgets = [controls.itemAt(index).widget() for index in range(prev_index)]
+
+    assert leading_widgets == [window.dataset_button, window.session_button, window.check_update_button]
+
+
+def test_main_window_loads_bar_count_toggle_from_global_ui_settings(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_ui_settings_path().write_text('{"bar_count_labels_visible": false}', encoding="utf-8")
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.bar_count_toggle_button.isChecked() is False
+        assert main_window.chart_widget.bar_count_labels_visible is False
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_defaults_bar_count_toggle_to_enabled_when_ui_settings_missing(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.bar_count_toggle_button.isChecked() is True
+        assert main_window.chart_widget.bar_count_labels_visible is True
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_falls_back_to_enabled_when_ui_settings_is_invalid(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_ui_settings_path().write_text("{broken", encoding="utf-8")
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.bar_count_toggle_button.isChecked() is True
+        assert main_window.chart_widget.bar_count_labels_visible is True
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_toggling_bar_count_button_persists_global_ui_setting(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        main_window.bar_count_toggle_button.click()
+        saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
+        assert saved["bar_count_labels_visible"] is False
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+    reloaded_window = MainWindow(repo)
+    try:
+        assert reloaded_window.bar_count_toggle_button.isChecked() is False
+        assert reloaded_window.chart_widget.bar_count_labels_visible is False
+    finally:
+        reloaded_window.close()
+        reloaded_window.deleteLater()
+        app.processEvents()
+
+
+def test_top_area_does_not_keep_empty_top_bar_spacing(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(0)
+    layout = center_panel.layout()
+
+    assert layout.contentsMargins().top() <= 2
+    assert layout.spacing() <= 4
+
+
+def test_toolbar_group_margins_are_compact(window: MainWindow) -> None:
+    for group in [window._timeframe_toolbar_group, window._template_toolbar_group, window._drawing_toolbar_group]:
+        assert group is not None
+        margins = group.layout().contentsMargins()
+        assert margins.top() <= 4
+        assert margins.bottom() <= 4
 
 
 def test_set_timeframe_choices_supports_2m(window: MainWindow) -> None:

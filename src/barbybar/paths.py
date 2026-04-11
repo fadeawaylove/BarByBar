@@ -43,6 +43,10 @@ def default_drawing_templates_path() -> Path:
     return default_data_root() / "drawing_templates.json"
 
 
+def default_ui_settings_path() -> Path:
+    return default_data_root() / "ui_settings.json"
+
+
 def default_updates_dir() -> Path:
     root = default_data_root() / "updates"
     root.mkdir(parents=True, exist_ok=True)

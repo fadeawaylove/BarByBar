@@ -61,7 +61,7 @@ from barbybar.domain.models import (
     WindowBars,
     normalize_drawing_style,
 )
-from barbybar.paths import default_drawing_templates_path, default_updates_dir
+from barbybar.paths import default_drawing_templates_path, default_ui_settings_path, default_updates_dir
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import ChartWidget
 from barbybar.update_service import UpdateInfo, check_for_update, download_installer
@@ -991,7 +991,13 @@ class MainWindow(QMainWindow):
         self._drawing_template_buttons: dict[int, QPushButton] = {}
         self._drawing_templates: dict[int, DrawingTemplate] = {}
         self._drawing_templates_path = default_drawing_templates_path()
+        self._ui_settings_path = default_ui_settings_path()
+        self._ui_settings: dict[str, object] = {}
+        self._timeframe_toolbar_group: QWidget | None = None
+        self._template_toolbar_group: QWidget | None = None
+        self._drawing_toolbar_group: QWidget | None = None
 
+        self._load_ui_settings()
         self._build_ui()
         self._load_global_drawing_templates()
         self._autoload_recent_session()
@@ -1002,22 +1008,12 @@ class MainWindow(QMainWindow):
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
-        top_bar = QHBoxLayout()
-        top_bar.setContentsMargins(8, 8, 8, 6)
-        top_bar.setSpacing(6)
-
-        dataset_button = QPushButton("数据集")
-        dataset_button.clicked.connect(self.open_dataset_manager)
-        top_bar.addWidget(dataset_button)
-
-        session_button = QPushButton("案例库")
-        session_button.clicked.connect(self.open_session_library)
-        top_bar.addWidget(session_button)
+        self.dataset_button = QPushButton("数据集")
+        self.dataset_button.clicked.connect(self.open_dataset_manager)
+        self.session_button = QPushButton("案例库")
+        self.session_button.clicked.connect(self.open_session_library)
         self.check_update_button = QPushButton("检查更新")
         self.check_update_button.clicked.connect(self._start_update_check)
-        top_bar.addWidget(self.check_update_button)
-        top_bar.addStretch(1)
-        container_layout.addLayout(top_bar)
 
         self.splitter = QSplitter()
         self.splitter.addWidget(self._build_center_panel())
@@ -1033,14 +1029,18 @@ class MainWindow(QMainWindow):
 
     def _build_center_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setStyleSheet(self._toolbar_group_stylesheet())
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 2, 0, 0)
+        layout.setSpacing(4)
         chart_toolbar = QHBoxLayout()
+        chart_toolbar.setSpacing(8)
         timeframe_toolbar = QHBoxLayout()
-        timeframe_toolbar.setSpacing(6)
+        timeframe_toolbar.setSpacing(4)
         template_toolbar = QHBoxLayout()
-        template_toolbar.setSpacing(6)
+        template_toolbar.setSpacing(4)
         drawing_toolbar = QHBoxLayout()
-        drawing_toolbar.setSpacing(6)
+        drawing_toolbar.setSpacing(4)
         self.timeframe_button_group = QButtonGroup(self)
         self.timeframe_button_group.setExclusive(True)
         for timeframe in ["1m", "2m", "5m", "15m", "30m", "60m"]:
@@ -1050,9 +1050,6 @@ class MainWindow(QMainWindow):
             self.timeframe_button_group.addButton(button)
             self.timeframe_buttons[timeframe] = button
             timeframe_toolbar.addWidget(button)
-        self.bar_count_toggle_button = QPushButton("K线序号")
-        self.bar_count_toggle_button.setCheckable(True)
-        timeframe_toolbar.addWidget(self.bar_count_toggle_button)
         for slot in range(1, MAX_DRAWING_TEMPLATE_SLOTS + 1):
             button = QPushButton(f"模板{slot}")
             button.setEnabled(False)
@@ -1080,15 +1077,22 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda checked, drawing_tool=tool: self._toggle_drawing_tool(drawing_tool, checked))
             self._drawing_tool_buttons[tool] = button
             drawing_toolbar.addWidget(button)
-        chart_toolbar.addLayout(timeframe_toolbar)
-        chart_toolbar.addLayout(template_toolbar)
+        self._timeframe_toolbar_group = self._build_toolbar_group("周期", timeframe_toolbar)
+        self._template_toolbar_group = self._build_toolbar_group("常用模板", template_toolbar)
+        self._drawing_toolbar_group = self._build_toolbar_group("画线", drawing_toolbar)
+        chart_toolbar.addWidget(self._timeframe_toolbar_group)
+        chart_toolbar.addWidget(self._template_toolbar_group)
         chart_toolbar.addStretch(1)
-        chart_toolbar.addLayout(drawing_toolbar)
+        chart_toolbar.addWidget(self._drawing_toolbar_group)
         layout.addLayout(chart_toolbar)
 
         self.chart_widget = ChartWidget()
+        self.bar_count_toggle_button = QPushButton("K线序号")
+        self.bar_count_toggle_button.setCheckable(True)
         if self.bar_count_toggle_button is not None:
-            self.bar_count_toggle_button.clicked.connect(self.chart_widget.set_bar_count_labels_visible)
+            self.bar_count_toggle_button.clicked.connect(self._handle_bar_count_toggle_changed)
+            self.bar_count_toggle_button.setChecked(self._bar_count_labels_default_visible())
+        self.chart_widget.set_bar_count_labels_visible(self._bar_count_labels_default_visible())
         self.chart_widget.drawingsChanged.connect(self._handle_chart_drawings_changed)
         self.chart_widget.drawingToolChanged.connect(self._sync_drawing_tool_buttons)
         self.chart_widget.drawingPropertiesRequested.connect(self._handle_drawing_properties_requested)
@@ -1103,6 +1107,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.chart_widget)
 
         controls = QHBoxLayout()
+        controls.setSpacing(6)
+        controls.addWidget(self.dataset_button)
+        controls.addWidget(self.session_button)
+        controls.addWidget(self.check_update_button)
         self.prev_button = QPushButton("上一步")
         self.prev_button.clicked.connect(self.step_back)
         controls.addWidget(self.prev_button)
@@ -1124,12 +1132,47 @@ class MainWindow(QMainWindow):
         self.clear_lines_button = QPushButton("清除画线")
         self.clear_lines_button.clicked.connect(self.confirm_clear_drawings)
         controls.addWidget(self.clear_lines_button)
+        controls.addWidget(self.bar_count_toggle_button)
 
         controls.addStretch(1)
         self.progress_label = QLabel("未开始")
         controls.addWidget(self.progress_label)
         layout.addLayout(controls)
         return panel
+
+    def _build_toolbar_group(self, title: str, content_layout: QHBoxLayout) -> QWidget:
+        group = QWidget()
+        group.setProperty("toolbarGroup", True)
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(0)
+        layout.addLayout(content_layout)
+        return group
+
+    def _load_ui_settings(self) -> None:
+        self._ui_settings = {}
+        try:
+            if self._ui_settings_path.exists():
+                payload = json.loads(self._ui_settings_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    self._ui_settings = payload
+        except Exception:  # noqa: BLE001
+            self._ui_settings = {}
+
+    def _save_ui_settings(self) -> None:
+        self._ui_settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self._ui_settings_path.write_text(json.dumps(self._ui_settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _bar_count_labels_default_visible(self) -> bool:
+        stored = self._ui_settings.get("bar_count_labels_visible")
+        if isinstance(stored, bool):
+            return stored
+        return True
+
+    def _handle_bar_count_toggle_changed(self, checked: bool) -> None:
+        self.chart_widget.set_bar_count_labels_visible(checked)
+        self._ui_settings["bar_count_labels_visible"] = bool(checked)
+        self._save_ui_settings()
 
     def _build_right_panel(self) -> QWidget:
         panel = QWidget()
@@ -2823,6 +2866,16 @@ class MainWindow(QMainWindow):
             "QPushButton:disabled {"
             " background: #f8fafc;"
             " border-color: #d7dee8;"
+            "}"
+        )
+
+    @staticmethod
+    def _toolbar_group_stylesheet() -> str:
+        return (
+            "QWidget[toolbarGroup='true'] {"
+            " background: #f8fafc;"
+            " border: 1px solid #d6dee8;"
+            " border-radius: 10px;"
             "}"
         )
 

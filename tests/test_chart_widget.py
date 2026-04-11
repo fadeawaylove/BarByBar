@@ -270,6 +270,7 @@ def test_bar_count_labels_render_even_numbers_only_when_enabled(widget: ChartWid
     bars = _bars(10)
     assert label_map[2].pos().y() < bars[1].low
     assert label_map[4].pos().y() < bars[3].low
+    assert label_map[2].fill.style() == Qt.BrushStyle.NoBrush
     font_sizes = {item.textItem.font().pointSize() for item in labels}
     assert len(font_sizes) == 1
     assert next(iter(font_sizes)) <= 10
@@ -384,7 +385,7 @@ def test_bar_count_label_offset_uses_available_bars_when_fewer_than_six(widget: 
     assert len(labels) == 1
     gap = bars[1].low - labels[0].pos().y()
     average_range = ((bars[0].high - bars[0].low) + (bars[1].high - bars[1].low)) / 2
-    assert gap == pytest.approx(max((110.0 - 95.0) * 0.022, average_range * 0.55))
+    assert gap == pytest.approx(max((110.0 - 95.0) * 0.03, average_range * 0.72))
 
 
 def test_bar_count_labels_keep_minimum_gap_for_small_range_bar(widget: ChartWidget) -> None:
@@ -400,6 +401,23 @@ def test_bar_count_labels_keep_minimum_gap_for_small_range_bar(widget: ChartWidg
     assert len(labels) == 1
     assert labels[0].pos().y() < bars[1].low
     assert (bars[1].low - labels[0].pos().y()) > 0.01
+
+
+def test_bar_count_labels_use_larger_gap_than_previous_formula(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100.0, high=101.0, low=99.5, close=100.4, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100.4, high=101.6, low=99.8, close=101.1, volume=1),
+    ]
+    widget.set_bar_count_labels_visible(True)
+    widget.set_window_data(bars, cursor=1, total_count=2, global_start_index=0)
+    widget.price_plot.setYRange(95.0, 110.0, padding=0)
+    widget._rebuild_session_markers()
+
+    new_gap = bars[1].low - widget._bar_count_label_y(1)
+    average_range = ((bars[0].high - bars[0].low) + (bars[1].high - bars[1].low)) / 2
+    old_gap = max((110.0 - 95.0) * 0.022, average_range * 0.55)
+
+    assert new_gap > old_gap
 
 
 def test_hover_bar_returns_none_for_future_blank_space(widget: ChartWidget) -> None:
