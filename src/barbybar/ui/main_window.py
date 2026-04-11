@@ -391,6 +391,11 @@ class DrawingPropertiesDialog(QDialog):
         self.width_spin = QSpinBox()
         self.width_spin.setRange(1, 8)
         self.width_spin.setValue(int(style["width"]))
+        self.line_opacity_spin = QDoubleSpinBox()
+        self.line_opacity_spin.setRange(0.0, 1.0)
+        self.line_opacity_spin.setSingleStep(0.05)
+        self.line_opacity_spin.setDecimals(2)
+        self.line_opacity_spin.setValue(float(style["opacity"]))
         self.line_style_combo = QComboBox()
         self.line_style_combo.addItem("实线", "solid")
         self.line_style_combo.addItem("虚线", "dash")
@@ -436,6 +441,7 @@ class DrawingPropertiesDialog(QDialog):
         else:
             form.addRow("颜色", self.color_button)
             form.addRow("线宽", self.width_spin)
+            form.addRow("线透明度", self.line_opacity_spin)
             form.addRow("线型", self.line_style_combo)
             if drawing.tool_type in {DrawingToolType.RECTANGLE, DrawingToolType.PRICE_RANGE}:
                 form.addRow("填充色", self.fill_color_button)
@@ -461,6 +467,7 @@ class DrawingPropertiesDialog(QDialog):
             raise ValueError("斐波那契档位格式无效，请使用逗号分隔的数字。")
         payload = {
             "color": self._selected_color,
+            "opacity": float(self.line_opacity_spin.value()),
             "width": int(self.width_spin.value()),
             "line_style": str(self.line_style_combo.currentData()),
             "extend_left": bool(self.extend_left_check.isChecked()),

@@ -59,6 +59,7 @@ DEFAULT_DRAWING_COLOR = "#ff9f1c"
 DEFAULT_DRAWING_FILL_COLOR = "#ff9f1c"
 DEFAULT_DRAWING_STYLE: dict[str, Any] = {
     "color": DEFAULT_DRAWING_COLOR,
+    "opacity": 1.0,
     "width": 1,
     "line_style": "solid",
     "extend_left": False,
@@ -81,6 +82,7 @@ def normalize_drawing_style(tool_type: DrawingToolType, style: dict[str, Any] | 
     if style:
         payload.update(style)
     payload["color"] = str(payload.get("color") or DEFAULT_DRAWING_COLOR)
+    payload["opacity"] = min(max(float(payload.get("opacity", 1.0)), 0.0), 1.0)
     payload["fill_color"] = str(payload.get("fill_color") or payload["color"] or DEFAULT_DRAWING_FILL_COLOR)
     payload["width"] = max(1, int(payload.get("width", DEFAULT_DRAWING_STYLE["width"])))
     line_style = str(payload.get("line_style") or "solid").lower()

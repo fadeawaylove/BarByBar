@@ -1214,6 +1214,35 @@ def test_fib_drawing_dialog_exposes_current_levels_and_parses_custom_levels() ->
     dialog.deleteLater()
 
 
+def test_drawing_dialog_exposes_line_opacity_for_line_tools() -> None:
+    dialog = DrawingPropertiesDialog(
+        ChartDrawing(
+            tool_type=DrawingToolType.TREND_LINE,
+            anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(12.0, 110.0)],
+            style={"opacity": 0.45},
+        )
+    )
+
+    payload = dialog.style_payload()
+
+    assert dialog.line_opacity_spin.value() == 0.45
+    assert payload["opacity"] == 0.45
+    dialog.close()
+    dialog.deleteLater()
+
+
+def test_text_drawing_dialog_does_not_expose_line_opacity_control() -> None:
+    dialog = DrawingPropertiesDialog(
+        ChartDrawing(tool_type=DrawingToolType.TEXT, anchors=[DrawingAnchor(10.0, 100.0)], style={"text": ""})
+    )
+
+    labels = [dialog.layout().itemAt(0).layout().labelForField(dialog.line_opacity_spin)]
+
+    assert labels == [None]
+    dialog.close()
+    dialog.deleteLater()
+
+
 def test_fib_drawing_dialog_rejects_invalid_levels() -> None:
     dialog = DrawingPropertiesDialog(
         ChartDrawing(

@@ -8,7 +8,7 @@ from math import ceil, floor, hypot, sqrt
 import pyqtgraph as pg
 from loguru import logger
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QBrush, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPicture
+from PySide6.QtGui import QColor, QBrush, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPicture, QPolygonF
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsPathItem, QLabel, QLayout, QMenu, QVBoxLayout, QWidget
 
 from barbybar.data.tick_size import format_price
@@ -23,6 +23,7 @@ BAR_SLOT_HALF_WIDTH = 0.5
 SESSION_MARKER_COLOR = "#d6dde6"
 SESSION_OPEN_TIMES = (time(9, 0), time(21, 0))
 SESSION_LABEL_COLOR = "#a7b1bf"
+SESSION_END_ARROW_COLOR = "#7f8a99"
 BAR_COUNT_LABEL_COLOR = "#b7bfca"
 EMA_LINE_COLOR = "#d84a4a"
 ENTRY_LONG_LINE_COLOR = "#2979ff"
@@ -859,7 +860,11 @@ class ChartWidget(QWidget):
 
     def _rebuild_session_markers(self) -> None:
         for item in list(self.price_plot.items):
-            if getattr(item, "_barbybar_session_marker", False) or getattr(item, "_barbybar_bar_count_label", False):
+            if (
+                getattr(item, "_barbybar_session_marker", False)
+                or getattr(item, "_barbybar_session_end_marker", False)
+                or getattr(item, "_barbybar_bar_count_label", False)
+            ):
                 self.price_plot.removeItem(item)
         if not self._bars:
             return
@@ -893,6 +898,21 @@ class ChartWidget(QWidget):
                 label.setZValue(5)
                 label.setPos(self._global_start_index + index - 0.5, session_label_y)
                 self.price_plot.addItem(label, ignoreBounds=True)
+            if self._is_session_end_bar(index, stop):
+                arrow = pg.ArrowItem(
+                    pos=(float(self._global_start_index + index), self._session_end_marker_y(index)),
+                    angle=-90,
+                    brush=pg.mkBrush(SESSION_END_ARROW_COLOR),
+                    pen=pg.mkPen(SESSION_END_ARROW_COLOR, width=1),
+                    headLen=14,
+                    tipAngle=28,
+                    baseAngle=18,
+                    tailLen=0,
+                    tailWidth=0,
+                )
+                arrow._barbybar_session_end_marker = True
+                arrow.setZValue(6)
+                self.price_plot.addItem(arrow, ignoreBounds=True)
             if not self._bar_count_labels_visible:
                 continue
             bar_count = session_counts[session_key]
@@ -2581,6 +2601,13 @@ class ChartWidget(QWidget):
             item._barbybar_drawing_tool = drawing.tool_type.value
             item.setZValue(18 if preview else 17)
             self.price_plot.addItem(item)
+        arrow_head_item = self._drawing_arrow_head_item(drawing, style, preview=preview, highlighted=is_hovered)
+        if arrow_head_item is not None:
+            arrow_head_item._barbybar_line = True
+            arrow_head_item._barbybar_drawing_id = drawing.id
+            arrow_head_item._barbybar_drawing_tool = drawing.tool_type.value
+            arrow_head_item.setZValue(18 if preview else 17)
+            self.price_plot.addItem(arrow_head_item)
         if not preview:
             for label_item in self._drawing_label_items(drawing, style):
                 label_item._barbybar_line = True
@@ -2687,9 +2714,20 @@ class ChartWidget(QWidget):
         }.get(str(style.get("line_style", "solid")), Qt.PenStyle.SolidLine)
         if preview:
             pen_style = Qt.PenStyle.DashLine
-        color = "#ffd166" if highlighted and not preview else str(style.get("color", "#ff9f1c"))
+        color = self._drawing_color(style, preview=preview, highlighted=highlighted)
         width = int(style.get("width", 2)) + (1 if highlighted and not preview else 0)
         return pg.mkPen(color, width=width, style=pen_style)
+
+    def _drawing_color(self, style: dict[str, object], *, preview: bool, highlighted: bool = False) -> QColor:
+        color = QColor("#ffd166" if highlighted and not preview else str(style.get("color", "#ff9f1c")))
+        if highlighted and not preview:
+            color.setAlphaF(1.0)
+            return color
+        opacity = float(style.get("opacity", 1.0))
+        if preview:
+            opacity *= 0.7
+        color.setAlphaF(min(max(opacity, 0.0), 1.0))
+        return color
 
     def _drawing_fill_item(self, drawing: ChartDrawing, style: dict[str, object], *, preview: bool) -> QGraphicsPathItem | None:
         if drawing.tool_type not in {DrawingToolType.RECTANGLE, DrawingToolType.PRICE_RANGE} or len(drawing.anchors) < 2:
@@ -2740,28 +2778,49 @@ class ChartWidget(QWidget):
     def _arrow_line_segments(self, first: DrawingAnchor, second: DrawingAnchor) -> list[tuple[list[float], list[float]]]:
         x1, y1 = float(first.x), float(first.y)
         x2, y2 = float(second.x), float(second.y)
+        return [([x1, x2], [y1, y2])]
+
+    def _drawing_arrow_head_item(
+        self,
+        drawing: ChartDrawing,
+        style: dict[str, object],
+        *,
+        preview: bool,
+        highlighted: bool = False,
+    ) -> QGraphicsPathItem | None:
+        if drawing.tool_type is not DrawingToolType.RAY or len(drawing.anchors) < 2:
+            return None
+        first, second = drawing.anchors[:2]
+        x1, y1 = float(first.x), float(first.y)
+        x2, y2 = float(second.x), float(second.y)
         dx = x2 - x1
         dy = y2 - y1
         length = sqrt(dx * dx + dy * dy)
         if length <= 0.0001:
-            return [([x1, x2], [y1, y2])]
-        head_length = min(max(length * 0.22, 0.8), 2.2)
-        head_width = head_length * 0.6
+            return None
+        head_length = min(max(length * 0.16, 0.45), 1.2)
+        head_width = head_length * 0.58
         ux = dx / length
         uy = dy / length
         base_x = x2 - ux * head_length
         base_y = y2 - uy * head_length
         perp_x = -uy
         perp_y = ux
-        left_x = base_x + perp_x * head_width
-        left_y = base_y + perp_y * head_width
-        right_x = base_x - perp_x * head_width
-        right_y = base_y - perp_y * head_width
-        return [
-            ([x1, x2], [y1, y2]),
-            ([left_x, x2], [left_y, y2]),
-            ([right_x, x2], [right_y, y2]),
-        ]
+        polygon = QPolygonF(
+            [
+                QPointF(x2, y2),
+                QPointF(base_x + perp_x * head_width, base_y + perp_y * head_width),
+                QPointF(base_x - perp_x * head_width, base_y - perp_y * head_width),
+            ]
+        )
+        path = QPainterPath()
+        path.addPolygon(polygon)
+        path.closeSubpath()
+        color = self._drawing_color(style, preview=preview, highlighted=highlighted)
+        item = QGraphicsPathItem(path)
+        item.setBrush(QBrush(color))
+        item.setPen(pg.mkPen(color, width=1))
+        return item
 
     def _rebuild_trade_geometry(self, trades: list[Trade] | None) -> None:
         if not self._bars or self._cursor < 0:
@@ -3066,6 +3125,30 @@ class ChartWidget(QWidget):
         edge_margin = span * 0.025
         offset = max(min_offset, range_offset)
         return max(float(bar.low) - offset, float(y_min) + edge_margin)
+
+    def _session_end_marker_y(self, bar_index: int) -> float:
+        y_min, y_max = self.price_plot.viewRange()[1]
+        span = max(float(y_max) - float(y_min), 1.0)
+        if not (0 <= bar_index < len(self._bars)):
+            return float(y_max) - span * 0.04
+        bar = self._bars[bar_index]
+        window_start = max(0, bar_index - 5)
+        recent_ranges = [max(float(item.high) - float(item.low), 0.0) for item in self._bars[window_start : bar_index + 1]]
+        average_range = (sum(recent_ranges) / len(recent_ranges)) if recent_ranges else 0.0
+        min_offset = span * 0.035
+        range_offset = average_range * 0.72
+        edge_margin = span * 0.03
+        offset = max(min_offset, range_offset)
+        return min(float(bar.high) + offset, float(y_max) - edge_margin)
+
+    def _is_session_end_bar(self, bar_index: int, stop: int) -> bool:
+        if not (0 <= bar_index < stop <= len(self._bars)):
+            return False
+        if bar_index + 1 < len(self._bars):
+            current_key = self._session_key(self._bars[bar_index].timestamp)
+            next_key = self._session_key(self._bars[bar_index + 1].timestamp)
+            return current_key != next_key
+        return self._cursor == self._total_count - 1 and bar_index == len(self._bars) - 1
 
     @staticmethod
     def _ema(values: list[float], period: int) -> list[float]:

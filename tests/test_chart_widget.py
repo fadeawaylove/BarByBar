@@ -280,6 +280,59 @@ def test_session_open_markers_render_for_0900_and_2100(widget: ChartWidget) -> N
     assert all(item.pos().y() < (y_min + y_max) / 2 for item in label_markers)
 
 
+def test_session_end_markers_render_for_day_and_night_tail_bars(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=1, high=2.0, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 14, 59), open=1, high=2.2, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 21, 0), open=1, high=2.1, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 23, 0), open=1, high=2.4, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 2, 9, 0), open=1, high=2.0, low=0.5, close=1.5, volume=1),
+    ]
+
+    widget.set_window_data(bars, cursor=4, total_count=5, global_start_index=0)
+
+    markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_end_marker", False)]
+    marker_map = {round(item.pos().x(), 2): item for item in markers}
+
+    assert len(markers) == 3
+    assert sorted(marker_map) == [1.0, 3.0, 4.0]
+    assert marker_map[1.0].pos().y() > bars[1].high
+    assert marker_map[3.0].pos().y() > bars[3].high
+    assert marker_map[4.0].pos().y() > bars[4].high
+
+
+def test_session_end_markers_only_appear_after_tail_bar_is_revealed(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=1, high=2.0, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 14, 59), open=1, high=2.2, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 21, 0), open=1, high=2.1, low=0.5, close=1.5, volume=1),
+    ]
+
+    widget.set_window_data(bars, cursor=0, total_count=3, global_start_index=0)
+    assert [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_end_marker", False)] == []
+
+    widget.set_cursor(1)
+    markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_end_marker", False)]
+
+    assert len(markers) == 1
+    assert round(markers[0].pos().x(), 2) == 1.0
+
+
+def test_session_end_markers_do_not_accumulate_on_rebuild(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=1, high=2.0, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 14, 59), open=1, high=2.2, low=0.5, close=1.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 21, 0), open=1, high=2.1, low=0.5, close=1.5, volume=1),
+    ]
+
+    widget.set_window_data(bars, cursor=2, total_count=3, global_start_index=0)
+    widget._rebuild_session_markers()
+
+    markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_end_marker", False)]
+
+    assert len(markers) == 2
+
+
 def test_bar_count_labels_are_hidden_by_default(widget: ChartWidget) -> None:
     widget.set_window_data(_bars(10), cursor=9, total_count=10, global_start_index=0)
 
@@ -1212,7 +1265,7 @@ def test_ray_tool_creates_drawing_after_two_clicks(widget: ChartWidget, app: QAp
     assert drawing.tool_type is DrawingToolType.RAY
     assert drawing.style["extend_right"] is False
     segments = widget._drawing_segments(drawing)
-    assert len(segments) == 3
+    assert len(segments) == 1
     assert segments[0] == ([10.0, 15.0], [100.0, 104.0])
 
 
@@ -1291,7 +1344,27 @@ def test_ray_vertical_segment_stays_finite(widget: ChartWidget) -> None:
     segments = widget._drawing_segments(drawing)
 
     assert segments[0] == ([10.0, 10.0], [100.0, 110.0])
-    assert len(segments) == 3
+    assert len(segments) == 1
+
+
+def test_ray_draws_solid_arrow_head_item(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings(
+        [ChartDrawing(tool_type=DrawingToolType.RAY, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 104.0)])]
+    )
+    app.processEvents()
+
+    items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_drawing_tool", "") == DrawingToolType.RAY.value and item.__class__.__name__ == "QGraphicsPathItem"
+    ]
+
+    assert len(items) == 1
+    assert items[0].brush().style() != Qt.BrushStyle.NoBrush
 
 
 def test_vertical_line_tool_still_uses_view_height(widget: ChartWidget) -> None:
@@ -1901,13 +1974,20 @@ def test_delete_drawing_removes_only_target(widget: ChartWidget) -> None:
 def test_update_drawing_style_persists_normalized_style(widget: ChartWidget) -> None:
     widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(20.0, 99.0), DrawingAnchor(24.0, 103.0)])])
 
-    widget.update_drawing_style(None, {"color": "#3366ff", "width": 3, "line_style": "dash", "fill_opacity": 0.35}, 0)
+    widget.update_drawing_style(None, {"color": "#3366ff", "opacity": 0.4, "width": 3, "line_style": "dash", "fill_opacity": 0.35}, 0)
 
     style = widget.drawings()[0].style
     assert style["color"] == "#3366ff"
+    assert style["opacity"] == 0.4
     assert style["width"] == 3
     assert style["line_style"] == "dash"
     assert style["fill_opacity"] == 0.35
+
+
+def test_drawing_pen_uses_configured_opacity(widget: ChartWidget) -> None:
+    pen = widget._drawing_pen({"color": "#3366ff", "opacity": 0.35, "width": 2, "line_style": "solid"}, preview=False)
+
+    assert pen.color().alphaF() == pytest.approx(0.35, abs=0.01)
 
 
 def test_set_drawing_style_preset_applies_to_new_drawings(widget: ChartWidget, app: QApplication) -> None:
