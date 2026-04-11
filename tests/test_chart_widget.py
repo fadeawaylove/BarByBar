@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction
 from barbybar.ui.chart_widget import (
     AVERAGE_PRICE_LINE_COLOR,
+    BAR_SLOT_HALF_WIDTH,
     BrowseMode,
     CANDLE_BODY_BORDER_WIDTH,
     CANDLE_WICK_WIDTH,
@@ -166,6 +167,17 @@ def test_early_cursor_keeps_fixed_window_width(widget: ChartWidget) -> None:
 
     assert right - left > 120
     assert widget.viewport_state.bars_in_view == 120
+
+
+def test_viewport_left_edge_aligns_to_whole_bar(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(199)
+    widget.pan_x(-30.5)
+
+    left, visible_right = widget._visible_x_window()
+
+    assert left + BAR_SLOT_HALF_WIDTH == pytest.approx(float(int(left + BAR_SLOT_HALF_WIDTH)))
+    assert visible_right - BAR_SLOT_HALF_WIDTH == pytest.approx(float(int(visible_right - BAR_SLOT_HALF_WIDTH)))
 
 
 def test_future_bars_stay_hidden_while_window_can_extend(widget: ChartWidget) -> None:
@@ -874,6 +886,39 @@ def test_pan_x_preserves_y_offset_and_recomputes_auto_range(widget: ChartWidget,
     assert widget._y_axis_offset == pytest.approx(preserved_offset)
     assert y_min == pytest.approx(low - padding + preserved_offset)
     assert y_max == pytest.approx(high + padding + preserved_offset)
+
+
+def test_visible_rightmost_bar_uses_aligned_visible_window(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(199)
+    widget.pan_x(-30.5)
+
+    left, _right = widget.current_x_range()
+    visible_right = left + widget.viewport_state.bars_in_view
+    visible = widget._revealed_window_bars(left, visible_right)
+
+    assert visible
+    assert widget._visible_rightmost_bar_x() == float(visible[-1][0])
+
+
+def test_y_range_includes_bars_visible_in_right_padding(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(30)
+    app.processEvents()
+
+    left, right = widget.current_x_range()
+    visible = widget._revealed_window_bars(left, right)
+
+    assert visible
+    y_min, y_max = widget.price_plot.viewRange()[1]
+    low = min(bar.low for _, bar in visible)
+    high = max(bar.high for _, bar in visible)
+    height = max(high - low, max(abs(high) * 0.01, 1.0))
+    padding = max(height * 0.06, 0.5)
+    assert y_min == pytest.approx(low - padding)
+    assert y_max == pytest.approx(high + padding)
 
 
 def test_left_drag_pans_while_browse_hover_is_active(widget: ChartWidget, app: QApplication) -> None:

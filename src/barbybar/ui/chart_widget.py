@@ -18,6 +18,8 @@ UP_CANDLE_COLOR = "#000000"
 DOWN_CANDLE_COLOR = "#000000"
 CANDLE_WICK_WIDTH = 2
 CANDLE_BODY_BORDER_WIDTH = 2
+CANDLE_BODY_HALF_WIDTH = 0.35
+BAR_SLOT_HALF_WIDTH = 0.5
 SESSION_MARKER_COLOR = "#d6dde6"
 SESSION_OPEN_TIMES = (time(9, 0), time(21, 0))
 SESSION_LABEL_COLOR = "#a7b1bf"
@@ -150,7 +152,6 @@ class CandlestickItem(pg.GraphicsObject):
         picture = QPicture()
         painter = QPainter(picture)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        width = 0.35
         min_price = None
         max_price = None
         stop = min(len(self._bars), self._cursor + 1)
@@ -168,9 +169,9 @@ class CandlestickItem(pg.GraphicsObject):
             painter.setBrush(body_brush)
             painter.drawRect(
                 pg.QtCore.QRectF(
-                    x - width,
+                    x - CANDLE_BODY_HALF_WIDTH,
                     min(bar.open, bar.close),
-                    width * 2,
+                    CANDLE_BODY_HALF_WIDTH * 2,
                     max(abs(bar.close - bar.open), 0.001),
                 )
             )
@@ -1089,10 +1090,10 @@ class ChartWidget(QWidget):
             if self._viewport.follow_latest:
                 self._viewport.right_edge_index = self._cursor + 1
             clamp_bounds = self._clamp_viewport()
-            left = self._viewport.right_edge_index - self._viewport.bars_in_view
-            right = self._viewport.right_edge_index + self._right_padding
+            left, visible_right = self._visible_x_window()
+            right = visible_right + self._right_padding
             self.price_plot.setXRange(left, right, padding=0)
-            visible_window_has_bars = self._apply_y_range(left, self._viewport.right_edge_index)
+            visible_window_has_bars = self._apply_y_range(left, right)
             self._rebuild_session_markers()
             self._rebuild_order_line_items()
             self._rebuild_trade_geometry(None)
@@ -1153,12 +1154,18 @@ class ChartWidget(QWidget):
                 result.append((global_index, self._bars[local_index]))
         return result
 
+    def _visible_x_window(self) -> tuple[float, float]:
+        rightmost_bar = float(floor(self._viewport.right_edge_index - 1e-9))
+        visible_right = rightmost_bar + BAR_SLOT_HALF_WIDTH
+        left = visible_right - float(self._viewport.bars_in_view)
+        return left, visible_right
+
     def _visible_rightmost_bar_x(self) -> float:
-        left = self._viewport.right_edge_index - self._viewport.bars_in_view
-        visible_window = self._revealed_window_bars(left, self._viewport.right_edge_index)
+        left, visible_right = self._visible_x_window()
+        visible_window = self._revealed_window_bars(left, visible_right)
         if visible_window:
             return float(visible_window[-1][0])
-        return float(min(max(int(floor(self._viewport.right_edge_index)) - 1, self._global_start_index), self._cursor))
+        return float(min(max(int(floor(visible_right)), self._global_start_index), self._cursor))
 
     def _handle_scene_click(self, event) -> None:  # noqa: ANN001
         scene_pos = event.scenePos()
