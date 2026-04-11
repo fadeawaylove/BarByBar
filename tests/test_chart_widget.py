@@ -718,6 +718,26 @@ def test_order_preview_hover_info_does_not_depend_on_browse_mode(widget: ChartWi
     assert widget._preview_line.isVisible()
 
 
+def test_order_preview_keeps_axis_price_label_visible_in_blank_space(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(50)
+    widget.pan_x(-400)
+    widget.set_tick_size(0.2)
+    widget.begin_order_preview("entry_long", 1.0)
+    app.processEvents()
+
+    left, _right = widget.current_x_range()
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(left + 10.0, 101.23))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._hover_target.target_type is HoverTargetType.NONE
+    assert widget._preview_line.isVisible()
+    assert widget._axis_price_label.isVisible()
+    assert widget._axis_price_label.text() == "101.2"
+
+
 def test_left_drag_pans_chart_temporarily(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()

@@ -1289,6 +1289,7 @@ class ChartWidget(QWidget):
             )
             self._preview_line.setPos(self._last_hover_price)
             self._preview_line.show()
+            self._show_axis_price_label(self._last_hover_price)
         if self._hover_target.target_type is HoverTargetType.TRADE_MARKER and self._hover_target.trade_marker is not None:
             marker = self._hover_target.trade_marker
             hover_price = marker.y
@@ -1302,7 +1303,7 @@ class ChartWidget(QWidget):
             self._update_trade_hover_info(link.detail_lines)
             return
         if self._hover_target.target_type is not HoverTargetType.BAR or self._hover_target.bar is None or self._hover_target.bar_index is None:
-            self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
+            self._hide_crosshair(preserve_axis_label=self._native_order_drag_active or self._preview_order_type is not None)
             return
         index, bar = self._hover_target.bar_index, self._hover_target.bar
         self._log_interaction("hover_active", hover_index=index, hover_price=round(float(point.y()), 3))
