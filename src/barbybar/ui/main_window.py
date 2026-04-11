@@ -1786,7 +1786,7 @@ class MainWindow(QMainWindow):
         self.training_stats_label.setText(
             "\n".join(
                 [
-                    f"胜率 {stats.win_rate:.0%} | 盈亏比 {stats.payoff_ratio:.2f} | Expectancy {stats.expectancy:.2f}",
+                    f"总盈亏 {stats.total_pnl:.2f} | 胜率 {stats.win_rate:.0%} | 盈亏比 {stats.payoff_ratio:.2f} | Expectancy {stats.expectancy:.2f}",
                     f"均赢 {stats.average_win:.2f} | 均亏 {stats.average_loss:.2f} | 最大回撤 {stats.max_drawdown:.2f}",
                     f"平均持仓 {stats.avg_holding_bars:.1f} bars | 连赢 {stats.max_win_streak} | 连亏 {stats.max_loss_streak}",
                     f"有止损 {stats.trades_with_stop_rate:.0%} | 按计划 {planned_rate:.0%} | 自动平仓 {auto_rate:.0%}",
