@@ -992,6 +992,7 @@ class MainWindow(QMainWindow):
         self._drawing_style_presets: dict[DrawingToolType, dict[str, object]] = {}
         self._drawing_template_buttons: dict[int, QPushButton] = {}
         self._drawing_templates: dict[int, DrawingTemplate] = {}
+        self._active_drawing_template_slot: int | None = None
         self._drawing_templates_path = default_drawing_templates_path()
         self._ui_settings_path = default_ui_settings_path()
         self._ui_settings: dict[str, object] = {}
@@ -1054,6 +1055,7 @@ class MainWindow(QMainWindow):
             timeframe_toolbar.addWidget(button)
         for slot in range(1, MAX_DRAWING_TEMPLATE_SLOTS + 1):
             button = QPushButton(f"模板{slot}")
+            button.setCheckable(True)
             button.setEnabled(False)
             button.setToolTip(f"模板{slot}")
             button.setFixedWidth(88)
@@ -1696,11 +1698,23 @@ class MainWindow(QMainWindow):
             if template is None:
                 button.setText(f"模板{slot}")
                 button.setToolTip(f"模板{slot}")
+                button.blockSignals(True)
+                button.setChecked(False)
+                button.blockSignals(False)
                 button.setEnabled(False)
+                if self._active_drawing_template_slot == slot:
+                    self._active_drawing_template_slot = None
                 continue
             button.setText(template.note or f"模板{slot}")
             button.setToolTip(f"{self._drawing_tool_label(template.tool_type)} | {template.note or f'Template {slot}'}")
             button.setEnabled(True)
+        self._sync_drawing_template_buttons()
+
+    def _sync_drawing_template_buttons(self) -> None:
+        for slot, button in self._drawing_template_buttons.items():
+            button.blockSignals(True)
+            button.setChecked(slot == self._active_drawing_template_slot)
+            button.blockSignals(False)
 
     def _suggest_drawing_template_slot(self) -> int:
         for slot in range(1, MAX_DRAWING_TEMPLATE_SLOTS + 1):
@@ -1712,6 +1726,9 @@ class MainWindow(QMainWindow):
         template = self._drawing_templates.get(slot)
         if template is None:
             return
+        self.cancel_draw_order_preview()
+        self._active_drawing_template_slot = slot
+        self._sync_drawing_template_buttons()
         self.chart_widget.set_drawing_style_preset(template.tool_type, dict(template.style))
         self.chart_widget.set_active_drawing_tool(template.tool_type)
 
@@ -2631,6 +2648,8 @@ class MainWindow(QMainWindow):
         ).debug("event=toggle_drawing_tool")
         if checked:
             self.cancel_draw_order_preview()
+            self._active_drawing_template_slot = None
+            self._sync_drawing_template_buttons()
             self.chart_widget.set_active_drawing_tool(tool)
             logger.bind(
                 component="chart_interaction",
@@ -2646,9 +2665,12 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _sync_drawing_tool_buttons(self, active_tool: object) -> None:
+        if active_tool is None:
+            self._active_drawing_template_slot = None
+        self._sync_drawing_template_buttons()
         for tool, button in self._drawing_tool_buttons.items():
             button.blockSignals(True)
-            button.setChecked(tool == active_tool)
+            button.setChecked(self._active_drawing_template_slot is None and tool == active_tool)
             button.blockSignals(False)
         self._sync_chart_interaction_controls()
 

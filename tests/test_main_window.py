@@ -655,6 +655,8 @@ def test_clicking_drawing_template_button_activates_tool_and_style(window: MainW
     window._drawing_template_buttons[1].click()
 
     assert window.chart_widget.active_drawing_tool is DrawingToolType.RECTANGLE
+    assert window._drawing_template_buttons[1].isChecked() is True
+    assert window._drawing_tool_buttons[DrawingToolType.RECTANGLE].isChecked() is False
     preset = window.chart_widget.drawing_style_preset(DrawingToolType.RECTANGLE)
     assert preset["color"] == "#3366ff"
     assert preset["width"] == 3
@@ -709,11 +711,29 @@ def test_template_drawing_auto_exits_after_completion(window: MainWindow, app: Q
     window.chart_widget._consume_drawing_click(DrawingAnchor(12.0, 103.0))
 
     assert window.chart_widget.active_drawing_tool is None
+    assert window._drawing_template_buttons[1].isChecked() is False
     drawing = window.chart_widget.drawings()[0]
     assert drawing.tool_type is DrawingToolType.RECTANGLE
     assert drawing.style["color"] == "#3366ff"
     window._auto_save_timer.stop()
     window._session_dirty = False
+
+
+def test_clicking_normal_drawing_tool_clears_template_button_state(window: MainWindow) -> None:
+    window._drawing_templates[1] = DrawingTemplate(
+        slot=1,
+        tool_type=DrawingToolType.RECTANGLE,
+        note="阻力区",
+        style={"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35},
+    )
+    window._refresh_drawing_template_buttons()
+
+    window._drawing_template_buttons[1].click()
+    window._drawing_tool_buttons[DrawingToolType.HORIZONTAL_LINE].click()
+
+    assert window._drawing_template_buttons[1].isChecked() is False
+    assert window._drawing_tool_buttons[DrawingToolType.HORIZONTAL_LINE].isChecked() is True
+    assert window.chart_widget.active_drawing_tool is DrawingToolType.HORIZONTAL_LINE
 
 
 def test_text_template_button_reuses_style_without_reusing_content(window: MainWindow) -> None:
