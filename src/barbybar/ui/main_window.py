@@ -958,6 +958,7 @@ class MainWindow(QMainWindow):
         self.current_session_id: int | None = None
         self.timeframe_buttons: dict[str, QPushButton] = {}
         self.bar_count_toggle_button: QPushButton | None = None
+        self.flatten_at_session_end_toggle_button: QPushButton | None = None
         self.check_update_button: QPushButton | None = None
         self._busy_overlay: BusyOverlay | None = None
         self._busy_cursor_active = False
@@ -1092,6 +1093,10 @@ class MainWindow(QMainWindow):
         if self.bar_count_toggle_button is not None:
             self.bar_count_toggle_button.clicked.connect(self._handle_bar_count_toggle_changed)
             self.bar_count_toggle_button.setChecked(self._bar_count_labels_default_visible())
+        self.flatten_at_session_end_toggle_button = QPushButton("不过夜")
+        self.flatten_at_session_end_toggle_button.setCheckable(True)
+        self.flatten_at_session_end_toggle_button.clicked.connect(self._handle_flatten_at_session_end_toggle_changed)
+        self.flatten_at_session_end_toggle_button.setChecked(self._flatten_at_session_end_default_enabled())
         self.chart_widget.set_bar_count_labels_visible(self._bar_count_labels_default_visible())
         self.chart_widget.drawingsChanged.connect(self._handle_chart_drawings_changed)
         self.chart_widget.drawingToolChanged.connect(self._sync_drawing_tool_buttons)
@@ -1133,6 +1138,7 @@ class MainWindow(QMainWindow):
         self.clear_lines_button.clicked.connect(self.confirm_clear_drawings)
         controls.addWidget(self.clear_lines_button)
         controls.addWidget(self.bar_count_toggle_button)
+        controls.addWidget(self.flatten_at_session_end_toggle_button)
 
         controls.addStretch(1)
         self.progress_label = QLabel("未开始")
@@ -1172,6 +1178,21 @@ class MainWindow(QMainWindow):
     def _handle_bar_count_toggle_changed(self, checked: bool) -> None:
         self.chart_widget.set_bar_count_labels_visible(checked)
         self._ui_settings["bar_count_labels_visible"] = bool(checked)
+        self._save_ui_settings()
+
+    def _flatten_at_session_end_default_enabled(self) -> bool:
+        stored = self._ui_settings.get("flatten_at_session_end_enabled")
+        if isinstance(stored, bool):
+            return stored
+        return True
+
+    def _flatten_at_session_end_enabled(self) -> bool:
+        if self.flatten_at_session_end_toggle_button is None:
+            return self._flatten_at_session_end_default_enabled()
+        return self.flatten_at_session_end_toggle_button.isChecked()
+
+    def _handle_flatten_at_session_end_toggle_changed(self, checked: bool) -> None:
+        self._ui_settings["flatten_at_session_end_enabled"] = bool(checked)
         self._save_ui_settings()
 
     def _build_right_panel(self) -> QWidget:
@@ -1845,7 +1866,7 @@ class MainWindow(QMainWindow):
         if not self.engine:
             return
         self._ensure_window_for_forward()
-        if not self.engine.step_forward():
+        if not self.engine.step_forward(flatten_at_session_end=self._flatten_at_session_end_enabled()):
             return
         self._update_ui_from_engine()
         self._schedule_auto_save("step_forward")
@@ -1874,7 +1895,7 @@ class MainWindow(QMainWindow):
                 detail="正在定位目标 K 线并刷新图表",
             )
             return
-        self.engine.jump_to(index)
+        self.engine.jump_to(index, flatten_at_session_end=self._flatten_at_session_end_enabled())
         self._update_ui_from_engine()
         self._schedule_auto_save("jump_to_bar")
 

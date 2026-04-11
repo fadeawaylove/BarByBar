@@ -134,6 +134,13 @@ def test_main_window_exposes_bar_count_toggle_button(window: MainWindow) -> None
     assert window.chart_widget.bar_count_labels_visible is True
 
 
+def test_main_window_exposes_flatten_at_session_end_toggle_button(window: MainWindow) -> None:
+    assert window.flatten_at_session_end_toggle_button is not None
+    assert window.flatten_at_session_end_toggle_button.text() == "不过夜"
+    assert window.flatten_at_session_end_toggle_button.isCheckable() is True
+    assert window.flatten_at_session_end_toggle_button.isChecked() is True
+
+
 def test_main_window_exposes_six_drawing_template_buttons(window: MainWindow) -> None:
     assert set(window._drawing_template_buttons) == {1, 2, 3, 4, 5, 6}
     assert [window._drawing_template_buttons[index].text() for index in range(1, 7)] == [
@@ -309,6 +316,7 @@ def test_bar_count_toggle_button_is_placed_beside_clear_drawings(window: MainWin
     assert controls is not None
     clear_index = next(index for index in range(controls.count()) if controls.itemAt(index).widget() is window.clear_lines_button)
     assert controls.itemAt(clear_index + 1).widget() is window.bar_count_toggle_button
+    assert controls.itemAt(clear_index + 2).widget() is window.flatten_at_session_end_toggle_button
 
 
 def test_dataset_session_and_update_buttons_are_placed_before_prev_button(window: MainWindow) -> None:
@@ -334,6 +342,23 @@ def test_main_window_loads_bar_count_toggle_from_global_ui_settings(app: QApplic
     try:
         assert main_window.bar_count_toggle_button.isChecked() is False
         assert main_window.chart_widget.bar_count_labels_visible is False
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_loads_flatten_toggle_from_global_ui_settings(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_ui_settings_path().write_text('{"flatten_at_session_end_enabled": false}', encoding="utf-8")
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.flatten_at_session_end_toggle_button.isChecked() is False
     finally:
         main_window.close()
         main_window.deleteLater()
@@ -396,6 +421,32 @@ def test_toggling_bar_count_button_persists_global_ui_setting(app: QApplication,
     try:
         assert reloaded_window.bar_count_toggle_button.isChecked() is False
         assert reloaded_window.chart_widget.bar_count_labels_visible is False
+    finally:
+        reloaded_window.close()
+        reloaded_window.deleteLater()
+        app.processEvents()
+
+
+def test_toggling_flatten_toggle_persists_global_ui_setting(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        main_window.flatten_at_session_end_toggle_button.click()
+        saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
+        assert saved["flatten_at_session_end_enabled"] is False
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+    reloaded_window = MainWindow(repo)
+    try:
+        assert reloaded_window.flatten_at_session_end_toggle_button.isChecked() is False
     finally:
         reloaded_window.close()
         reloaded_window.deleteLater()
@@ -1326,6 +1377,41 @@ def test_navigation_schedules_auto_save(window: MainWindow) -> None:
     assert window._auto_save_timer.isActive()
     window._auto_save_timer.stop()
     window._session_dirty = False
+
+
+def test_step_forward_passes_flatten_toggle_state_to_engine(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    captured: dict[str, bool] = {}
+
+    def fake_step_forward(*, flatten_at_session_end: bool = False) -> bool:
+        captured["flatten_at_session_end"] = flatten_at_session_end
+        return False
+
+    monkeypatch.setattr(window.engine, "step_forward", fake_step_forward)
+    window.flatten_at_session_end_toggle_button.setChecked(False)
+
+    window.step_forward()
+
+    assert captured["flatten_at_session_end"] is False
+
+
+def test_jump_to_bar_passes_flatten_toggle_state_to_engine(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    captured: dict[str, object] = {}
+
+    def fake_jump_to(index: int, *, flatten_at_session_end: bool = False) -> None:
+        captured["index"] = index
+        captured["flatten_at_session_end"] = flatten_at_session_end
+
+    monkeypatch.setattr(window.engine, "jump_to", fake_jump_to)
+    window.flatten_at_session_end_toggle_button.setChecked(False)
+
+    window.jump_to_bar(30)
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+    assert captured["index"] == 30
+    assert captured["flatten_at_session_end"] is False
 
 
 def test_flush_pending_auto_save_persists_session(window: MainWindow, monkeypatch) -> None:

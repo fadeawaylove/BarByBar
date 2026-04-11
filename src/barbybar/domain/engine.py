@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import time, timedelta
 
 from barbybar.domain.models import (
     ActionType,
@@ -20,6 +21,9 @@ from barbybar.domain.models import (
 )
 
 PLANNED_STOP_SETUP_MAX_BARS = 3
+DAY_SESSION_OPEN = time(hour=9, minute=0)
+NIGHT_SESSION_OPEN = time(hour=21, minute=0)
+SESSION_END_FLATTEN_ORDER_TYPE = "session_end_flatten"
 
 
 @dataclass(slots=True)
@@ -126,12 +130,14 @@ class ReviewEngine:
             return None
         return self._history[-1].current_index
 
-    def step_forward(self) -> bool:
+    def step_forward(self, *, flatten_at_session_end: bool = False) -> bool:
         if not self.can_step_forward():
-            return False
+            return self._flatten_terminal_position_if_needed(flatten_at_session_end)
         if self.session.current_index >= self.window_end_index:
             return False
         self._save_snapshot()
+        if flatten_at_session_end and self._is_last_bar_of_session(self.current_bar, self.bars[self.local_current_index + 1]):
+            self._close_position_for_session_end(self.current_bar)
         next_index = self.session.current_index + 1
         next_bar = self.bars[next_index - self.window_start_index]
         protective_triggered = self._apply_protective_order_lines(next_index, next_bar)
@@ -144,10 +150,10 @@ class ReviewEngine:
         self._refresh_stats()
         return True
 
-    def jump_to(self, index: int) -> None:
+    def jump_to(self, index: int, *, flatten_at_session_end: bool = False) -> None:
         index = max(self.session.start_index, min(index, self.total_count - 1))
         while self.session.current_index < index:
-            if not self.step_forward():
+            if not self.step_forward(flatten_at_session_end=flatten_at_session_end):
                 break
         while self.session.current_index > index and self._history:
             self.step_back()
@@ -701,6 +707,8 @@ class ReviewEngine:
             return "reverse"
         if order_type == OrderLineType.EXIT.value:
             return "manual_close"
+        if order_type == SESSION_END_FLATTEN_ORDER_TYPE:
+            return SESSION_END_FLATTEN_ORDER_TYPE
         return "unknown"
 
     def _save_snapshot(self) -> None:
@@ -761,6 +769,47 @@ class ReviewEngine:
         for line in self.order_lines:
             if line.is_active and line.is_flattening:
                 self._cancel_line(line)
+
+    def _flatten_terminal_position_if_needed(self, flatten_at_session_end: bool) -> bool:
+        if not flatten_at_session_end or not self.session.position.is_open:
+            return False
+        self._save_snapshot()
+        self._close_position_for_session_end(self.current_bar)
+        self._refresh_stats()
+        return True
+
+    def _close_position_for_session_end(self, bar: Bar) -> None:
+        position = self.session.position
+        if not position.is_open:
+            return
+        auto_action = SessionAction(
+            action_type=ActionType.CLOSE,
+            bar_index=self.session.current_index,
+            timestamp=bar.timestamp,
+            price=bar.close,
+            quantity=position.quantity,
+            note="Auto close at session end",
+            extra={"auto": True, "order_type": SESSION_END_FLATTEN_ORDER_TYPE},
+            session_id=self.session.id,
+        )
+        self._apply_action(auto_action)
+        self.actions.append(auto_action)
+        self._cancel_flattening_lines()
+        self._update_drawdown(bar.close)
+
+    @staticmethod
+    def _is_last_bar_of_session(current_bar: Bar, next_bar: Bar) -> bool:
+        return ReviewEngine._session_key(current_bar) != ReviewEngine._session_key(next_bar)
+
+    @staticmethod
+    def _session_key(bar: Bar) -> tuple[str, object]:
+        bar_time = bar.timestamp.time()
+        if bar_time >= NIGHT_SESSION_OPEN:
+            return ("night", bar.timestamp.replace(hour=21, minute=0, second=0, microsecond=0))
+        if bar_time >= DAY_SESSION_OPEN:
+            return ("day", bar.timestamp.replace(hour=9, minute=0, second=0, microsecond=0))
+        previous_day = bar.timestamp - timedelta(days=1)
+        return ("night", previous_day.replace(hour=21, minute=0, second=0, microsecond=0))
 
     def _cancel_reference_lines(self) -> None:
         self.order_lines = [line for line in self.order_lines if line.order_type is not OrderLineType.AVERAGE_PRICE]

@@ -21,6 +21,14 @@ def sample_bars() -> list[Bar]:
     return bars
 
 
+def session_boundary_bars() -> list[Bar]:
+    return [
+        Bar(timestamp=datetime(2025, 1, 1, 14, 59), open=100, high=101, low=99, close=100.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 21, 0), open=101, high=102, low=100, close=101.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 2, 9, 0), open=102, high=103, low=101, close=102.5, volume=1),
+    ]
+
+
 def test_open_close_and_stats() -> None:
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
     engine = ReviewEngine(session, sample_bars())
@@ -289,3 +297,82 @@ def test_trade_review_marks_adverse_add_only_when_adding_into_loss() -> None:
 
     assert review_item.had_adverse_add is True
     assert review_item.is_planned is False
+
+
+def test_session_end_flatten_closes_position_at_day_session_boundary() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, session_boundary_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+
+    moved = engine.step_forward(flatten_at_session_end=True)
+
+    assert moved is True
+    assert engine.session.current_index == 1
+    assert engine.session.position.is_open is False
+    assert engine.actions[-1].action_type is ActionType.CLOSE
+    assert engine.actions[-1].price == 100.5
+    assert engine.actions[-1].extra["order_type"] == "session_end_flatten"
+    assert engine.trade_review_items()[0].exit_reason == "session_end_flatten"
+
+
+def test_session_end_flatten_closes_position_at_night_session_boundary() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=1, current_index=1)
+    engine = ReviewEngine(session, session_boundary_bars()[1:], window_start_index=1, total_count=3)
+    engine.record_action(ActionType.OPEN_SHORT, quantity=1, price=101.5)
+
+    moved = engine.step_forward(flatten_at_session_end=True)
+
+    assert moved is True
+    assert engine.session.current_index == 2
+    assert engine.session.position.is_open is False
+    assert engine.actions[-1].price == 101.5
+    assert engine.actions[-1].extra["order_type"] == "session_end_flatten"
+
+
+def test_session_end_flatten_closes_position_on_final_bar_without_advancing() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 14, 58), open=100, high=101, low=99, close=100.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 14, 59), open=100, high=101, low=99, close=101.0, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=1, current_index=1)
+    engine = ReviewEngine(session, bars[1:], window_start_index=1, total_count=2)
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+
+    moved = engine.step_forward(flatten_at_session_end=True)
+
+    assert moved is True
+    assert engine.session.current_index == 1
+    assert engine.session.position.is_open is False
+    assert engine.actions[-1].price == 101.0
+    assert engine.can_step_forward() is False
+
+
+def test_session_end_flatten_can_be_disabled() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, session_boundary_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+
+    moved = engine.step_forward(flatten_at_session_end=False)
+
+    assert moved is True
+    assert engine.session.current_index == 1
+    assert engine.session.position.is_open is True
+
+
+def test_session_end_flatten_cancels_flattening_lines_and_step_back_restores_them() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, session_boundary_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    flatten_line = engine.place_order_line(OrderLineType.EXIT, price=99.5, quantity=1)
+
+    engine.step_forward(flatten_at_session_end=True)
+
+    assert flatten_line.is_active is False
+    assert engine.session.position.is_open is False
+
+    engine.step_back()
+
+    assert engine.session.current_index == 0
+    assert engine.session.position.is_open is True
+    restored_line = next(line for line in engine.order_lines if line.id == flatten_line.id)
+    assert restored_line.is_active is True
