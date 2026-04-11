@@ -356,6 +356,7 @@ class ChartWidget(QWidget):
         self._trade_markers_visible = True
         self._trade_links_visible = True
         self._bar_count_labels_visible = False
+        self._drawings_hidden = False
         self._focused_trade_number: int | None = None
         self._focused_trade_points: tuple[int, float, int, float] | None = None
         self._preview_order_type: str | None = None
@@ -485,6 +486,10 @@ class ChartWidget(QWidget):
     @property
     def bar_count_labels_visible(self) -> bool:
         return self._bar_count_labels_visible
+
+    @property
+    def drawings_hidden(self) -> bool:
+        return self._drawings_hidden
 
     @property
     def viewport_state(self) -> ViewportState:
@@ -667,6 +672,19 @@ class ChartWidget(QWidget):
     def set_bar_count_labels_visible(self, visible: bool) -> None:
         self._bar_count_labels_visible = bool(visible)
         self._rebuild_session_markers()
+
+    def set_drawings_hidden(self, hidden: bool) -> None:
+        hidden = bool(hidden)
+        if self._drawings_hidden == hidden:
+            return
+        self._drawings_hidden = hidden
+        if hidden:
+            self._pending_drawing_anchors = []
+            self._drawing_preview_anchor = None
+            self._clear_drawing_drag_state()
+            self._active_drag_target = ActiveDragTarget()
+            self._apply_hover_target(self._empty_hover_target())
+        self._rebuild_line_items()
 
     def set_full_data(self, bars: list[Bar]) -> None:
         self.set_window_data(bars, len(bars) - 1 if bars else -1, len(bars), 0)
@@ -899,6 +917,8 @@ class ChartWidget(QWidget):
         for item in list(self.price_plot.items):
             if getattr(item, "_barbybar_line", False):
                 self.price_plot.removeItem(item)
+        if self._drawings_hidden:
+            return
         for drawing in self._drawings:
             self._add_drawing_items(drawing, preview=False)
         preview = self._current_preview_drawing()
@@ -1843,6 +1863,8 @@ class ChartWidget(QWidget):
             self.orderLineActionRequested.emit(order_id, "delete")
 
     def _show_drawing_context_menu(self, drawing_index: int, scene_pos) -> None:  # noqa: ANN001
+        if self._drawings_hidden:
+            return
         if not (0 <= drawing_index < len(self._drawings)):
             return
         local_pos = self.graphics.mapFromScene(scene_pos)
@@ -1863,6 +1885,8 @@ class ChartWidget(QWidget):
         return menu, properties_action, save_template_action, delete_action
 
     def _drawing_at_scene_pos(self, scene_pos) -> tuple[int, ChartDrawing] | None:  # noqa: ANN001
+        if self._drawings_hidden:
+            return None
         hit_index: int | None = None
         hit_priority = 99.0
         hit_distance = float("inf")
@@ -1881,6 +1905,8 @@ class ChartWidget(QWidget):
         return hit_index, self._drawings[hit_index]
 
     def _drawing_anchor_at_scene_pos(self, scene_pos) -> tuple[int, int] | None:  # noqa: ANN001
+        if self._drawings_hidden:
+            return None
         hit: tuple[int, int] | None = None
         closest_distance = float("inf")
         for drawing_index, drawing in enumerate(self._drawings):
@@ -2116,6 +2142,8 @@ class ChartWidget(QWidget):
             self.drawingPropertiesRequested.emit(self.drawings()[-1], len(self._drawings) - 1)
 
     def handle_drawing_drag_event(self, ev) -> bool:  # noqa: ANN001
+        if self._drawings_hidden:
+            return False
         if ev.button() != Qt.MouseButton.LeftButton:
             return False
         if self._active_drawing_tool is not None or self._interaction_mode is InteractionMode.ORDER_PREVIEW or self._cursor < 0:
@@ -2453,6 +2481,12 @@ class ChartWidget(QWidget):
         self._drag_drawing_changed = False
 
     def _update_drawing_hover_state(self, scene_pos) -> None:  # noqa: ANN001
+        if self._drawings_hidden:
+            if self._hovered_drawing_index is not None or self._hovered_anchor_index is not None:
+                self._hovered_drawing_index = None
+                self._hovered_anchor_index = None
+                self._rebuild_line_items()
+            return
         if self._drawing_drag_mode is not None:
             return
         anchor_hit = self._drawing_anchor_at_scene_pos(scene_pos)

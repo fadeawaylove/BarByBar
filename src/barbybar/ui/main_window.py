@@ -958,6 +958,7 @@ class MainWindow(QMainWindow):
         self.current_session_id: int | None = None
         self.timeframe_buttons: dict[str, QPushButton] = {}
         self.bar_count_toggle_button: QPushButton | None = None
+        self.hide_drawings_toggle_button: QPushButton | None = None
         self.flatten_at_session_end_toggle_button: QPushButton | None = None
         self.check_update_button: QPushButton | None = None
         self._busy_overlay: BusyOverlay | None = None
@@ -1093,11 +1094,16 @@ class MainWindow(QMainWindow):
         if self.bar_count_toggle_button is not None:
             self.bar_count_toggle_button.clicked.connect(self._handle_bar_count_toggle_changed)
             self.bar_count_toggle_button.setChecked(self._bar_count_labels_default_visible())
+        self.hide_drawings_toggle_button = QPushButton("隐藏画线")
+        self.hide_drawings_toggle_button.setCheckable(True)
+        self.hide_drawings_toggle_button.clicked.connect(self._handle_hide_drawings_toggle_changed)
+        self.hide_drawings_toggle_button.setChecked(self._drawings_hidden_default())
         self.flatten_at_session_end_toggle_button = QPushButton("不过夜")
         self.flatten_at_session_end_toggle_button.setCheckable(True)
         self.flatten_at_session_end_toggle_button.clicked.connect(self._handle_flatten_at_session_end_toggle_changed)
         self.flatten_at_session_end_toggle_button.setChecked(self._flatten_at_session_end_default_enabled())
         self.chart_widget.set_bar_count_labels_visible(self._bar_count_labels_default_visible())
+        self.chart_widget.set_drawings_hidden(self._drawings_hidden_default())
         self.chart_widget.drawingsChanged.connect(self._handle_chart_drawings_changed)
         self.chart_widget.drawingToolChanged.connect(self._sync_drawing_tool_buttons)
         self.chart_widget.drawingPropertiesRequested.connect(self._handle_drawing_properties_requested)
@@ -1138,6 +1144,7 @@ class MainWindow(QMainWindow):
         self.clear_lines_button.clicked.connect(self.confirm_clear_drawings)
         controls.addWidget(self.clear_lines_button)
         controls.addWidget(self.bar_count_toggle_button)
+        controls.addWidget(self.hide_drawings_toggle_button)
         controls.addWidget(self.flatten_at_session_end_toggle_button)
 
         controls.addStretch(1)
@@ -1178,6 +1185,17 @@ class MainWindow(QMainWindow):
     def _handle_bar_count_toggle_changed(self, checked: bool) -> None:
         self.chart_widget.set_bar_count_labels_visible(checked)
         self._ui_settings["bar_count_labels_visible"] = bool(checked)
+        self._save_ui_settings()
+
+    def _drawings_hidden_default(self) -> bool:
+        stored = self._ui_settings.get("drawings_hidden")
+        if isinstance(stored, bool):
+            return stored
+        return False
+
+    def _handle_hide_drawings_toggle_changed(self, checked: bool) -> None:
+        self.chart_widget.set_drawings_hidden(checked)
+        self._ui_settings["drawings_hidden"] = bool(checked)
         self._save_ui_settings()
 
     def _flatten_at_session_end_default_enabled(self) -> bool:

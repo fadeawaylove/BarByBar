@@ -134,6 +134,14 @@ def test_main_window_exposes_bar_count_toggle_button(window: MainWindow) -> None
     assert window.chart_widget.bar_count_labels_visible is True
 
 
+def test_main_window_exposes_hide_drawings_toggle_button(window: MainWindow) -> None:
+    assert window.hide_drawings_toggle_button is not None
+    assert window.hide_drawings_toggle_button.text() == "隐藏画线"
+    assert window.hide_drawings_toggle_button.isCheckable() is True
+    assert window.hide_drawings_toggle_button.isChecked() is False
+    assert window.chart_widget.drawings_hidden is False
+
+
 def test_main_window_exposes_flatten_at_session_end_toggle_button(window: MainWindow) -> None:
     assert window.flatten_at_session_end_toggle_button is not None
     assert window.flatten_at_session_end_toggle_button.text() == "不过夜"
@@ -316,7 +324,8 @@ def test_bar_count_toggle_button_is_placed_beside_clear_drawings(window: MainWin
     assert controls is not None
     clear_index = next(index for index in range(controls.count()) if controls.itemAt(index).widget() is window.clear_lines_button)
     assert controls.itemAt(clear_index + 1).widget() is window.bar_count_toggle_button
-    assert controls.itemAt(clear_index + 2).widget() is window.flatten_at_session_end_toggle_button
+    assert controls.itemAt(clear_index + 2).widget() is window.hide_drawings_toggle_button
+    assert controls.itemAt(clear_index + 3).widget() is window.flatten_at_session_end_toggle_button
 
 
 def test_dataset_session_and_update_buttons_are_placed_before_prev_button(window: MainWindow) -> None:
@@ -359,6 +368,24 @@ def test_main_window_loads_flatten_toggle_from_global_ui_settings(app: QApplicat
     main_window = MainWindow(repo)
     try:
         assert main_window.flatten_at_session_end_toggle_button.isChecked() is False
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_loads_hide_drawings_toggle_from_global_ui_settings(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_ui_settings_path().write_text('{"drawings_hidden": true}', encoding="utf-8")
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.hide_drawings_toggle_button.isChecked() is True
+        assert main_window.chart_widget.drawings_hidden is True
     finally:
         main_window.close()
         main_window.deleteLater()
@@ -447,6 +474,34 @@ def test_toggling_flatten_toggle_persists_global_ui_setting(app: QApplication, m
     reloaded_window = MainWindow(repo)
     try:
         assert reloaded_window.flatten_at_session_end_toggle_button.isChecked() is False
+    finally:
+        reloaded_window.close()
+        reloaded_window.deleteLater()
+        app.processEvents()
+
+
+def test_toggling_hide_drawings_button_persists_global_ui_setting(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        main_window.hide_drawings_toggle_button.click()
+        saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
+        assert saved["drawings_hidden"] is True
+        assert main_window.chart_widget.drawings_hidden is True
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+    reloaded_window = MainWindow(repo)
+    try:
+        assert reloaded_window.hide_drawings_toggle_button.isChecked() is True
+        assert reloaded_window.chart_widget.drawings_hidden is True
     finally:
         reloaded_window.close()
         reloaded_window.deleteLater()

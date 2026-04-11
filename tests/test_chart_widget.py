@@ -1736,6 +1736,45 @@ def test_drawing_hit_test_returns_targeted_drawing(widget: ChartWidget, app: QAp
     assert hit[1].tool_type is DrawingToolType.TREND_LINE
 
 
+def test_set_drawings_hidden_hides_rendered_drawing_items(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+    app.processEvents()
+
+    visible_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_line", False)]
+    assert visible_items
+
+    widget.set_drawings_hidden(True)
+    app.processEvents()
+
+    hidden_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_line", False)]
+    assert hidden_items == []
+    assert len(widget.drawings()) == 1
+
+
+def test_hidden_drawings_disable_hit_testing_and_anchor_hover(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+    app.processEvents()
+
+    widget.set_drawings_hidden(True)
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+
+    assert widget._drawing_at_scene_pos(scene_pos) is None
+    assert widget._drawing_anchor_at_scene_pos(scene_pos) is None
+
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._hover_target.drawing_index is None
+    assert widget._hover_target.anchor_index is None
+
+
 def test_right_click_on_drawing_opens_drawing_context_menu(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -1751,6 +1790,23 @@ def test_right_click_on_drawing_opens_drawing_context_menu(widget: ChartWidget, 
 
     assert click.accepted is True
     assert captured == [0]
+
+
+def test_hidden_drawings_ignore_right_click_context_menu(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+    widget.set_drawings_hidden(True)
+    app.processEvents()
+    captured: list[int] = []
+    monkeypatch.setattr(widget, "_show_drawing_context_menu", lambda drawing_index, scene_pos: captured.append(drawing_index))
+
+    click = _FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(12.0, 102.0)), Qt.MouseButton.RightButton)
+    widget._handle_scene_click(click)
+
+    assert captured == []
 
 
 def test_drawing_context_menu_includes_save_template_action(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
