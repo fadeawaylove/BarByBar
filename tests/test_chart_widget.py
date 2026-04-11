@@ -63,18 +63,35 @@ def test_zoom_and_anchor_stability(widget: ChartWidget) -> None:
     widget.resize(900, 600)
     widget.set_full_data(_bars())
     widget.set_cursor(199)
+    widget.pan_x(-30)
     old_bars = widget.viewport_state.bars_in_view
     old_right = widget.viewport_state.right_edge_index
     old_left = old_right - old_bars
-    latest_x = 199
-    old_anchor_ratio = (latest_x - old_left) / old_bars
+    visible_anchor_x = widget._visible_rightmost_bar_x()
+    old_anchor_ratio = (visible_anchor_x - old_left) / old_bars
 
     widget.zoom_x(anchor_x=50, scale=0.5)
 
     assert widget.viewport_state.bars_in_view < old_bars
     new_left = widget.viewport_state.right_edge_index - widget.viewport_state.bars_in_view
-    new_anchor_ratio = (latest_x - new_left) / widget.viewport_state.bars_in_view
+    new_anchor_ratio = (visible_anchor_x - new_left) / widget.viewport_state.bars_in_view
     assert abs(new_anchor_ratio - old_anchor_ratio) < 0.05
+    assert widget.viewport_state.follow_latest is False
+
+
+def test_zoom_uses_rightmost_visible_bar_instead_of_cursor(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(199)
+    widget.pan_x(-30)
+
+    old_right = widget.viewport_state.right_edge_index
+    expected_anchor_x = widget._visible_rightmost_bar_x()
+
+    widget.zoom_x(anchor_x=20, scale=0.5)
+
+    assert expected_anchor_x == 169.0
+    assert widget.viewport_state.right_edge_index != 200.0
+    assert widget.viewport_state.right_edge_index < old_right
 
 
 def test_zoom_out_is_limited_by_dynamic_readable_bar_cap(widget: ChartWidget, app: QApplication) -> None:

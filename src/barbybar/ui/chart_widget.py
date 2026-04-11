@@ -726,7 +726,7 @@ class ChartWidget(QWidget):
         new_bars = self._clamp_bars_in_view(new_bars)
         if new_bars == old_bars:
             return
-        anchor_x = float(self._cursor)
+        anchor_x = self._visible_rightmost_bar_x()
         old_left = self._viewport.right_edge_index - old_bars
         ratio = 0.0 if old_bars == 0 else (anchor_x - old_left) / old_bars
         ratio = min(max(ratio, 0.0), 1.0)
@@ -1152,6 +1152,13 @@ class ChartWidget(QWidget):
             if 0 <= local_index < len(self._bars):
                 result.append((global_index, self._bars[local_index]))
         return result
+
+    def _visible_rightmost_bar_x(self) -> float:
+        left = self._viewport.right_edge_index - self._viewport.bars_in_view
+        visible_window = self._revealed_window_bars(left, self._viewport.right_edge_index)
+        if visible_window:
+            return float(visible_window[-1][0])
+        return float(min(max(int(floor(self._viewport.right_edge_index)) - 1, self._global_start_index), self._cursor))
 
     def _handle_scene_click(self, event) -> None:  # noqa: ANN001
         scene_pos = event.scenePos()
