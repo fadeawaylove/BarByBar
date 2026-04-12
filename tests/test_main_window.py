@@ -15,7 +15,16 @@ from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, WindowBars
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
-from barbybar.ui.main_window import BatchImportOutcome, BatchImportProgress, DataSetManagerDialog, DrawingPropertiesDialog, DrawingTemplateDialog, MainWindow, SessionLibraryDialog
+from barbybar.ui.main_window import (
+    BatchImportOutcome,
+    BatchImportProgress,
+    DataSetManagerDialog,
+    DrawingPropertiesDialog,
+    DrawingTemplateDialog,
+    MainWindow,
+    SessionLibraryDialog,
+    UpdateActionDialog,
+)
 from barbybar.update_service import UpdateInfo
 
 
@@ -831,14 +840,21 @@ def test_clicking_check_update_button_starts_update_check(window: MainWindow, mo
 
 
 def test_handle_update_check_finished_shows_latest_message(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
-    messages: list[str] = []
+    captured: dict[str, str] = {}
     window._active_update_check_token = 1
-    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *_args: messages.append(_args[2]))
+
+    def fake_notice(_title: str, heading: str, summary: str, detail: str = "") -> None:
+        captured["heading"] = heading
+        captured["summary"] = summary
+        captured["detail"] = detail
+
+    monkeypatch.setattr(window, "_show_update_notice", fake_notice)
 
     window._handle_update_check_finished(1, None)
 
-    assert messages
-    assert "当前已是最新版本" in messages[0]
+    assert captured["heading"] == "当前已是最新版本"
+    assert "暂时没有可下载的新版本" in captured["summary"]
+    assert captured["detail"] == ""
     assert window.check_update_button.isEnabled() is True
 
 
@@ -859,6 +875,34 @@ def test_handle_update_check_finished_starts_download_when_confirmed(window: Mai
     window._handle_update_check_finished(1, update_info)
 
     assert started == [update_info]
+
+
+def test_confirm_update_download_uses_custom_dialog(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Fix A\nFix B",
+        installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
+        installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
+    )
+    captured: dict[str, str] = {}
+
+    def fake_exec(self) -> int:
+        captured["heading"] = self.heading_label.text()
+        captured["summary"] = self.summary_label.text()
+        captured["detail"] = self.detail_text.toPlainText()
+        captured["accept_text"] = self.accept_button.text()
+        captured["cancel_text"] = self.cancel_button.text()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(UpdateActionDialog, "exec", fake_exec)
+
+    assert window._confirm_update_download(update_info) is True
+    assert captured["heading"] == "BarByBar 0.3.0 已可下载"
+    assert "当前版本" in captured["summary"]
+    assert "Fix A" in captured["detail"]
+    assert captured["accept_text"] == "开始下载"
+    assert captured["cancel_text"] == "暂不更新"
 
 
 def test_handle_update_download_finished_launches_installer_when_confirmed(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -923,6 +967,56 @@ def test_update_download_finished_signal_uses_pending_context_to_prompt_install(
     assert prompted == [("0.3.0", Path("C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe"))]
 
 
+def test_confirm_install_downloaded_update_uses_custom_dialog(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Bug fixes",
+        installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
+        installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
+    )
+    captured: dict[str, str] = {}
+
+    def fake_exec(self) -> int:
+        captured["heading"] = self.heading_label.text()
+        captured["summary"] = self.summary_label.text()
+        captured["detail"] = self.detail_text.toPlainText()
+        captured["accept_text"] = self.accept_button.text()
+        captured["cancel_text"] = self.cancel_button.text() if self.cancel_button is not None else ""
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(UpdateActionDialog, "exec", fake_exec)
+
+    assert window._confirm_install_downloaded_update(update_info, Path("C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")) is False
+    assert captured["heading"] == "0.3.0 已下载完成"
+    assert "关闭当前程序后将启动安装器" in captured["summary"]
+    assert "安装包：BarByBar-v0.3.0-windows-x64-setup.exe" in captured["detail"]
+    assert captured["accept_text"] == "立即安装"
+    assert captured["cancel_text"] == "稍后安装"
+
+
+def test_show_update_notice_uses_single_button_dialog(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_exec(self) -> int:
+        captured["heading"] = self.heading_label.text()
+        captured["summary"] = self.summary_label.text()
+        captured["detail"] = self.detail_text.toPlainText()
+        captured["accept_text"] = self.accept_button.text()
+        captured["has_cancel"] = "yes" if self.cancel_button is not None else "no"
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(UpdateActionDialog, "exec", fake_exec)
+
+    window._show_update_notice("检查更新失败", "未能完成更新检查", "请检查网络连接后重试。", "timeout")
+
+    assert captured["heading"] == "未能完成更新检查"
+    assert captured["summary"] == "请检查网络连接后重试。"
+    assert captured["detail"] == "timeout"
+    assert captured["accept_text"] == "知道了"
+    assert captured["has_cancel"] == "no"
+
+
 def test_update_download_progress_uses_compact_overlay_copy(window: MainWindow) -> None:
     long_name = "BarByBar-v0.3.0-windows-x64-super-long-installer-name-for-ui-regression-check-setup.exe"
     window.resize(480, 320)
@@ -972,6 +1066,38 @@ def test_update_download_progress_handles_indeterminate_total(window: MainWindow
     assert window._busy_overlay.progress_value_label.isHidden() is True
 
 
+def test_update_action_dialog_hides_detail_panel_when_empty() -> None:
+    dialog = UpdateActionDialog(
+        "安装更新",
+        "0.3.0 已下载完成",
+        "关闭当前程序后将启动安装器。",
+        "",
+        accept_text="立即安装",
+    )
+    try:
+        assert dialog.heading_label.text() == "0.3.0 已下载完成"
+        assert dialog.summary_label.text() == "关闭当前程序后将启动安装器。"
+        assert dialog.detail_text.isHidden() is True
+    finally:
+        dialog.close()
+
+
+def test_update_action_dialog_can_render_single_button_notice() -> None:
+    dialog = UpdateActionDialog(
+        "检查更新",
+        "当前已是最新版本",
+        "你当前使用的是 0.3.0。",
+        "",
+        accept_text="知道了",
+        cancel_text=None,
+    )
+    try:
+        assert dialog.accept_button.text() == "知道了"
+        assert dialog.cancel_button is None
+    finally:
+        dialog.close()
+
+
 def test_handle_update_download_finished_shows_error_and_stays_open_when_launch_fails(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     window._active_update_download_token = 1
     update_info = UpdateInfo(
@@ -982,17 +1108,19 @@ def test_handle_update_download_finished_shows_error_and_stays_open_when_launch_
         installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
     )
     window._pending_download_update_info = update_info
-    warnings: list[str] = []
+    warnings: list[tuple[str, str, str]] = []
     closed: list[bool] = []
     monkeypatch.setattr(window, "_confirm_install_downloaded_update", lambda info, path: True)
     monkeypatch.setattr(window, "_launch_installer", lambda path: (_ for _ in ()).throw(OSError("boom")))
     monkeypatch.setattr(window, "close", lambda: closed.append(True))
-    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.warning", lambda *_args: warnings.append(_args[2]))
+    monkeypatch.setattr(window, "_show_update_notice", lambda title, heading, summary, detail="": warnings.append((heading, summary, detail)))
 
     window._handle_update_download_finished(1, "C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe")
 
     assert warnings
-    assert "安装器启动失败" in warnings[0]
+    assert warnings[0][0] == "安装器未能启动"
+    assert "安装包路径" in warnings[0][1]
+    assert "boom" in warnings[0][2]
     assert closed == []
 
 

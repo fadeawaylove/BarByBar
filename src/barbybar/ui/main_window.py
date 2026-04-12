@@ -386,6 +386,92 @@ class UpdateDownloadWorker(QObject):
         self.finished.emit(self.task_id, str(downloaded_path))
 
 
+class UpdateActionDialog(QDialog):
+    def __init__(
+        self,
+        title: str,
+        heading: str,
+        summary: str,
+        detail: str = "",
+        *,
+        accept_text: str,
+        cancel_text: str | None = "稍后再说",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self.setStyleSheet(
+            "QDialog { background: #f6f8fb; }"
+            "QWidget#updateDialogCard {"
+            " background: #ffffff;"
+            " border: 1px solid #d8e1e8;"
+            " border-radius: 16px;"
+            "}"
+            "QPushButton { min-width: 104px; padding: 8px 14px; }"
+            "QPushButton[role='primary'] {"
+            " background: #1f6f8b;"
+            " color: white;"
+            " border: none;"
+            " border-radius: 8px;"
+            " font-weight: 600;"
+            "}"
+            "QPushButton[role='secondary'] {"
+            " background: #eef3f7;"
+            " color: #334155;"
+            " border: 1px solid #d8e1e8;"
+            " border-radius: 8px;"
+            "}"
+            "QTextEdit {"
+            " background: #f8fafc;"
+            " border: 1px solid #dbe4ec;"
+            " border-radius: 10px;"
+            " color: #334155;"
+            " padding: 6px;"
+            "}"
+        )
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(16, 16, 16, 16)
+        card = QWidget(self)
+        card.setObjectName("updateDialogCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(20, 18, 20, 18)
+        card_layout.setSpacing(10)
+
+        eyebrow = QLabel(title)
+        eyebrow.setStyleSheet("font-size: 11px; font-weight: 600; color: #5b7083; letter-spacing: 0.4px;")
+        self.heading_label = QLabel(heading)
+        self.heading_label.setWordWrap(True)
+        self.heading_label.setStyleSheet("font-size: 18px; font-weight: 700; color: #16202a;")
+        self.summary_label = QLabel(summary)
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet("font-size: 13px; color: #425466; line-height: 1.4;")
+        self.detail_text = QTextEdit()
+        self.detail_text.setReadOnly(True)
+        self.detail_text.setPlainText(detail)
+        self.detail_text.setVisible(bool(detail.strip()))
+        self.detail_text.setMinimumHeight(140 if detail.strip() else 0)
+
+        buttons = QDialogButtonBox(self)
+        self.accept_button = buttons.addButton(accept_text, QDialogButtonBox.ButtonRole.AcceptRole)
+        self.accept_button.setProperty("role", "primary")
+        self.accept_button.clicked.connect(self.accept)
+        self.cancel_button: QPushButton | None = None
+        if cancel_text:
+            self.cancel_button = buttons.addButton(cancel_text, QDialogButtonBox.ButtonRole.RejectRole)
+            self.cancel_button.setProperty("role", "secondary")
+            self.cancel_button.clicked.connect(self.reject)
+
+        card_layout.addWidget(eyebrow)
+        card_layout.addWidget(self.heading_label)
+        card_layout.addWidget(self.summary_label)
+        card_layout.addWidget(self.detail_text)
+        card_layout.addWidget(buttons)
+        root_layout.addWidget(card)
+
+
 class ColumnMappingDialog(QDialog):
     def __init__(
         self,
@@ -2288,20 +2374,40 @@ class MainWindow(QMainWindow):
 
     def _confirm_update_download(self, update_info: UpdateInfo) -> bool:
         detail = self._format_release_notes(update_info.release_notes)
-        answer = QMessageBox.question(
-            self,
+        dialog = UpdateActionDialog(
             "发现新版本",
-            f"当前版本：{__version__}\n最新版本：{update_info.version}\n\n更新说明：\n{detail}\n\n是否开始下载更新安装包？",
+            f"BarByBar {update_info.version} 已可下载",
+            f"当前版本 {__version__}。现在开始下载更新安装包，下载完成后你可以选择是否立即安装。",
+            detail,
+            accept_text="开始下载",
+            cancel_text="暂不更新",
+            parent=self,
         )
-        return answer == QMessageBox.StandardButton.Yes
+        return dialog.exec() == QDialog.DialogCode.Accepted
 
     def _confirm_install_downloaded_update(self, update_info: UpdateInfo, installer_path: Path) -> bool:
-        answer = QMessageBox.question(
-            self,
+        dialog = UpdateActionDialog(
             "安装更新",
-            f"已下载完成：{installer_path.name}\n是否立即关闭程序并启动安装器更新到 {update_info.version}？",
+            f"{update_info.version} 已下载完成",
+            "关闭当前程序后将启动安装器。安装完成后再重新打开 BarByBar 即可继续使用。",
+            f"安装包：{installer_path.name}\n目标版本：{update_info.version}",
+            accept_text="立即安装",
+            cancel_text="稍后安装",
+            parent=self,
         )
-        return answer == QMessageBox.StandardButton.Yes
+        return dialog.exec() == QDialog.DialogCode.Accepted
+
+    def _show_update_notice(self, title: str, heading: str, summary: str, detail: str = "") -> None:
+        dialog = UpdateActionDialog(
+            title,
+            heading,
+            summary,
+            detail,
+            accept_text="知道了",
+            cancel_text=None,
+            parent=self,
+        )
+        dialog.exec()
 
     def _launch_installer(self, installer_path: Path) -> None:
         logger.info("event=launch_installer_start path={}", installer_path)
@@ -2310,7 +2416,7 @@ class MainWindow(QMainWindow):
 
     def _start_update_check(self) -> None:
         if self._active_update_check_thread is not None or self._active_update_download_thread is not None:
-            QMessageBox.information(self, "检查更新", "已有更新任务正在进行，请稍候。")
+            self._show_update_notice("检查更新", "更新任务正在进行中", "当前已有检查或下载任务，请稍候完成后再试。")
             return
         self._active_update_check_token += 1
         token = self._active_update_check_token
@@ -2369,7 +2475,7 @@ class MainWindow(QMainWindow):
         self._set_update_button_state(True)
         update_info = payload if isinstance(payload, UpdateInfo) else None
         if update_info is None:
-            QMessageBox.information(self, "检查更新", f"当前已是最新版本：{__version__}")
+            self._show_update_notice("检查更新", "当前已是最新版本", f"你当前使用的是 {__version__}，暂时没有可下载的新版本。")
             return
         if not self._confirm_update_download(update_info):
             return
@@ -2381,7 +2487,7 @@ class MainWindow(QMainWindow):
             return
         self.hide_busy_overlay()
         self._set_update_button_state(True)
-        QMessageBox.warning(self, "检查更新失败", message)
+        self._show_update_notice("检查更新失败", "未能完成更新检查", "请检查网络连接后重试。", message)
 
     @Slot()
     def _handle_update_check_thread_finished(self) -> None:
@@ -2407,7 +2513,7 @@ class MainWindow(QMainWindow):
         self._pending_download_update_info = None
         if update_info is None:
             logger.warning("event=update_download_finished_missing_context token={}", token)
-            QMessageBox.warning(self, "下载更新失败", "下载已完成，但缺少安装上下文，请重新检查更新。")
+            self._show_update_notice("下载更新失败", "下载结果缺少安装信息", "安装上下文已丢失，请重新检查更新并再次下载。")
             return
         path = Path(installer_path)
         logger.info("event=update_download_confirm_prompt token={} version={} path={}", token, update_info.version, path)
@@ -2419,7 +2525,7 @@ class MainWindow(QMainWindow):
             self._launch_installer(path)
         except OSError as exc:
             logger.exception("event=launch_installer_failed path={} error={}", path, str(exc))
-            QMessageBox.warning(self, "安装更新失败", f"安装器启动失败：{path}\n\n{exc}")
+            self._show_update_notice("安装更新失败", "安装器未能启动", f"安装包路径：{path}", str(exc))
             return
         self.close()
 
@@ -2430,7 +2536,7 @@ class MainWindow(QMainWindow):
         self._pending_download_update_info = None
         self.hide_busy_overlay()
         self._set_update_button_state(True)
-        QMessageBox.warning(self, "下载更新失败", message)
+        self._show_update_notice("下载更新失败", "下载更新未完成", "安装包下载失败，请稍后重试。", message)
 
     @Slot()
     def _handle_update_download_thread_finished(self) -> None:
