@@ -923,6 +923,55 @@ def test_update_download_finished_signal_uses_pending_context_to_prompt_install(
     assert prompted == [("0.3.0", Path("C:/tmp/BarByBar-v0.3.0-windows-x64-setup.exe"))]
 
 
+def test_update_download_progress_uses_compact_overlay_copy(window: MainWindow) -> None:
+    long_name = "BarByBar-v0.3.0-windows-x64-super-long-installer-name-for-ui-regression-check-setup.exe"
+    window.resize(480, 320)
+    window.show_busy_overlay("初始", "准备中")
+    window._active_update_download_token = 1
+    window._pending_download_update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Bug fixes",
+        installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
+        installer_name=long_name,
+        asset_size=4096,
+    )
+
+    window._handle_update_download_progress(1, 1536, 4096)
+
+    assert window._busy_overlay is not None
+    assert window._busy_overlay.title_label.text() == "下载更新"
+    assert window._busy_overlay.detail_label.text() == "正在下载 v0.3.0"
+    assert window._busy_overlay.meta_label.text() == "1.5 KB / 4.0 KB"
+    assert window._busy_overlay.progress.maximum() == 4096
+    assert window._busy_overlay.progress.value() == 1536
+    assert window._busy_overlay.progress_value_label.text() == "37%"
+    assert long_name not in window._busy_overlay.detail_label.text()
+    assert window._busy_overlay.filename_label.toolTip() == long_name
+    assert window._busy_overlay.filename_label.text() != long_name
+
+
+def test_update_download_progress_handles_indeterminate_total(window: MainWindow) -> None:
+    window.show_busy_overlay("初始", "准备中")
+    window._active_update_download_token = 1
+    window._pending_download_update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Bug fixes",
+        installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
+        installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
+    )
+
+    window._handle_update_download_progress(1, 0, 0)
+
+    assert window._busy_overlay is not None
+    assert window._busy_overlay.detail_label.text() == "正在下载 v0.3.0"
+    assert window._busy_overlay.meta_label.text() == "正在准备下载"
+    assert window._busy_overlay.progress.minimum() == 0
+    assert window._busy_overlay.progress.maximum() == 0
+    assert window._busy_overlay.progress_value_label.isHidden() is True
+
+
 def test_handle_update_download_finished_shows_error_and_stays_open_when_launch_fails(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     window._active_update_download_token = 1
     update_info = UpdateInfo(
@@ -1674,12 +1723,15 @@ def test_busy_overlay_becomes_visible_when_window_is_shown(window: MainWindow, a
     assert window._busy_overlay.isVisible()
 
 
-def test_busy_overlay_covers_entire_main_workspace(window: MainWindow) -> None:
+def test_busy_overlay_is_a_top_banner_within_main_workspace(window: MainWindow) -> None:
     window.resize(1400, 900)
     window.show_busy_overlay("正在加载案例...", "正在读取数据并构建图表")
 
     assert window._busy_overlay is not None
-    assert window._busy_overlay.geometry() == window.centralWidget().rect()
+    assert window._busy_overlay.geometry().x() == 0
+    assert window._busy_overlay.geometry().y() == 0
+    assert window._busy_overlay.geometry().width() == window.centralWidget().width()
+    assert window._busy_overlay.geometry().height() < window.centralWidget().height()
 
 
 def test_set_timeframe_choices_does_not_trigger_replay_bar_loading(window: MainWindow, monkeypatch) -> None:

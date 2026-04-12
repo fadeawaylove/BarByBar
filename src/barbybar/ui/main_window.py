@@ -103,44 +103,113 @@ class BusyOverlay(QWidget):
         super().__init__(parent)
         self.setObjectName("busyOverlay")
         self.setStyleSheet(
-            "#busyOverlay { background: rgba(246, 248, 251, 180); }"
-            "#busyCard { background: rgba(255,255,255,245); border: 1px solid #d9e0e6; border-radius: 10px; }"
+            "#busyOverlay { background: transparent; }"
+            "#busyCard {"
+            " background: rgba(255,255,255,252);"
+            " border: 1px solid #d8e1e8;"
+            " border-radius: 14px;"
+            "}"
         )
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._filename_text = ""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addStretch(1)
+        layout.setContentsMargins(18, 18, 18, 0)
         self.card = QWidget(self)
         self.card.setObjectName("busyCard")
         card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(20, 16, 20, 16)
-        card_layout.setSpacing(8)
+        card_layout.setContentsMargins(18, 14, 18, 14)
+        card_layout.setSpacing(6)
         self.title_label = QLabel("正在处理...")
-        self.title_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #2c2c2c;")
+        self.title_label.setStyleSheet("font-size: 14px; font-weight: 700; color: #16202a;")
         self.detail_label = QLabel("")
         self.detail_label.setWordWrap(True)
         self.detail_label.setStyleSheet("font-size: 12px; color: #4f5b66;")
+        self.meta_label = QLabel("")
+        self.meta_label.setStyleSheet("font-size: 11px; color: #64748b;")
+        self.meta_label.setVisible(False)
+        self.filename_label = QLabel("")
+        self.filename_label.setStyleSheet("font-size: 11px; color: #8a99a8;")
+        self.filename_label.setVisible(False)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(10)
+        self.progress.setStyleSheet(
+            "QProgressBar {"
+            " background: #e7edf2;"
+            " border: none;"
+            " border-radius: 5px;"
+            "}"
+            "QProgressBar::chunk {"
+            " background: #2f6f86;"
+            " border-radius: 5px;"
+            "}"
+        )
+        self.progress_value_label = QLabel("")
+        self.progress_value_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #16202a;")
+        self.progress_value_label.setVisible(False)
+        progress_row = QHBoxLayout()
+        progress_row.setContentsMargins(0, 0, 0, 0)
+        progress_row.setSpacing(12)
+        progress_row.addWidget(self.progress, 1)
+        progress_row.addWidget(self.progress_value_label, alignment=Qt.AlignmentFlag.AlignVCenter)
         card_layout.addWidget(self.title_label)
         card_layout.addWidget(self.detail_label)
-        card_layout.addWidget(self.progress)
-        layout.addWidget(self.card, alignment=Qt.AlignmentFlag.AlignCenter)
-        layout.addStretch(1)
+        card_layout.addWidget(self.meta_label)
+        card_layout.addLayout(progress_row)
+        card_layout.addWidget(self.filename_label)
+        layout.addWidget(self.card, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        self._update_card_width()
         self.hide()
 
     def set_message(self, title: str, detail: str = "") -> None:
         self.title_label.setText(title)
         self.detail_label.setText(detail)
         self.detail_label.setVisible(bool(detail))
+        self.set_auxiliary_text()
+
+    def set_auxiliary_text(self, meta: str = "", filename: str = "") -> None:
+        self.meta_label.setText(meta)
+        self.meta_label.setVisible(bool(meta))
+        self._filename_text = filename
+        self._refresh_filename_text()
 
     def set_indeterminate(self) -> None:
         self.progress.setRange(0, 0)
         self.progress.setValue(0)
+        self.progress_value_label.clear()
+        self.progress_value_label.setVisible(False)
 
     def set_progress(self, current: int, total: int) -> None:
         self.progress.setRange(0, max(total, 1))
-        self.progress.setValue(max(0, min(current, max(total, 1))))
+        safe_total = max(total, 1)
+        safe_current = max(0, min(current, safe_total))
+        self.progress.setValue(safe_current)
+        percent = int((safe_current / safe_total) * 100) if safe_total > 0 else 0
+        self.progress_value_label.setText(f"{percent}%")
+        self.progress_value_label.setVisible(True)
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001
+        super().resizeEvent(event)
+        self._update_card_width()
+        self._refresh_filename_text()
+
+    def _update_card_width(self) -> None:
+        card_width = max(320, min(self.width() - 36, 560))
+        self.card.setFixedWidth(card_width)
+
+    def _refresh_filename_text(self) -> None:
+        available_width = max(self.card.width() - 36, 80)
+        if self._filename_text:
+            metrics = self.filename_label.fontMetrics()
+            elided = metrics.elidedText(self._filename_text, Qt.TextElideMode.ElideMiddle, available_width)
+            self.filename_label.setText(elided)
+            self.filename_label.setToolTip(self._filename_text)
+            self.filename_label.setVisible(True)
+            return
+        self.filename_label.clear()
+        self.filename_label.setToolTip("")
+        self.filename_label.setVisible(False)
 
 
 class BatchImportWorker(QObject):
@@ -2171,13 +2240,41 @@ class MainWindow(QMainWindow):
     def _resize_busy_overlay(self) -> None:
         if self._busy_overlay and self.centralWidget():
             self._log_ui_thread("resize_busy_overlay")
-            self._busy_overlay.setGeometry(self.centralWidget().rect())
+            overlay_height = min(148, self.centralWidget().height())
+            self._busy_overlay.setGeometry(0, 0, self.centralWidget().width(), overlay_height)
 
     def _set_update_button_state(self, enabled: bool, text: str | None = None) -> None:
         if self.check_update_button is None:
             return
         self.check_update_button.setEnabled(enabled)
         self.check_update_button.setText(text or "检查更新")
+
+    @staticmethod
+    def _format_byte_size(value: int) -> str:
+        units = ["B", "KB", "MB", "GB"]
+        size = float(max(value, 0))
+        unit_index = 0
+        while size >= 1024 and unit_index < len(units) - 1:
+            size /= 1024
+            unit_index += 1
+        if unit_index == 0:
+            return f"{int(size)} {units[unit_index]}"
+        return f"{size:.1f} {units[unit_index]}"
+
+    def _set_update_download_overlay_state(self, update_info: UpdateInfo, current: int, total: int) -> None:
+        if self._busy_overlay is None:
+            return
+        version_label = update_info.tag or update_info.version
+        self._busy_overlay.set_message("下载更新", f"正在下载 {version_label}")
+        if total > 0:
+            self._busy_overlay.set_progress(current, total)
+            self._busy_overlay.set_auxiliary_text(
+                f"{self._format_byte_size(current)} / {self._format_byte_size(total)}",
+                update_info.installer_name,
+            )
+            return
+        self._busy_overlay.set_indeterminate()
+        self._busy_overlay.set_auxiliary_text("正在准备下载", update_info.installer_name)
 
     def _format_release_notes(self, notes: str) -> str:
         stripped = notes.strip()
@@ -2244,9 +2341,9 @@ class MainWindow(QMainWindow):
         self._pending_download_update_info = update_info
         logger.info("event=start_update_download token={} version={} path={}", token, update_info.version, target_path)
         self._set_update_button_state(False, "下载中...")
-        self.show_busy_overlay("下载更新", f"正在下载 {update_info.installer_name}")
+        self.show_busy_overlay("下载更新", f"正在下载 {update_info.tag or update_info.version}")
         if self._busy_overlay is not None:
-            self._busy_overlay.set_progress(0, max(update_info.asset_size or 1, 1))
+            self._set_update_download_overlay_state(update_info, 0, max(update_info.asset_size or 0, 0))
         thread = QThread(self)
         worker = UpdateDownloadWorker(token, update_info, target_path)
         worker.moveToThread(thread)
@@ -2295,13 +2392,9 @@ class MainWindow(QMainWindow):
     def _handle_update_download_progress(self, token: int, current: int, total: int) -> None:
         if token != self._active_update_download_token:
             return
-        if self._busy_overlay is not None:
-            if total > 0:
-                self._busy_overlay.set_progress(current, total)
-                self._busy_overlay.set_message("下载更新", f"正在下载... {current}/{total}")
-            else:
-                self._busy_overlay.set_indeterminate()
-                self._busy_overlay.set_message("下载更新", "正在下载...")
+        update_info = self._pending_download_update_info
+        if self._busy_overlay is not None and update_info is not None:
+            self._set_update_download_overlay_state(update_info, current, total)
 
     @Slot(int, str)
     def _handle_update_download_finished(self, token: int, installer_path: str) -> None:
