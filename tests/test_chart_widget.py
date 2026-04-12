@@ -684,9 +684,10 @@ def test_price_label_is_positioned_on_right_axis_side(widget: ChartWidget) -> No
 
 
 class _FakeSceneClick:
-    def __init__(self, scene_pos: QPointF, button: Qt.MouseButton = Qt.MouseButton.LeftButton) -> None:
+    def __init__(self, scene_pos: QPointF, button: Qt.MouseButton = Qt.MouseButton.LeftButton, *, double: bool = False) -> None:
         self._scene_pos = scene_pos
         self._button = button
+        self._double = double
         self.accepted = False
 
     def button(self):
@@ -694,6 +695,9 @@ class _FakeSceneClick:
 
     def scenePos(self):
         return self._scene_pos
+
+    def double(self):
+        return self._double
 
     def accept(self) -> None:
         self.accepted = True
@@ -737,6 +741,22 @@ class _FakeDragEvent:
 
     def ignore(self) -> None:
         self.ignored = True
+
+
+class _FakeDoubleClickEvent:
+    def __init__(self, scene_pos: QPointF, button: Qt.MouseButton = Qt.MouseButton.LeftButton) -> None:
+        self._scene_pos = scene_pos
+        self._button = button
+        self.accepted = False
+
+    def button(self):
+        return self._button
+
+    def scenePos(self):
+        return self._scene_pos
+
+    def accept(self) -> None:
+        self.accepted = True
 
 
 def _y_axis_drag_scene_pos(widget: ChartWidget, price: float) -> QPointF:
@@ -862,6 +882,26 @@ def test_mouse_move_into_x_axis_region_exits_hover_mode(widget: ChartWidget, app
     assert widget._h_line.isVisible() is False
 
 
+def test_axis_price_label_region_exits_hover_mode(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    app.processEvents()
+
+    plot_pos = widget.price_plot.vb.mapViewToScene(QPointF(10, 100))
+    widget._handle_mouse_moved((plot_pos,))
+    label_center = widget._axis_price_label.geometry().center()
+    widget._sync_axis_hover_state_from_widget_pos(label_center)
+
+    assert widget._mouse_on_axis is True
+    assert widget._mouse_in_y_axis_gutter is True
+    assert widget.cursor().shape() == Qt.CursorShape.ArrowCursor
+    assert widget._hover_target.target_type is HoverTargetType.NONE
+    assert widget._v_line.isVisible() is False
+    assert widget._h_line.isVisible() is False
+
+
 def test_mouse_move_leaving_y_axis_gutter_restores_crosshair(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -961,6 +1001,37 @@ def test_reset_viewport_clears_manual_y_range(widget: ChartWidget, app: QApplica
 
     assert widget._y_axis_offset == pytest.approx(0.0)
     assert widget.price_plot.viewRange()[1] == pytest.approx(auto_y_range)
+
+
+def test_double_click_y_axis_only_clears_y_offset(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.pan_x(-30)
+    app.processEvents()
+    auto_y_range = widget.price_plot.viewRange()[1]
+    old_right = widget.viewport_state.right_edge_index
+    old_follow_latest = widget.viewport_state.follow_latest
+    old_x_range = widget.current_x_range()
+
+    start = _y_axis_drag_scene_pos(widget, 100.0)
+    move = start + QPointF(0.0, -40.0)
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert widget._y_axis_offset != pytest.approx(0.0)
+
+    event = _FakeSceneClick(_y_axis_drag_scene_pos(widget, 100.0), double=True)
+    widget._handle_scene_click(event)
+
+    assert event.accepted is True
+    assert widget._y_axis_offset == pytest.approx(0.0)
+    assert widget.price_plot.viewRange()[1] == pytest.approx(auto_y_range)
+    assert widget.viewport_state.right_edge_index == pytest.approx(old_right)
+    assert widget.viewport_state.follow_latest is old_follow_latest
+    assert widget.current_x_range() == pytest.approx(old_x_range)
 
 
 def test_set_cursor_preserves_y_offset_and_refits_visible_bars(widget: ChartWidget, app: QApplication) -> None:

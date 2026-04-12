@@ -7,7 +7,7 @@ from math import ceil, floor, hypot, sqrt
 
 import pyqtgraph as pg
 from loguru import logger
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPicture, QPolygonF
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsPathItem, QLabel, QLayout, QMenu, QVBoxLayout, QWidget
 
@@ -304,10 +304,6 @@ class CandleViewBox(pg.ViewBox):
         self.chart.pan_x(last.x() - current.x())
 
     def mouseDoubleClickEvent(self, ev: QMouseEvent) -> None:
-        if ev.button() == Qt.MouseButton.LeftButton:
-            self.chart.reset_viewport(follow_latest=True)
-            ev.accept()
-            return
         super().mouseDoubleClickEvent(ev)
 
 
@@ -446,6 +442,10 @@ class ChartWidget(QWidget):
         layout.addWidget(self.graphics)
         self._build_hover_card()
         self._build_axis_price_label()
+        self.setMouseTracking(True)
+        self.graphics.setMouseTracking(True)
+        self._axis_price_label.setMouseTracking(True)
+        self._axis_price_label.installEventFilter(self)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.graphics.scene().sigMouseClicked.connect(self._handle_scene_click)
         self._mouse_proxy = pg.SignalProxy(self.graphics.scene().sigMouseMoved, rateLimit=60, slot=self._handle_mouse_moved)
@@ -743,6 +743,10 @@ class ChartWidget(QWidget):
         self._viewport.follow_latest = follow_latest
         self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         self._viewport.right_edge_index = self._cursor + 1 if self._cursor >= 0 else 0.0
+        self._reset_y_axis_offset()
+        self._apply_viewport()
+
+    def reset_y_axis_offset(self) -> None:
         self._reset_y_axis_offset()
         self._apply_viewport()
 
@@ -1219,16 +1223,27 @@ class ChartWidget(QWidget):
     def _handle_scene_click(self, event) -> None:  # noqa: ANN001
         scene_pos = event.scenePos()
         in_chart = bool(self.price_plot.sceneBoundingRect().contains(scene_pos))
+        is_double = bool(event.double()) if hasattr(event, "double") else False
         if in_chart and not self._is_dragging:
             self._apply_hover_target(self._compute_hover_target(scene_pos))
         self._log_interaction(
             "scene_click_received",
             button=str(event.button()),
+            double=is_double,
             in_chart=in_chart,
             scene_x=round(float(scene_pos.x()), 3),
             scene_y=round(float(scene_pos.y()), 3),
             pending_anchors=len(self._pending_drawing_anchors),
         )
+        if event.button() == Qt.MouseButton.LeftButton and is_double:
+            if self._is_in_y_axis_drag_gutter(scene_pos):
+                self.reset_y_axis_offset()
+                event.accept()
+                return
+            if self._data_scene_rect().contains(scene_pos):
+                self.reset_viewport(follow_latest=True)
+                event.accept()
+                return
         if (
             event.button() == Qt.MouseButton.LeftButton
             and self._suppress_next_left_click
@@ -3071,6 +3086,29 @@ class ChartWidget(QWidget):
         self.setCursor(cursor)
         self.graphics.setCursor(cursor)
         self._log_interaction("sync_cursor", cursor=str(cursor))
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self._sync_axis_hover_state_from_widget_pos(event.position())
+        super().mouseMoveEvent(event)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
+        if obj is self._axis_price_label and event.type() == QEvent.Type.MouseMove:
+            self._sync_axis_hover_state_from_widget_pos(self._axis_price_label.mapTo(self, event.position().toPoint()))
+        return super().eventFilter(obj, event)
+
+    def _sync_axis_hover_state_from_widget_pos(self, pos) -> None:  # noqa: ANN001
+        local_point = QPointF(float(pos.x()), float(pos.y()))
+        in_label = self._axis_price_label.isVisible() and self._axis_price_label.geometry().contains(int(local_point.x()), int(local_point.y()))
+        scene_pos = self.graphics.mapToScene(int(local_point.x()), int(local_point.y()))
+        in_y_axis_gutter = in_label or self._is_in_y_axis_drag_gutter(scene_pos)
+        on_axis = in_label or self._is_in_axis_region(scene_pos)
+        if not on_axis:
+            return
+        self._mouse_in_y_axis_gutter = in_y_axis_gutter
+        self._mouse_on_axis = on_axis
+        self._apply_hover_target(self._empty_hover_target(scene_pos=scene_pos))
+        self._hide_crosshair(preserve_axis_label=False)
+        self._sync_cursor()
 
     def _log_interaction(self, event: str, **fields) -> None:
         payload = {
