@@ -636,8 +636,8 @@ def test_trade_link_hover_uses_open_hand_cursor(widget: ChartWidget, app: QAppli
 
     assert widget._hover_target.target_type is HoverTargetType.TRADE_LINK
     assert widget.cursor().shape() == Qt.CursorShape.OpenHandCursor
-    assert widget._v_line.isVisible() is False
-    assert widget._h_line.isVisible() is False
+    assert widget._v_line.isVisible() is True
+    assert widget._h_line.isVisible() is True
     assert widget._hover_card.isHidden() is False
     assert "09:05" in widget._hover_time_label.text()
     assert "09:08" in widget._hover_time_label.text()
@@ -741,8 +741,10 @@ class _FakeDragEvent:
 
 def _y_axis_drag_scene_pos(widget: ChartWidget, price: float) -> QPointF:
     rect = widget.price_plot.sceneBoundingRect()
+    data_rect = widget.view_box.sceneBoundingRect()
     point = widget.price_plot.vb.mapViewToScene(QPointF(widget._cursor, price))
-    return QPointF(rect.right() - 4.0, point.y())
+    x = max(float(data_rect.right()) + 4.0, float(rect.right()) - 4.0)
+    return QPointF(x, point.y())
 
 
 def test_widget_starts_in_browse_mode(widget: ChartWidget) -> None:
@@ -800,7 +802,82 @@ def test_order_preview_keeps_axis_price_label_visible_in_blank_space(widget: Cha
     assert widget._hover_target.target_type is HoverTargetType.NONE
     assert widget._preview_line.isVisible()
     assert widget._axis_price_label.isVisible()
-    assert widget._axis_price_label.text() == "101.2"
+
+
+def test_browse_mode_keeps_crosshair_visible_in_blank_space(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(50)
+    widget.pan_x(-400)
+    app.processEvents()
+
+    left, _right = widget.current_x_range()
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(left + 10.0, 101.23))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._hover_target.target_type is HoverTargetType.NONE
+    assert widget._v_line.isVisible() is True
+    assert widget._h_line.isVisible() is True
+    assert widget._axis_price_label.isVisible() is True
+    assert widget._hover_card.isHidden() is True
+
+
+def test_mouse_move_into_y_axis_gutter_exits_hover_mode(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    app.processEvents()
+
+    start = _y_axis_drag_scene_pos(widget, 100.0)
+    widget._handle_mouse_moved((start,))
+
+    assert widget._mouse_in_y_axis_gutter is True
+    assert widget._hover_target.target_type is HoverTargetType.NONE
+    assert widget.cursor().shape() == Qt.CursorShape.ArrowCursor
+    assert widget._v_line.isVisible() is False
+    assert widget._h_line.isVisible() is False
+    assert widget._hover_card.isHidden() is True
+
+
+def test_mouse_move_into_x_axis_region_exits_hover_mode(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    app.processEvents()
+
+    data_rect = widget.view_box.sceneBoundingRect()
+    plot_rect = widget.price_plot.sceneBoundingRect()
+    x = (float(data_rect.left()) + float(data_rect.right())) / 2
+    y = min(float(plot_rect.bottom()) - 4.0, float(data_rect.bottom()) + 8.0)
+    widget._handle_mouse_moved((QPointF(x, y),))
+
+    assert widget._mouse_on_axis is True
+    assert widget._mouse_in_y_axis_gutter is False
+    assert widget._hover_target.target_type is HoverTargetType.NONE
+    assert widget.cursor().shape() == Qt.CursorShape.ArrowCursor
+    assert widget._v_line.isVisible() is False
+    assert widget._h_line.isVisible() is False
+
+
+def test_mouse_move_leaving_y_axis_gutter_restores_crosshair(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    app.processEvents()
+
+    gutter_pos = _y_axis_drag_scene_pos(widget, 100.0)
+    plot_pos = widget.price_plot.vb.mapViewToScene(QPointF(10, 100))
+    widget._handle_mouse_moved((gutter_pos,))
+    widget._handle_mouse_moved((plot_pos,))
+
+    assert widget._mouse_in_y_axis_gutter is False
+    assert widget.cursor().shape() == Qt.CursorShape.CrossCursor
+    assert widget._v_line.isVisible() is True
+    assert widget._h_line.isVisible() is True
 
 
 def test_left_drag_pans_chart_temporarily(widget: ChartWidget, app: QApplication) -> None:

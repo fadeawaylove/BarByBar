@@ -387,6 +387,8 @@ class ChartWidget(QWidget):
         self._hovered_order_line_id: int | None = None
         self._hover_target = HoverTarget()
         self._active_drag_target = ActiveDragTarget()
+        self._mouse_on_axis = False
+        self._mouse_in_y_axis_gutter = False
         self._y_axis_offset = 0.0
         self._y_axis_drag_active = False
         self._y_axis_drag_start_scene_y: float | None = None
@@ -1301,12 +1303,18 @@ class ChartWidget(QWidget):
 
     def _handle_mouse_moved(self, event) -> None:  # noqa: ANN001
         pos = event[0]
+        self._mouse_in_y_axis_gutter = self._is_in_y_axis_drag_gutter(pos)
+        self._mouse_on_axis = self._is_in_axis_region(pos)
         if self._is_dragging:
             self._log_interaction("mouse_move_skipped_dragging")
         else:
-            self._apply_hover_target(self._compute_hover_target(pos))
+            if self._mouse_on_axis:
+                point = self.price_plot.vb.mapSceneToView(pos) if self._plot_scene_rect().contains(pos) else None
+                self._apply_hover_target(self._empty_hover_target(scene_pos=pos, view_pos=point))
+            else:
+                self._apply_hover_target(self._compute_hover_target(pos))
         if self._active_drawing_tool is not None:
-            if self.price_plot.sceneBoundingRect().contains(pos):
+            if self._data_scene_rect().contains(pos):
                 point = self.price_plot.vb.mapSceneToView(pos)
                 anchor = self._normalized_drawing_anchor(DrawingAnchor(float(point.x()), float(point.y())))
                 self._drawing_preview_anchor = anchor
@@ -1329,8 +1337,13 @@ class ChartWidget(QWidget):
         ):
             self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
             return
-        if not self.price_plot.sceneBoundingRect().contains(pos):
+        if not self._plot_scene_rect().contains(pos):
+            self._mouse_in_y_axis_gutter = False
+            self._mouse_on_axis = False
             self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
+            return
+        if self._mouse_on_axis:
+            self._hide_crosshair(preserve_axis_label=False)
             return
         point = self._hover_target.view_pos or self.price_plot.vb.mapSceneToView(pos)
         self._last_hover_price = self._snap_price(float(point.y()))
@@ -1344,6 +1357,7 @@ class ChartWidget(QWidget):
             self._preview_line.setPos(self._last_hover_price)
             self._preview_line.show()
             self._show_axis_price_label(self._last_hover_price)
+        self._update_crosshair(float(point.x()), point.y())
         if self._hover_target.target_type is HoverTargetType.TRADE_MARKER and self._hover_target.trade_marker is not None:
             marker = self._hover_target.trade_marker
             hover_price = marker.y
@@ -1353,11 +1367,10 @@ class ChartWidget(QWidget):
             return
         if self._hover_target.target_type is HoverTargetType.TRADE_LINK and self._hover_target.trade_link is not None:
             link = self._hover_target.trade_link
-            self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
             self._update_trade_hover_info(link.detail_lines)
             return
         if self._hover_target.target_type is not HoverTargetType.BAR or self._hover_target.bar is None or self._hover_target.bar_index is None:
-            self._hide_crosshair(preserve_axis_label=self._native_order_drag_active or self._preview_order_type is not None)
+            self._hover_card.hide()
             return
         index, bar = self._hover_target.bar_index, self._hover_target.bar
         self._log_interaction("hover_active", hover_index=index, hover_price=round(float(point.y()), 3))
@@ -1434,11 +1447,23 @@ class ChartWidget(QWidget):
     def _plot_scene_rect(self):
         return self.price_plot.sceneBoundingRect()
 
+    def _data_scene_rect(self):
+        return self.view_box.sceneBoundingRect()
+
+    def _is_in_axis_region(self, scene_pos) -> bool:  # noqa: ANN001
+        plot_rect = self._plot_scene_rect()
+        data_rect = self._data_scene_rect()
+        return bool(plot_rect.contains(scene_pos) and not data_rect.contains(scene_pos))
+
     def _is_in_y_axis_drag_gutter(self, scene_pos) -> bool:  # noqa: ANN001
-        rect = self._plot_scene_rect()
-        if not rect.contains(scene_pos):
+        plot_rect = self._plot_scene_rect()
+        data_rect = self._data_scene_rect()
+        if not plot_rect.contains(scene_pos):
             return False
-        return float(scene_pos.x()) >= float(rect.right()) - Y_AXIS_DRAG_GUTTER_WIDTH_PX
+        if float(scene_pos.y()) < float(data_rect.top()) or float(scene_pos.y()) > float(data_rect.bottom()):
+            return False
+        gutter_left = max(float(data_rect.right()), float(plot_rect.right()) - Y_AXIS_DRAG_GUTTER_WIDTH_PX)
+        return float(scene_pos.x()) >= gutter_left
 
     def handle_y_axis_drag_event(self, ev) -> bool:  # noqa: ANN001
         if ev.button() != Qt.MouseButton.LeftButton or self._active_drawing_tool is not None:
@@ -3029,6 +3054,8 @@ class ChartWidget(QWidget):
     def _sync_cursor(self) -> None:
         if self._is_dragging:
             cursor = Qt.CursorShape.ClosedHandCursor
+        elif self._mouse_on_axis:
+            cursor = Qt.CursorShape.ArrowCursor
         elif self._hover_target.target_type is HoverTargetType.ORDER_LINE:
             cursor = Qt.CursorShape.SizeVerCursor
         elif self._hover_target.target_type in {
