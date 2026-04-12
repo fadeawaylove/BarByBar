@@ -35,9 +35,12 @@ DRAWING_HIT_DISTANCE_PX = 10.0
 DRAWING_ANCHOR_HIT_DISTANCE_PX = 12.0
 TRADE_MARKER_HIT_DISTANCE_PX = 12.0
 ORDER_LINE_HIT_DISTANCE_PX = 16.0
-TRADE_LINK_WIN_COLOR = "#1f8b24"
-TRADE_LINK_LOSS_COLOR = "#d84a4a"
-TRADE_CLOSE_MARKER_COLOR = "#5f6b7a"
+TRADE_LINK_WIN_COLOR = "#d84a4a"
+TRADE_LINK_LOSS_COLOR = "#1f8b24"
+TRADE_LINK_FLAT_COLOR = "#5f6b7a"
+TRADE_ENTRY_LONG_COLOR = "#d84a4a"
+TRADE_ENTRY_SHORT_COLOR = "#1f8b24"
+TRADE_EXIT_MARKER_COLOR = "#fff3bf"
 Y_AXIS_DRAG_GUTTER_WIDTH_PX = 48.0
 DEFAULT_RIGHT_PADDING = 3.0
 
@@ -46,7 +49,9 @@ DEFAULT_RIGHT_PADDING = 3.0
 class TradeMarker:
     action: SessionAction
     trade_number: int | None
+    role: str
     direction: str
+    outcome: str
     x: float
     y: float
     symbol: str
@@ -58,6 +63,8 @@ class TradeMarker:
 @dataclass(slots=True)
 class TradeLink:
     trade_number: int | None
+    direction: str
+    outcome: str
     x1: float
     y1: float
     x2: float
@@ -320,7 +327,7 @@ class ChartWidget(QWidget):
     viewportChanged = Signal()
     orderLineCreated = Signal(str, float)
     orderLineMoved = Signal(int, float)
-    protectiveOrderCreated = Signal(str, float)
+    protectiveOrderCreated = Signal(str, float, bool)
     orderPreviewConfirmed = Signal(str, float, float)
     orderLineActionRequested = Signal(int, str)
 
@@ -970,7 +977,7 @@ class ChartWidget(QWidget):
                     [link.x1, link.x2],
                     [link.y1, link.y2],
                     pen=pg.mkPen(
-                        "#ffd166" if is_highlighted else (TRADE_LINK_WIN_COLOR if link.pnl >= 0 else TRADE_LINK_LOSS_COLOR),
+                        self._trade_link_color(link),
                         width=3 if is_highlighted else 1,
                         style=Qt.PenStyle.SolidLine,
                     ),
@@ -989,7 +996,7 @@ class ChartWidget(QWidget):
                     symbol=marker.symbol,
                     size=marker.size + (3.0 if is_focused else 0.0),
                     brush=pg.mkBrush(marker.brush),
-                    pen=pg.mkPen("#ffd166" if is_focused else marker.brush, width=2 if is_focused else 1),
+                    pen=pg.mkPen(marker.brush, width=2 if is_focused else 1),
                 )
                 item._barbybar_trade_marker = True
                 item.setZValue(16 if is_focused else 14)
@@ -2473,13 +2480,14 @@ class ChartWidget(QWidget):
         price = self._protective_drag_preview_price
         line_id = self._protective_drag_line_id
         start_price = self._protective_drag_start_price
+        from_average = self._protective_drag_from_average
         self._log_interaction(
             "finish_order_line_drag_start",
             order_line_id=line_id or -1,
             order_type=order_type.value if order_type else "",
             start_price=round(float(start_price), 6) if start_price is not None else -1.0,
             finish_price=round(float(price), 6) if price is not None else -1.0,
-            from_average=self._protective_drag_from_average,
+            from_average=from_average,
         )
         self._set_dragging(False)
         self._preview_line.hide()
@@ -2523,7 +2531,7 @@ class ChartWidget(QWidget):
             finish_price=round(float(price), 6),
             drag_commit_mode="upsert_protective",
         )
-        self.protectiveOrderCreated.emit(order_type.value, price)
+        self.protectiveOrderCreated.emit(order_type.value, price, bool(from_average))
 
     def _clear_protective_drag_state(self) -> None:
         self._protective_drag_order_type = None
@@ -2878,6 +2886,7 @@ class ChartWidget(QWidget):
         offset_unit = y_span * 0.018
         marker_offsets: dict[int, int] = {}
         markers: list[TradeMarker] = []
+        active_direction = "flat"
         for action in visible_actions:
             local_index = action.bar_index - self._global_start_index
             if not (0 <= local_index < len(self._bars)):
@@ -2887,34 +2896,106 @@ class ChartWidget(QWidget):
             marker_offsets[action.bar_index] = stack + 1
             x = self._trade_marker_x(action, stack)
             y = self._trade_marker_y(action, bar)
-            symbol, color, size, direction = self._trade_marker_visual(action)
+            role, direction = self._trade_marker_role(action, active_direction)
+            if direction in {"long", "short"}:
+                active_direction = direction
+            symbol, color, size = self._trade_marker_visual(role, direction, "pending")
             markers.append(
                 TradeMarker(
                     action=action,
                     trade_number=None,
+                    role=role,
                     direction=direction,
+                    outcome="pending",
                     x=x,
                     y=y,
                     symbol=symbol,
                     brush=color,
                     size=size,
-                    detail_lines=self._trade_action_detail_lines(action),
+                    detail_lines=[],
                 )
             )
+            active_direction = self._next_trade_direction(action, active_direction)
         links = self._trade_link_segments(visible_actions, markers)
+        for marker in markers:
+            marker.symbol, marker.brush, marker.size = self._trade_marker_visual(marker.role, marker.direction, marker.outcome)
+            marker.detail_lines = self._trade_action_detail_lines(marker)
         self._trade_markers = markers
         self._trade_links = links
 
-    def _trade_marker_visual(self, action: SessionAction) -> tuple[str, str, float, str]:
+    @staticmethod
+    def _trade_marker_role(action: SessionAction, active_direction: str) -> tuple[str, str]:
         if action.action_type is ActionType.OPEN_LONG:
-            return "o", "#d84a4a", 8.0, "long"
+            return "entry", "long"
         if action.action_type is ActionType.OPEN_SHORT:
-            return "o", "#1f8b24", 8.0, "short"
-        if action.action_type is ActionType.CLOSE:
-            return "d", TRADE_CLOSE_MARKER_COLOR, 9.0, "flat"
+            return "entry", "short"
         if action.action_type is ActionType.ADD:
-            return "o", "#d84a4a", 7.0, "add"
-        return "o", "#1f8b24", 7.0, "reduce"
+            return "add", active_direction if active_direction in {"long", "short"} else "long"
+        if action.action_type is ActionType.REDUCE:
+            return "reduce", active_direction if active_direction in {"long", "short"} else "flat"
+        return "exit", active_direction if active_direction in {"long", "short"} else "flat"
+
+    @staticmethod
+    def _next_trade_direction(action: SessionAction, active_direction: str) -> str:
+        if action.action_type is ActionType.OPEN_LONG:
+            return "long"
+        if action.action_type is ActionType.OPEN_SHORT:
+            return "short"
+        if action.action_type in {ActionType.CLOSE, ActionType.REDUCE}:
+            return "flat" if action.action_type is ActionType.CLOSE else active_direction
+        return active_direction
+
+    def _trade_marker_visual(self, role: str, direction: str, outcome: str) -> tuple[str, str, float]:
+        if role == "entry":
+            return "t1" if direction == "long" else "t", self._trade_direction_color(direction), self._scaled_trade_triangle_size()
+        if role == "add":
+            return "t1" if direction == "long" else "t", self._trade_direction_color(direction), self._scaled_trade_triangle_size()
+        if role == "reduce":
+            return "o", TRADE_EXIT_MARKER_COLOR, 8.0
+        return "o", TRADE_EXIT_MARKER_COLOR, 9.0
+
+    def _scaled_trade_triangle_size(self) -> float:
+        if not self._bars:
+            return 10.0
+        first = self.price_plot.vb.mapViewToScene(QPointF(0.0, 0.0))
+        second = self.price_plot.vb.mapViewToScene(QPointF(1.0, 0.0))
+        pixels_per_bar = abs(float(second.x()) - float(first.x()))
+        if pixels_per_bar <= 0.0001:
+            return 10.0
+        return max(4.0, min(20.0, pixels_per_bar * 0.5))
+
+    @staticmethod
+    def _trade_direction_color(direction: str) -> str:
+        return TRADE_ENTRY_LONG_COLOR if direction == "long" else TRADE_ENTRY_SHORT_COLOR
+
+    @staticmethod
+    def _trade_outcome_from_pnl(pnl: float) -> str:
+        if pnl > 0.0001:
+            return "win"
+        if pnl < -0.0001:
+            return "loss"
+        return "flat"
+
+    @staticmethod
+    def _merge_trade_outcome(current: str, new: str) -> str:
+        if current in {"pending", new}:
+            return new
+        if new == "pending":
+            return current
+        if current == "mixed" or new == "mixed":
+            return "mixed"
+        return "mixed"
+
+    @staticmethod
+    def _trade_outcome_color(outcome: str) -> str:
+        if outcome == "win":
+            return TRADE_LINK_WIN_COLOR
+        if outcome == "loss":
+            return TRADE_LINK_LOSS_COLOR
+        return TRADE_LINK_FLAT_COLOR
+
+    def _trade_link_color(self, link: TradeLink) -> str:
+        return self._trade_outcome_color(link.outcome)
 
     def _trade_marker_x(self, action: SessionAction, stack: int) -> float:
         if stack == 0:
@@ -2927,17 +3008,29 @@ class ChartWidget(QWidget):
     def _trade_marker_y(action: SessionAction, bar: Bar) -> float:
         return float(action.price if action.price is not None else bar.close)
 
-    def _trade_action_detail_lines(self, action: SessionAction) -> list[str]:
+    def _trade_action_detail_lines(self, marker: TradeMarker) -> list[str]:
+        action = marker.action
         action_label = {
-            ActionType.OPEN_LONG: "开多",
-            ActionType.OPEN_SHORT: "开空",
-            ActionType.CLOSE: "平仓",
-            ActionType.ADD: "加仓",
-            ActionType.REDUCE: "减仓",
-        }.get(action.action_type, action.action_type.value)
+            "entry": "开多" if marker.direction == "long" else "开空",
+            "exit": "平仓",
+            "add": "加仓",
+            "reduce": "减仓",
+        }.get(marker.role, action.action_type.value)
+        direction_label = {"long": "多单", "short": "空单"}.get(marker.direction)
+        outcome_label = {
+            "win": "盈利",
+            "loss": "亏损",
+            "flat": "保本",
+            "mixed": "结果混合",
+        }.get(marker.outcome)
+        title = action_label
+        if marker.role in {"exit", "reduce"} and direction_label and outcome_label:
+            title = f"{action_label} | {direction_label}{outcome_label}"
+        elif marker.role in {"entry", "add"} and direction_label:
+            title = f"{action_label} | {direction_label}"
         quantity = int(action.quantity) if float(action.quantity).is_integer() else round(float(action.quantity), 2)
         return [
-            f"{action_label} | {action.timestamp:%Y-%m-%d %H:%M}",
+            f"{title} | {action.timestamp:%Y-%m-%d %H:%M}",
             f"价格 {format_price(float(action.price or 0.0), self._tick_size)}",
             f"手数 {quantity}",
             f"Bar {action.bar_index + 1}",
@@ -2973,23 +3066,29 @@ class ChartWidget(QWidget):
                 direction = str(lot["direction"])
                 entry_price = float(lot["price"])
                 pnl = (price - entry_price) * matched_qty * (1 if direction == "long" else -1)
+                outcome = self._trade_outcome_from_pnl(pnl)
                 entry_marker = self._find_trade_marker(markers, int(lot["bar_index"]), entry_price)
                 exit_marker = self._find_trade_marker(markers, action.bar_index, price, preferred_action=action.action_type)
                 if entry_marker is not None and exit_marker is not None:
+                    exit_marker.direction = direction
+                    exit_marker.outcome = self._merge_trade_outcome(exit_marker.outcome, outcome)
                     qty_text = int(matched_qty) if float(matched_qty).is_integer() else round(matched_qty, 2)
+                    pnl_text = f"{pnl:+.2f}"
                     links.append(
                         TradeLink(
                             trade_number=None,
+                            direction=direction,
+                            outcome=outcome,
                             x1=entry_marker.x,
                             y1=entry_marker.y,
                             x2=exit_marker.x,
                             y2=exit_marker.y,
                             pnl=pnl,
                             detail_lines=[
-                                f"{'多单' if direction == 'long' else '空单'} | {lot['timestamp']:%Y-%m-%d %H:%M} -> {action.timestamp:%Y-%m-%d %H:%M}",
+                                f"{'多单' if direction == 'long' else '空单'}{'盈利' if outcome == 'win' else '亏损' if outcome == 'loss' else '保本'} | {lot['timestamp']:%Y-%m-%d %H:%M} -> {action.timestamp:%Y-%m-%d %H:%M}",
                                 f"开 {format_price(entry_price, self._tick_size)} -> 平 {format_price(price, self._tick_size)}",
                                 f"手数 {qty_text}",
-                                f"PnL {pnl:.2f}",
+                                f"PnL {pnl_text}",
                                 "交易连线",
                             ],
                         )

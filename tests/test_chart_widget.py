@@ -18,6 +18,12 @@ from barbybar.ui.chart_widget import (
     HoverTargetType,
     InteractionMode,
     STOP_LOSS_LINE_COLOR,
+    TRADE_ENTRY_LONG_COLOR,
+    TRADE_ENTRY_SHORT_COLOR,
+    TRADE_EXIT_MARKER_COLOR,
+    TRADE_LINK_FLAT_COLOR,
+    TRADE_LINK_LOSS_COLOR,
+    TRADE_LINK_WIN_COLOR,
     TAKE_PROFIT_LINE_COLOR,
     UP_CANDLE_COLOR,
 )
@@ -592,8 +598,17 @@ def test_trade_actions_render_marker_items(widget: ChartWidget) -> None:
     assert trade_items
     assert len(widget._trade_markers) == 2
     assert len(widget._trade_links) == 1
-    assert widget._trade_markers[0].symbol == "o"
-    assert widget._trade_markers[0].brush == "#d84a4a"
+    assert widget._trade_markers[0].role == "entry"
+    assert widget._trade_markers[0].direction == "long"
+    assert widget._trade_markers[0].symbol == "t1"
+    assert widget._trade_markers[0].brush == TRADE_ENTRY_LONG_COLOR
+    assert widget._trade_markers[0].size == pytest.approx(widget._scaled_trade_triangle_size())
+    assert widget._trade_markers[1].role == "exit"
+    assert widget._trade_markers[1].outcome == "win"
+    assert widget._trade_markers[1].symbol == "o"
+    assert widget._trade_markers[1].brush == TRADE_EXIT_MARKER_COLOR
+    assert widget._trade_links[0].direction == "long"
+    assert widget._trade_links[0].outcome == "win"
 
 
 def test_trade_marker_hover_returns_action_details(widget: ChartWidget, app: QApplication) -> None:
@@ -610,6 +625,7 @@ def test_trade_marker_hover_returns_action_details(widget: ChartWidget, app: QAp
 
     assert widget._hover_card.isHidden() is False
     assert "开多" in widget._hover_time_label.text()
+    assert "多单" in widget._hover_time_label.text()
 
 
 def test_trade_link_hover_uses_open_hand_cursor(widget: ChartWidget, app: QApplication) -> None:
@@ -639,10 +655,87 @@ def test_trade_link_hover_uses_open_hand_cursor(widget: ChartWidget, app: QAppli
     assert widget._v_line.isVisible() is True
     assert widget._h_line.isVisible() is True
     assert widget._hover_card.isHidden() is False
+    assert "多单盈利" in widget._hover_time_label.text()
     assert "09:05" in widget._hover_time_label.text()
     assert "09:08" in widget._hover_time_label.text()
     assert highlighted_link_items
     assert any(item.opts["pen"].widthF() == 3.0 for item in highlighted_link_items)
+
+
+def test_short_trade_link_uses_loss_color(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_SHORT, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
+        ]
+    )
+    widget._apply_viewport()
+
+    assert widget._trade_markers[0].symbol == "t"
+    assert widget._trade_markers[0].brush == TRADE_ENTRY_SHORT_COLOR
+    assert widget._trade_markers[0].size == pytest.approx(widget._scaled_trade_triangle_size())
+    assert widget._trade_markers[1].outcome == "loss"
+    assert widget._trade_markers[1].symbol == "o"
+    assert widget._trade_markers[1].brush == TRADE_EXIT_MARKER_COLOR
+    assert widget._trade_links[0].direction == "short"
+    assert widget._trade_links[0].outcome == "loss"
+
+    link_items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_trade_marker", False) and item.__class__.__name__ == "PlotCurveItem"
+    ]
+    base_link = next(item for item in link_items if item.opts["pen"].widthF() == 1.0)
+    assert base_link.opts["pen"].color().name() == TRADE_LINK_LOSS_COLOR
+    assert base_link.opts["pen"].style() == Qt.PenStyle.SolidLine
+
+
+def test_flat_trade_exit_marker_and_link_use_neutral_color(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=101.0, quantity=1),
+        ]
+    )
+
+    assert widget._trade_markers[1].outcome == "flat"
+    assert widget._trade_markers[1].symbol == "o"
+    assert widget._trade_markers[1].brush == TRADE_EXIT_MARKER_COLOR
+    assert widget._trade_links[0].outcome == "flat"
+    assert widget._trade_links[0].pnl == 0.0
+
+
+def test_trade_link_highlight_preserves_original_color(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
+        ]
+    )
+    app.processEvents()
+    link = widget._trade_links[0]
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
+
+    widget._handle_mouse_moved((scene_pos,))
+
+    highlighted_link_items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_trade_marker", False)
+        and item.__class__.__name__ == "PlotCurveItem"
+        and item.opts["pen"].widthF() == 3.0
+    ]
+
+    assert highlighted_link_items
+    assert all(item.opts["pen"].color().name() == TRADE_LINK_WIN_COLOR for item in highlighted_link_items)
 
 
 def test_multiple_trade_actions_same_bar_are_staggered(widget: ChartWidget) -> None:
@@ -659,6 +752,30 @@ def test_multiple_trade_actions_same_bar_are_staggered(widget: ChartWidget) -> N
     assert widget._trade_markers[0].x != widget._trade_markers[1].x
     assert widget._trade_markers[0].y == 101.0
     assert widget._trade_markers[1].y == 101.2
+    assert widget._trade_markers[1].symbol == "t1"
+    assert widget._trade_markers[1].size == pytest.approx(widget._scaled_trade_triangle_size())
+
+
+def test_trade_triangle_size_scales_with_zoom(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(120)
+    widget.set_trade_actions([SessionAction(ActionType.OPEN_LONG, 60, datetime(2025, 1, 1, 10, 0), price=101.0, quantity=1)])
+    app.processEvents()
+
+    initial_size = widget._trade_markers[0].size
+
+    widget.zoom_x(anchor_x=60, scale=0.5)
+    app.processEvents()
+    zoomed_in_size = widget._trade_markers[0].size
+
+    widget.zoom_x(anchor_x=60, scale=2.0)
+    app.processEvents()
+    zoomed_out_size = widget._trade_markers[0].size
+
+    assert zoomed_in_size > initial_size
+    assert zoomed_out_size < zoomed_in_size
 
 
 def test_trade_marker_uses_execution_price_for_vertical_position(widget: ChartWidget) -> None:
@@ -2442,8 +2559,8 @@ def test_average_price_drag_emits_take_profit_for_long_above_average(widget: Cha
             )
         ]
     )
-    captured: list[tuple[str, float]] = []
-    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    captured: list[tuple[str, float, bool]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price, from_average: captured.append((order_type, price, from_average)))
     app.processEvents()
 
     start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
@@ -2456,7 +2573,7 @@ def test_average_price_drag_emits_take_profit_for_long_above_average(widget: Cha
 
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
 
-    assert captured == [(OrderLineType.TAKE_PROFIT.value, 102.2)]
+    assert captured == [(OrderLineType.TAKE_PROFIT.value, 102.2, True)]
 
 
 def test_average_price_drag_emits_stop_loss_for_long_below_average(widget: ChartWidget, app: QApplication) -> None:
@@ -2478,8 +2595,8 @@ def test_average_price_drag_emits_stop_loss_for_long_below_average(widget: Chart
             )
         ]
     )
-    captured: list[tuple[str, float]] = []
-    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    captured: list[tuple[str, float, bool]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price, from_average: captured.append((order_type, price, from_average)))
     app.processEvents()
 
     start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
@@ -2488,7 +2605,7 @@ def test_average_price_drag_emits_stop_loss_for_long_below_average(widget: Chart
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
 
-    assert captured == [(OrderLineType.STOP_LOSS.value, 98.0)]
+    assert captured == [(OrderLineType.STOP_LOSS.value, 98.0, True)]
 
 
 def test_average_price_drag_reverses_for_short_position(widget: ChartWidget, app: QApplication) -> None:
@@ -2510,8 +2627,8 @@ def test_average_price_drag_reverses_for_short_position(widget: ChartWidget, app
             )
         ]
     )
-    captured: list[tuple[str, float]] = []
-    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    captured: list[tuple[str, float, bool]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price, from_average: captured.append((order_type, price, from_average)))
     app.processEvents()
 
     start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
@@ -2520,7 +2637,7 @@ def test_average_price_drag_reverses_for_short_position(widget: ChartWidget, app
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
 
-    assert captured == [(OrderLineType.STOP_LOSS.value, 102.0)]
+    assert captured == [(OrderLineType.STOP_LOSS.value, 102.0, True)]
 
 
 def test_average_price_drag_small_move_does_not_emit_order(widget: ChartWidget, app: QApplication) -> None:
@@ -2542,8 +2659,8 @@ def test_average_price_drag_small_move_does_not_emit_order(widget: ChartWidget, 
             )
         ]
     )
-    captured: list[tuple[str, float]] = []
-    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    captured: list[tuple[str, float, bool]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price, from_average: captured.append((order_type, price, from_average)))
     app.processEvents()
 
     start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
@@ -2711,8 +2828,8 @@ def test_hovered_transient_stop_loss_line_drag_emits_protective_upsert(widget: C
     )
     widget.set_order_lines([line])
     app.processEvents()
-    captured: list[tuple[str, float]] = []
-    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    captured: list[tuple[str, float, bool]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price, from_average: captured.append((order_type, price, from_average)))
 
     start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.0))
     move = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.13))
@@ -2727,7 +2844,7 @@ def test_hovered_transient_stop_loss_line_drag_emits_protective_upsert(widget: C
 
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
 
-    assert captured == [(OrderLineType.STOP_LOSS.value, 98.2)]
+    assert captured == [(OrderLineType.STOP_LOSS.value, 98.2, False)]
     assert widget.is_dragging is False
     assert widget._hover_target.target_type is HoverTargetType.ORDER_LINE
     assert widget._hover_target.order_line_type is OrderLineType.STOP_LOSS
@@ -2752,9 +2869,9 @@ def test_hovered_transient_entry_line_drag_does_not_emit_duplicate_create(widget
     widget.set_order_lines([line])
     app.processEvents()
     moved: list[tuple[int, float]] = []
-    created: list[tuple[str, float]] = []
+    created: list[tuple[str, float, bool]] = []
     widget.orderLineMoved.connect(lambda order_id, price: moved.append((order_id, price)))
-    widget.protectiveOrderCreated.connect(lambda order_type, price: created.append((order_type, price)))
+    widget.protectiveOrderCreated.connect(lambda order_type, price, from_average: created.append((order_type, price, from_average)))
 
     start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.0))
     move = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.13))
@@ -2789,8 +2906,8 @@ def test_hovered_transient_take_profit_line_small_drag_does_not_emit_update(widg
     )
     widget.set_order_lines([line])
     app.processEvents()
-    captured: list[tuple[str, float]] = []
-    widget.protectiveOrderCreated.connect(lambda order_type, price: captured.append((order_type, price)))
+    captured: list[tuple[str, float, bool]] = []
+    widget.protectiveOrderCreated.connect(lambda order_type, price, from_average: captured.append((order_type, price, from_average)))
 
     start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 102.0))
     move = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 102.05))

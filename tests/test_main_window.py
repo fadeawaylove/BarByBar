@@ -1851,9 +1851,24 @@ def test_handle_chart_protective_order_created_places_protective_line(window: Ma
     captured: list[tuple[OrderLineType, float]] = []
     monkeypatch.setattr(window, "_place_order_line", lambda order_type, price: captured.append((order_type, price)))
 
-    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 104.2)
+    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 104.2, False)
 
     assert captured == [(OrderLineType.TAKE_PROFIT, 104.2)]
+
+
+def test_average_price_created_protective_line_uses_full_position_quantity(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=3, price=101)
+    captured: list[tuple[OrderLineType, float, float]] = []
+    monkeypatch.setattr(
+        window,
+        "_place_order_line_with_quantity",
+        lambda order_type, price, quantity: captured.append((order_type, price, quantity)),
+    )
+
+    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 104.2, True)
+
+    assert captured == [(OrderLineType.TAKE_PROFIT, 104.2, 3.0)]
 
 
 def test_dragging_average_price_can_create_multiple_protective_lines(window: MainWindow, monkeypatch) -> None:
@@ -1861,8 +1876,8 @@ def test_dragging_average_price_can_create_multiple_protective_lines(window: Mai
     window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=101)
     monkeypatch.setattr(window, "save_session", lambda **kwargs: None)
 
-    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 104.2)
-    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 105.8)
+    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 104.2, False)
+    window._handle_chart_protective_order_created(OrderLineType.TAKE_PROFIT.value, 105.8, False)
 
     take_profit_lines = [
         line for line in window.engine.active_order_lines if line.order_type is OrderLineType.TAKE_PROFIT

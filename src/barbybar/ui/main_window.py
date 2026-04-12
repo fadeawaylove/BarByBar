@@ -3094,9 +3094,17 @@ class MainWindow(QMainWindow):
         self._update_ui_from_engine()
         self.save_session(trigger="move_order_line")
 
-    @Slot(str, float)
-    def _handle_chart_protective_order_created(self, order_type_value: str, price: float) -> None:
-        self._place_order_line(OrderLineType(order_type_value), price)
+    @Slot(str, float, bool)
+    def _handle_chart_protective_order_created(self, order_type_value: str, price: float, from_average: bool = False) -> None:
+        order_type = OrderLineType(order_type_value)
+        if (
+            from_average
+            and self.engine
+            and self.engine.session.position.is_open
+        ):
+            self._place_order_line_with_quantity(order_type, price, float(self.engine.session.position.quantity))
+            return
+        self._place_order_line(order_type, price)
 
     @Slot(int, str)
     def _handle_order_line_action_requested(self, order_id: int, action: str) -> None:

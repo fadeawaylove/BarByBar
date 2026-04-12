@@ -459,7 +459,6 @@ class ReviewEngine:
             raise ValueError("Position quantity must remain positive.")
         position.average_price = ((position.average_price * position.quantity) + (price * quantity)) / new_quantity
         position.quantity = new_quantity
-        self._update_protective_quantities(new_quantity)
 
     def _close_position_partially(self, quantity: float, price: float, timestamp) -> None:
         position = self.session.position
@@ -488,8 +487,6 @@ class ReviewEngine:
             position.take_profit = None
             position.open_trade_started_at = None
             self._remove_protective_lines()
-        else:
-            self._update_protective_quantities(position.quantity)
 
     def _apply_protective_order_lines(self, index: int, bar: Bar) -> bool:
         position = self.session.position

@@ -299,6 +299,30 @@ def test_trade_review_marks_adverse_add_only_when_adding_into_loss() -> None:
     assert review_item.is_planned is False
 
 
+def test_protective_line_quantity_does_not_expand_after_add() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    line = engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+
+    engine.record_action(ActionType.ADD, quantity=1, price=101)
+
+    assert engine.session.position.quantity == 2
+    assert line.quantity == 1
+
+
+def test_protective_line_quantity_does_not_shrink_after_partial_reduce() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+    line = engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=2)
+
+    engine.record_action(ActionType.REDUCE, quantity=1, price=101)
+
+    assert engine.session.position.quantity == 1
+    assert line.quantity == 2
+
+
 def test_session_end_flatten_closes_position_at_day_session_boundary() -> None:
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
     engine = ReviewEngine(session, session_boundary_bars())
