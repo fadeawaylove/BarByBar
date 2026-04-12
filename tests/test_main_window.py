@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QLabel, QMessageBox, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QLabel, QPushButton, QVBoxLayout
 
 from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
@@ -18,6 +18,7 @@ from barbybar.ui.chart_widget import InteractionMode
 from barbybar.ui.main_window import (
     BatchImportOutcome,
     BatchImportProgress,
+    ColumnMappingDialog,
     DataSetManagerDialog,
     DrawingPropertiesDialog,
     DrawingTemplateDialog,
@@ -1175,7 +1176,7 @@ def test_clear_lines_schedules_auto_save(window: MainWindow) -> None:
 def test_confirm_clear_drawings_cancels_without_side_effect(window: MainWindow, monkeypatch) -> None:
     _seed_engine(window)
     window.chart_widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 100.0)])])
-    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.warning", lambda *args, **kwargs: QMessageBox.StandardButton.No)
+    monkeypatch.setattr(window, "_confirm_dialog", lambda *args, **kwargs: False)
     window._session_dirty = False
     window._auto_save_timer.stop()
 
@@ -1195,7 +1196,7 @@ def test_confirm_clear_drawings_confirms_and_clears(window: MainWindow, monkeypa
         window.engine.window_start_index,
     )
     window.chart_widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 100.0)])])
-    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.warning", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(window, "_confirm_dialog", lambda *args, **kwargs: True)
     captured: list[str] = []
 
     def _record_save(*, trigger: str = "manual") -> None:
@@ -1437,6 +1438,59 @@ def test_fib_drawing_dialog_rejects_invalid_levels() -> None:
     dialog.deleteLater()
 
 
+def test_fib_drawing_dialog_shows_inline_error_on_accept() -> None:
+    dialog = DrawingPropertiesDialog(
+        ChartDrawing(
+            tool_type=DrawingToolType.FIB_RETRACEMENT,
+            anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(12.0, 110.0)],
+            style={"fib_levels": [0.0, 0.5, 1.0, 2.0]},
+        )
+    )
+    try:
+        dialog.fib_levels_edit.setText("0, abc, 1")
+        dialog.accept()
+
+        assert dialog.result() == 0
+        assert dialog.error_label.isHidden() is False
+        assert "斐波那契档位格式无效" in dialog.error_label.text()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_column_mapping_dialog_shows_inline_error_for_missing_fields() -> None:
+    dialog = ColumnMappingDialog(
+        csv_path="sample.csv",
+        available_headers=["date", "open", "high", "low", "close"],
+        detected_field_map={"open": "open", "high": "high", "low": "low", "close": "close"},
+        missing_fields=["datetime", "volume"],
+    )
+    try:
+        dialog.accept()
+
+        assert dialog.result() == 0
+        assert dialog.error_label.isHidden() is False
+        assert "datetime" in dialog.error_label.text()
+        assert "volume" in dialog.error_label.text()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_drawing_template_dialog_shows_inline_error_when_note_is_empty() -> None:
+    dialog = DrawingTemplateDialog(templates_by_slot={}, initial_slot=1, initial_note="")
+    try:
+        dialog.note_edit.setText("")
+        dialog.accept()
+
+        assert dialog.result() == 0
+        assert dialog.error_label.isHidden() is False
+        assert dialog.error_label.text() == "备注不能为空"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
 def test_drawing_properties_request_preserves_custom_fib_levels(window: MainWindow, monkeypatch) -> None:
     _seed_engine(window)
     window.chart_widget.set_drawings(
@@ -1496,7 +1550,7 @@ def test_drawing_properties_request_shows_warning_for_invalid_fib_levels(window:
             )
         ]
     )
-    warnings: list[tuple[str, str]] = []
+    warnings: list[tuple[str, str, str]] = []
 
     class _FakeDialog:
         def __init__(self, drawing, parent):
@@ -1509,11 +1563,11 @@ def test_drawing_properties_request_shows_warning_for_invalid_fib_levels(window:
             raise ValueError("斐波那契档位格式无效，请使用逗号分隔的数字。")
 
     monkeypatch.setattr("barbybar.ui.main_window.DrawingPropertiesDialog", _FakeDialog)
-    monkeypatch.setattr(QMessageBox, "warning", lambda _parent, title, text: warnings.append((title, text)))
+    monkeypatch.setattr(window, "_show_error", lambda title, heading, summary="", detail="": warnings.append((title, heading, detail or summary)))
 
     window._handle_drawing_properties_requested(window.chart_widget.drawings()[0], 0)
 
-    assert warnings == [("属性无效", "斐波那契档位格式无效，请使用逗号分隔的数字。")]
+    assert warnings == [("属性无效", "画线属性未通过校验", "斐波那契档位格式无效，请使用逗号分隔的数字。")]
 
 
 def test_clear_current_session_resets_to_browse_mode(window: MainWindow) -> None:
@@ -1895,9 +1949,9 @@ def test_import_csv_folder_imports_valid_files_and_skips_duplicate_by_display_na
     repo = Repository(case_dir / "import.db")
     repo.import_csv(valid_a, "AG9999", "1m", display_name=valid_a.name)
     window = MainWindow(repo)
-    captured: list[str] = []
+    captured: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getExistingDirectory", lambda *args, **kwargs: str(folder))
-    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *args: captured.append(args[2]))
+    monkeypatch.setattr(window, "_show_notice", lambda title, heading, summary, detail="": captured.append((title, heading, summary, detail)))
 
     window.import_csv_folder()
     _wait_for_batch_import(app, window)
@@ -1905,10 +1959,10 @@ def test_import_csv_folder_imports_valid_files_and_skips_duplicate_by_display_na
     datasets = repo.list_datasets()
     assert [dataset.display_name for dataset in datasets] == ["sample.csv", valid_a.name]
     assert len(captured) == 1
-    assert "成功导入 1 个数据集" in captured[0]
-    assert "重复跳过 1 个" in captured[0]
-    assert f"重复示例: {valid_a.name}" in captured[0]
-    assert valid_b.name not in captured[0]
+    assert captured[0][0] == "批量导入结果"
+    assert "成功 1 个，跳过 1 个" in captured[0][2]
+    assert f"重复示例: {valid_a.name}" in captured[0][3]
+    assert valid_b.name not in captured[0][3]
     window.close()
     window.deleteLater()
     app.processEvents()
@@ -2084,18 +2138,18 @@ def test_import_csv_skips_duplicate_display_name(monkeypatch, app: QApplication)
     repo = Repository(case_dir / "import.db")
     repo.import_csv(csv_path, "DUP", "1m", display_name="dup.csv")
     window = MainWindow(repo)
-    messages: list[str] = []
+    messages: list[tuple[str, str, str]] = []
     shown: list[tuple[str, str]] = []
     hidden: list[bool] = []
     monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
-    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *args: messages.append(args[2]))
+    monkeypatch.setattr(window, "_show_notice", lambda title, heading, summary, detail="": messages.append((title, heading, summary)))
     monkeypatch.setattr(window, "show_busy_overlay", lambda title, detail="": shown.append((title, detail)))
     monkeypatch.setattr(window, "hide_busy_overlay", lambda: hidden.append(True))
 
     window.import_csv()
 
     assert repo.list_datasets()[0].display_name == "dup.csv"
-    assert messages == ["同名文件已存在: dup.csv"]
+    assert messages == [("重复数据集", "该数据集已存在", "同名文件已存在：dup.csv")]
     assert shown == []
     assert hidden == []
     window.close()
@@ -2126,7 +2180,7 @@ def test_import_csv_folder_uses_busy_overlay(monkeypatch, app: QApplication) -> 
     shown: list[tuple[str, str]] = []
     hidden: list[bool] = []
     monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getExistingDirectory", lambda *args, **kwargs: str(folder))
-    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *args, **kwargs: None)
+    monkeypatch.setattr(window, "_show_notice", lambda *args, **kwargs: None)
     monkeypatch.setattr(window, "show_busy_overlay", lambda title, detail="": shown.append((title, detail)))
     monkeypatch.setattr(window, "hide_busy_overlay", lambda: hidden.append(True))
 
@@ -2194,13 +2248,13 @@ def test_dataset_manager_shows_batch_import_progress_in_dialog(window: MainWindo
 
 def test_dataset_manager_reject_is_blocked_while_batch_import_active(window: MainWindow, monkeypatch) -> None:
     dialog = DataSetManagerDialog(window.repo, window)
-    messages: list[str] = []
-    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *args: messages.append(args[2]))
+    messages: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(window, "_show_notice", lambda title, heading, summary, detail="": messages.append((title, heading, summary)))
     try:
         dialog._set_batch_import_active(True)
         dialog.reject()
 
-        assert messages == ["批量导入仍在进行中，请等待完成。"]
+        assert messages == [("批量导入进行中", "批量导入仍在进行", "请等待当前导入任务完成后再关闭窗口。")]
         assert dialog.isVisible() is False
         assert dialog._batch_import_active is True
     finally:
@@ -2210,8 +2264,8 @@ def test_dataset_manager_reject_is_blocked_while_batch_import_active(window: Mai
 
 
 def test_batch_import_result_message_includes_failure_reason(window: MainWindow, monkeypatch) -> None:
-    captured: list[str] = []
-    monkeypatch.setattr("barbybar.ui.main_window.QMessageBox.information", lambda *args: captured.append(args[2]))
+    captured: list[tuple[str, str, str, str]] = []
+    monkeypatch.setattr(window, "_show_notice", lambda title, heading, summary, detail="": captured.append((title, heading, summary, detail)))
     window._active_batch_import_token = 1
 
     window._handle_batch_import_finished(
@@ -2225,6 +2279,5 @@ def test_batch_import_result_message_includes_failure_reason(window: MainWindow,
     )
 
     assert len(captured) == 1
-    assert "成功导入 1 个数据集" in captured[0]
-    assert "导入失败 1 个" in captured[0]
-    assert "IC9999.CCFX_2005_1min.csv: Invalid row for timestamp 2005-01-04 09:16:00: numeric field 'close' is empty" in captured[0]
+    assert "成功 1 个，跳过 0 个，失败 1 个" in captured[0][2]
+    assert "IC9999.CCFX_2005_1min.csv: Invalid row for timestamp 2005-01-04 09:16:00: numeric field 'close' is empty" in captured[0][3]

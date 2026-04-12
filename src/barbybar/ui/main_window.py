@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QColorDialog,
@@ -396,6 +395,7 @@ class UpdateActionDialog(QDialog):
         *,
         accept_text: str,
         cancel_text: str | None = "稍后再说",
+        accept_role: str = "primary",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -422,6 +422,13 @@ class UpdateActionDialog(QDialog):
             " color: #334155;"
             " border: 1px solid #d8e1e8;"
             " border-radius: 8px;"
+            "}"
+            "QPushButton[role='danger'] {"
+            " background: #b42318;"
+            " color: white;"
+            " border: none;"
+            " border-radius: 8px;"
+            " font-weight: 600;"
             "}"
             "QTextEdit {"
             " background: #f8fafc;"
@@ -456,7 +463,7 @@ class UpdateActionDialog(QDialog):
 
         buttons = QDialogButtonBox(self)
         self.accept_button = buttons.addButton(accept_text, QDialogButtonBox.ButtonRole.AcceptRole)
-        self.accept_button.setProperty("role", "primary")
+        self.accept_button.setProperty("role", accept_role)
         self.accept_button.clicked.connect(self.accept)
         self.cancel_button: QPushButton | None = None
         if cancel_text:
@@ -472,7 +479,26 @@ class UpdateActionDialog(QDialog):
         root_layout.addWidget(card)
 
 
-class ColumnMappingDialog(QDialog):
+class InlineErrorDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setVisible(False)
+        self.error_label.setStyleSheet(
+            "color: #b42318;"
+            "background: #fef3f2;"
+            "border: 1px solid #f3c7c2;"
+            "border-radius: 8px;"
+            "padding: 8px 10px;"
+        )
+
+    def _set_error(self, message: str = "") -> None:
+        self.error_label.setText(message)
+        self.error_label.setVisible(bool(message))
+
+
+class ColumnMappingDialog(InlineErrorDialog):
     def __init__(
         self,
         csv_path: str,
@@ -489,6 +515,7 @@ class ColumnMappingDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"文件: {Path(csv_path).name}"))
         layout.addWidget(QLabel("请确认 CSV 列与系统字段的对应关系。"))
+        layout.addWidget(self.error_label)
 
         form = QFormLayout()
         for field in REQUIRED_IMPORT_FIELDS:
@@ -523,12 +550,13 @@ class ColumnMappingDialog(QDialog):
         selected = self.get_field_map()
         missing = [field for field in REQUIRED_IMPORT_FIELDS if field not in selected]
         if missing:
-            QMessageBox.warning(self, "映射不完整", f"请补齐以下字段: {', '.join(missing)}")
+            self._set_error(f"请补齐以下字段: {', '.join(missing)}")
             return
+        self._set_error()
         super().accept()
 
 
-class DrawingPropertiesDialog(QDialog):
+class DrawingPropertiesDialog(InlineErrorDialog):
     def __init__(self, drawing: ChartDrawing, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("画线属性")
@@ -609,6 +637,7 @@ class DrawingPropertiesDialog(QDialog):
                 form.addRow("", self.show_price_label_check)
 
         layout.addLayout(form)
+        layout.addWidget(self.error_label)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -639,6 +668,18 @@ class DrawingPropertiesDialog(QDialog):
             "anchor_mode": "free",
         }
         return normalize_drawing_style(self._drawing.tool_type, payload)
+
+    def accept(self) -> None:
+        try:
+            self.style_payload()
+        except ValueError as exc:
+            self._set_error(str(exc))
+            if self._drawing.tool_type is DrawingToolType.FIB_RETRACEMENT:
+                self.fib_levels_edit.setFocus()
+                self.fib_levels_edit.selectAll()
+            return
+        self._set_error()
+        super().accept()
 
     def _parse_fib_levels(self) -> list[float] | None:
         raw_value = self.fib_levels_edit.text().strip()
@@ -682,7 +723,7 @@ class DrawingPropertiesDialog(QDialog):
         button.setStyleSheet(f"background: {color}; color: #1f2933;")
 
 
-class DrawingTemplateDialog(QDialog):
+class DrawingTemplateDialog(InlineErrorDialog):
     def __init__(
         self,
         *,
@@ -719,6 +760,7 @@ class DrawingTemplateDialog(QDialog):
         form.addRow("备注", self.note_edit)
         form.addRow("", self.status_label)
         layout.addLayout(form)
+        layout.addWidget(self.error_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.clear_button = buttons.addButton("清空槽位", QDialogButtonBox.ButtonRole.ResetRole)
@@ -752,6 +794,14 @@ class DrawingTemplateDialog(QDialog):
         if not self.note_edit.text().strip():
             self.note_edit.setText(template.note)
         self.status_label.setText(f"将覆盖现有模板：{template.note}")
+
+    def accept(self) -> None:
+        if not self._clear_requested and not self.template_note():
+            self._set_error("备注不能为空")
+            self.note_edit.setFocus()
+            return
+        self._set_error()
+        super().accept()
 
 
 class DataSetManagerDialog(QDialog):
@@ -931,14 +981,14 @@ class DataSetManagerDialog(QDialog):
 
     def reject(self) -> None:
         if self._batch_import_active:
-            QMessageBox.information(self, "批量导入进行中", "批量导入仍在进行中，请等待完成。")
+            self.owner._show_notice("批量导入进行中", "批量导入仍在进行", "请等待当前导入任务完成后再关闭窗口。")
             return
         super().reject()
 
     def _create_session(self) -> None:
         dataset_id = self._selected_dataset_id()
         if dataset_id is None:
-            QMessageBox.information(self, "提示", "请先选择一个数据集。")
+            self.owner._show_notice("提示", "请先选择一个数据集", "需要先在列表中选中一个数据集，才能创建复盘。")
             return
         self.owner.create_session_for_dataset(dataset_id)
         self.accept()
@@ -946,15 +996,17 @@ class DataSetManagerDialog(QDialog):
     def _delete_dataset(self) -> None:
         dataset_id = self._selected_dataset_id()
         if dataset_id is None:
-            QMessageBox.information(self, "提示", "请先选择一个数据集。")
+            self.owner._show_notice("提示", "请先选择一个数据集", "需要先在列表中选中一个数据集，才能执行删除。")
             return
         dataset = self.repo.get_dataset(dataset_id)
-        confirm = QMessageBox.question(
-            self,
+        if not self.owner._confirm_dialog(
             "删除数据集",
-            f"删除数据集“{dataset.display_name}”会级联删除其下所有案例、动作和条件单，确定继续吗？",
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
+            f"删除 {dataset.display_name}？",
+            "这会级联删除其下所有案例、动作和条件单，且无法撤销。",
+            accept_text="删除数据集",
+            cancel_text="取消",
+            accept_role="danger",
+        ):
             return
         self.owner.delete_dataset_by_id(dataset_id)
         self._refresh_datasets()
@@ -1008,7 +1060,7 @@ class SessionLibraryDialog(QDialog):
     def _open_session(self) -> None:
         item = self.session_list.currentItem()
         if item is None:
-            QMessageBox.information(self, "提示", "请先选择一个案例。")
+            self.owner._show_notice("提示", "请先选择一个案例", "需要先在列表中选中一个案例，才能打开。")
             return
         self.owner.open_session_by_id(int(item.data(32)))
         self.accept()
@@ -1016,11 +1068,17 @@ class SessionLibraryDialog(QDialog):
     def _delete_session(self) -> None:
         item = self.session_list.currentItem()
         if item is None:
-            QMessageBox.information(self, "提示", "请先选择一个案例。")
+            self.owner._show_notice("提示", "请先选择一个案例", "需要先在列表中选中一个案例，才能执行删除。")
             return
         session_id = int(item.data(32))
-        confirm = QMessageBox.question(self, "删除案例", "确定删除所选案例吗？")
-        if confirm != QMessageBox.StandardButton.Yes:
+        if not self.owner._confirm_dialog(
+            "删除案例",
+            "删除所选案例？",
+            "案例中的动作、条件单和相关状态都会被删除，且无法撤销。",
+            accept_text="删除案例",
+            cancel_text="取消",
+            accept_role="danger",
+        ):
             return
         self.owner.delete_session_by_id(session_id)
         self._refresh_sessions()
@@ -1518,7 +1576,7 @@ class MainWindow(QMainWindow):
             return
         display_name = Path(path).name
         if self.repo.find_dataset_by_display_name(display_name) is not None:
-            QMessageBox.information(self, "重复数据集", f"同名文件已存在: {display_name}")
+            self._show_notice("重复数据集", "该数据集已存在", f"同名文件已存在：{display_name}")
             return
         self.show_busy_overlay("正在导入 CSV...", "正在读取并校验数据")
         try:
@@ -1536,7 +1594,7 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         if self._active_batch_import_thread is not None:
-            QMessageBox.information(self, "批量导入", "已有批量导入任务正在进行，请稍候。")
+            self._show_notice("批量导入", "批量导入正在进行中", "已有批量导入任务正在进行，请稍候。")
             return
         self._start_batch_import(folder)
 
@@ -1608,7 +1666,7 @@ class MainWindow(QMainWindow):
         self.hide_busy_overlay()
         assert isinstance(payload, BatchImportOutcome)
         if not payload.imported and not payload.skipped_duplicates and not payload.failed_files:
-            QMessageBox.information(self, "批量导入", "所选文件夹中没有找到 CSV 文件。")
+            self._show_notice("批量导入", "未找到可导入的 CSV 文件", "所选文件夹中没有找到 CSV 文件。")
             return
         parts = [f"成功导入 {len(payload.imported)} 个数据集"]
         if payload.skipped_duplicates:
@@ -1631,14 +1689,19 @@ class MainWindow(QMainWindow):
             f"批量导入完成：成功 {len(payload.imported)}，跳过 {len(payload.skipped_duplicates)}，失败 {len(payload.failed_files)}",
             5000,
         )
-        QMessageBox.information(self, "批量导入结果", "\n".join(parts))
+        self._show_notice(
+            "批量导入结果",
+            "批量导入已完成",
+            f"成功 {len(payload.imported)} 个，跳过 {len(payload.skipped_duplicates)} 个，失败 {len(payload.failed_files)} 个。",
+            "\n".join(parts),
+        )
 
     @Slot(int, str)
     def _handle_batch_import_failed(self, token: int, message: str) -> None:
         if token != self._active_batch_import_token:
             return
         self.hide_busy_overlay()
-        QMessageBox.warning(self, "批量导入失败", message)
+        self._show_error("批量导入失败", "批量导入未完成", "导入过程中发生错误。", message)
 
     @Slot()
     def _handle_batch_import_thread_finished(self) -> None:
@@ -1680,12 +1743,12 @@ class MainWindow(QMainWindow):
             except Exception as retry_exc:  # noqa: BLE001
                 log.exception("event=import_failed_after_mapping error={error}", error=str(retry_exc))
                 if interactive:
-                    QMessageBox.critical(self, "导入失败", str(retry_exc))
+                    self._show_error("导入失败", "导入 CSV 失败", "列映射后的再次导入未成功。", str(retry_exc))
                 raise
         except Exception as exc:  # noqa: BLE001
             log.exception("event=import_failed error={error}", error=str(exc))
             if interactive:
-                QMessageBox.critical(self, "导入失败", str(exc))
+                self._show_error("导入失败", "导入 CSV 失败", "未能导入所选文件。", str(exc))
             raise
         log.info("event=import_success dataset_id={} timeframe={}", dataset.id, dataset.timeframe)
         if interactive:
@@ -2123,7 +2186,7 @@ class MainWindow(QMainWindow):
 
     def record_action(self, action_type: ActionType) -> None:
         if not self.engine:
-            QMessageBox.information(self, "提示", "请先创建或打开一个复盘会话。")
+            self._show_notice("提示", "请先创建或打开一个复盘会话", "当前没有可执行交易动作的复盘会话。")
             return
         price = self._resolve_price(self.price_spin.value() or None)
         try:
@@ -2135,14 +2198,14 @@ class MainWindow(QMainWindow):
                 action_type.value,
                 str(exc),
             )
-            QMessageBox.warning(self, "动作失败", str(exc))
+            self._show_error("动作失败", "未能记录当前动作", "请检查当前仓位和输入后重试。", str(exc))
             return
         self._update_ui_from_engine()
         self.save_session(trigger="record_action")
 
     def create_order_line(self, order_type: OrderLineType) -> None:
         if not self.engine:
-            QMessageBox.information(self, "提示", "请先创建或打开一个复盘会话。")
+            self._show_notice("提示", "请先创建或打开一个复盘会话", "当前没有可创建条件单的复盘会话。")
             return
         explicit_price = self.price_spin.value()
         if explicit_price:
@@ -2177,7 +2240,7 @@ class MainWindow(QMainWindow):
             self.engine.move_stop_to_break_even()
         except Exception as exc:  # noqa: BLE001
             logger.warning("event=move_stop_to_break_even_failed session_id={} error={}", self.current_session_id, str(exc))
-            QMessageBox.warning(self, "操作失败", str(exc))
+            self._show_error("操作失败", "未能移动止损到保本位", "请确认当前仓位和保护单状态。", str(exc))
             return
         self._update_ui_from_engine()
         self.save_session(trigger="move_stop_to_break_even")
@@ -2408,6 +2471,56 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.exec()
+
+    def _show_notice(self, title: str, heading: str, summary: str, detail: str = "") -> None:
+        dialog = UpdateActionDialog(
+            title,
+            heading,
+            summary,
+            detail,
+            accept_text="知道了",
+            cancel_text=None,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _show_error(self, title: str, heading: str, summary: str = "", detail: str = "") -> None:
+        dialog = UpdateActionDialog(
+            title,
+            heading,
+            summary or heading,
+            detail,
+            accept_text="知道了",
+            cancel_text=None,
+            accept_role="danger",
+            parent=self,
+        )
+        dialog.exec()
+
+    def _confirm_dialog(
+        self,
+        title: str,
+        heading: str,
+        summary: str,
+        detail: str = "",
+        *,
+        accept_text: str,
+        cancel_text: str = "取消",
+        accept_role: str = "primary",
+    ) -> bool:
+        dialog = UpdateActionDialog(
+            title,
+            heading,
+            summary,
+            detail,
+            accept_text=accept_text,
+            cancel_text=cancel_text,
+            accept_role=accept_role,
+            parent=self,
+        )
+        if dialog.cancel_button is not None:
+            dialog.cancel_button.setFocus()
+        return dialog.exec() == QDialog.DialogCode.Accepted
 
     def _launch_installer(self, installer_path: Path) -> None:
         logger.info("event=launch_installer_start path={}", installer_path)
@@ -2662,7 +2775,7 @@ class MainWindow(QMainWindow):
             "event=load_failed message={message}",
             message=message,
         )
-        QMessageBox.warning(self, "加载失败", message)
+        self._show_error("加载失败", "未能加载当前案例", "请稍后重试或检查数据完整性。", message)
 
     @Slot()
     def _handle_loader_thread_finished(self) -> None:
@@ -2807,7 +2920,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_draw_order_preview(self, order_type: OrderLineType, checked: bool) -> None:
         if not self.engine:
-            QMessageBox.information(self, "提示", "请先创建或打开一个复盘会话。")
+            self._show_notice("提示", "请先创建或打开一个复盘会话", "当前没有可进入画线下单模式的复盘会话。")
             return
         logger.bind(
             component="chart_interaction",
@@ -2896,14 +3009,14 @@ class MainWindow(QMainWindow):
     def confirm_clear_drawings(self) -> None:
         if not self.chart_widget.drawings():
             return
-        choice = QMessageBox.warning(
-            self,
+        if self._confirm_dialog(
             "确认清除画线",
-            "这会删除当前案例中的所有普通画线，且无法撤销。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if choice == QMessageBox.StandardButton.Yes:
+            "清除当前案例中的全部画线？",
+            "这会删除当前案例中的所有普通画线，且无法撤销。",
+            accept_text="清除画线",
+            cancel_text="取消",
+            accept_role="danger",
+        ):
             self.chart_widget.clear_lines()
             if self.engine:
                 try:
@@ -2953,7 +3066,7 @@ class MainWindow(QMainWindow):
                 order_type.value,
                 str(exc),
             )
-            QMessageBox.warning(self, "下单失败", str(exc))
+            self._show_error("下单失败", "未能创建条件单", "请检查价格、手数和当前仓位限制。", str(exc))
             return
         self.cancel_draw_order_preview()
         self.chart_widget.set_trade_line_mode(None)
@@ -2976,7 +3089,7 @@ class MainWindow(QMainWindow):
             self.engine.update_order_line(order_id, self._snap_price(price))
         except Exception as exc:  # noqa: BLE001
             logger.warning("event=move_order_line_failed session_id={} order_id={} error={}", self.current_session_id, order_id, str(exc))
-            QMessageBox.warning(self, "修改失败", str(exc))
+            self._show_error("修改失败", "未能更新条件单价格", "请检查价格是否有效。", str(exc))
             return
         self._update_ui_from_engine()
         self.save_session(trigger="move_order_line")
@@ -3037,7 +3150,7 @@ class MainWindow(QMainWindow):
                 action,
                 str(exc),
             )
-            QMessageBox.warning(self, "修改失败", str(exc))
+            self._show_error("修改失败", "未能修改条件单", "请检查输入值后重试。", str(exc))
             return
         self._update_ui_from_engine()
         self.save_session(trigger=trigger)
@@ -3055,7 +3168,7 @@ class MainWindow(QMainWindow):
         try:
             style = dialog.style_payload()
         except ValueError as exc:
-            QMessageBox.warning(self, "属性无效", str(exc))
+            self._show_error("属性无效", "画线属性未通过校验", "请修正输入后再试。", str(exc))
             return
         if drawing.tool_type is DrawingToolType.TEXT and not str(style.get("text", "")).strip():
             self.chart_widget.delete_drawing(drawing.id, drawing_index)
@@ -3093,7 +3206,7 @@ class MainWindow(QMainWindow):
             return
         note = dialog.template_note()
         if not note:
-            QMessageBox.warning(self, "保存失败", "备注不能为空")
+            self._show_error("保存失败", "模板备注不能为空")
             return
         self._drawing_templates[slot] = DrawingTemplate(
             slot=slot,
