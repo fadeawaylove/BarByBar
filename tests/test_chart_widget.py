@@ -2642,6 +2642,106 @@ def test_protective_order_label_includes_difference_from_average_price() -> None
     widget.deleteLater()
 
 
+def test_average_price_label_includes_current_pnl_for_long(widget: ChartWidget) -> None:
+    widget.set_tick_size(0.2)
+    widget.set_full_data(_bars())
+    widget.set_cursor(10)
+    widget.set_position_direction("long")
+    line = OrderLine(
+        order_type=OrderLineType.AVERAGE_PRICE,
+        price=108.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=0,
+        created_at=datetime(2025, 1, 1, 9, 0),
+    )
+
+    assert widget._order_line_label(line) == "成本 1手 108.0 (+1.8)"
+
+
+def test_average_price_label_includes_current_pnl_for_long_loss(widget: ChartWidget) -> None:
+    widget.set_tick_size(0.2)
+    widget.set_full_data(_bars())
+    widget.set_cursor(10)
+    widget.set_position_direction("long")
+    line = OrderLine(
+        order_type=OrderLineType.AVERAGE_PRICE,
+        price=110.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=0,
+        created_at=datetime(2025, 1, 1, 9, 0),
+    )
+
+    assert widget._order_line_label(line) == "成本 1手 110.0 (-0.2)"
+
+
+def test_average_price_label_includes_current_pnl_for_short(widget: ChartWidget) -> None:
+    widget.set_tick_size(0.2)
+    widget.set_full_data(_bars())
+    widget.set_cursor(10)
+    widget.set_position_direction("short")
+    line = OrderLine(
+        order_type=OrderLineType.AVERAGE_PRICE,
+        price=112.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=0,
+        created_at=datetime(2025, 1, 1, 9, 0),
+    )
+
+    assert widget._order_line_label(line) == "成本 1手 112.0 (+2.2)"
+
+
+def test_average_price_label_shows_zero_when_flat(widget: ChartWidget) -> None:
+    widget.set_tick_size(0.2)
+    widget.set_full_data(_bars())
+    widget.set_cursor(10)
+    widget.set_position_direction("long")
+    line = OrderLine(
+        order_type=OrderLineType.AVERAGE_PRICE,
+        price=109.8,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=0,
+        created_at=datetime(2025, 1, 1, 9, 0),
+    )
+
+    assert widget._order_line_label(line) == "成本 1手 109.8 (0)"
+
+
+def test_average_price_label_falls_back_without_position_direction(widget: ChartWidget) -> None:
+    widget.set_tick_size(1)
+    widget.set_full_data(_bars())
+    widget.set_cursor(10)
+    widget.set_position_direction(None)
+    line = OrderLine(
+        order_type=OrderLineType.AVERAGE_PRICE,
+        price=108.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=0,
+        created_at=datetime(2025, 1, 1, 9, 0),
+    )
+
+    assert widget._order_line_label(line) == "成本 1手 108"
+
+
+def test_average_price_label_falls_back_without_active_bar(widget: ChartWidget) -> None:
+    widget.set_tick_size(1)
+    widget.set_position_direction("long")
+    line = OrderLine(
+        order_type=OrderLineType.AVERAGE_PRICE,
+        price=108.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=0,
+        created_at=datetime(2025, 1, 1, 9, 0),
+    )
+
+    assert widget._order_line_label(line) == "成本 1手 108"
+
+
 def test_order_line_style_uses_expected_colors() -> None:
     widget = ChartWidget()
     average_pen, average_color, average_movable = widget._order_line_style(

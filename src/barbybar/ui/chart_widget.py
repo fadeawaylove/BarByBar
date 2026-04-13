@@ -2167,6 +2167,9 @@ class ChartWidget(QWidget):
         }
         quantity = int(round(line.quantity))
         label = f"{labels[line.order_type]} {quantity}手 {format_price(line.price, self._tick_size)}"
+        if line.order_type is OrderLineType.AVERAGE_PRICE:
+            pnl_text = self._average_price_pnl_text(line)
+            return f"{label} ({pnl_text})" if pnl_text is not None else label
         if not line.is_protective:
             return label
         reference_price = self._protective_reference_price(line)
@@ -2179,6 +2182,22 @@ class ChartWidget(QWidget):
             diff_text = format_price(abs(diff), self._tick_size)
             diff_text = f"+{diff_text}" if diff > 0 else f"-{diff_text}"
         return f"{label} ({diff_text})"
+
+    def _average_price_pnl_text(self, line: OrderLine) -> str | None:
+        if line.order_type is not OrderLineType.AVERAGE_PRICE:
+            return None
+        if self._position_direction not in {"long", "short"}:
+            return None
+        local_cursor = self._cursor - self._global_start_index
+        if local_cursor < 0 or local_cursor >= len(self._bars):
+            return None
+        current_close = float(self._bars[local_cursor].close)
+        average_price = float(line.price)
+        diff = current_close - average_price if self._position_direction == "long" else average_price - current_close
+        if abs(diff) < 0.0001:
+            return "0"
+        diff_text = format_price(abs(diff), self._tick_size)
+        return f"+{diff_text}" if diff > 0 else f"-{diff_text}"
 
     def _protective_reference_price(self, line: OrderLine) -> float | None:
         average_line = next((item for item in self._order_lines if item.order_type is OrderLineType.AVERAGE_PRICE), None)
