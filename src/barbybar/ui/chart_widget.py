@@ -43,6 +43,7 @@ TRADE_ENTRY_SHORT_COLOR = "#1f8b24"
 TRADE_EXIT_MARKER_COLOR = "#fff3bf"
 Y_AXIS_DRAG_GUTTER_WIDTH_PX = 48.0
 DEFAULT_RIGHT_PADDING = 3.0
+DRAWING_SNAP_DISTANCE_PX = 50.0
 
 
 @dataclass(slots=True)
@@ -341,6 +342,7 @@ class ChartWidget(QWidget):
         self._pending_drawing_anchors: list[DrawingAnchor] = []
         self._drawings: list[ChartDrawing] = []
         self._drawing_style_defaults: dict[DrawingToolType, dict[str, object]] = {}
+        self._drawing_preview_raw_anchor: DrawingAnchor | None = None
         self._drawing_preview_anchor: DrawingAnchor | None = None
         self._viewport = ViewportState()
         self._right_padding = DEFAULT_RIGHT_PADDING
@@ -525,7 +527,7 @@ class ChartWidget(QWidget):
         self._log_interaction("set_active_drawing_tool_start", requested_tool=tool.value if tool else None)
         self._active_drawing_tool = tool
         self._pending_drawing_anchors = []
-        self._drawing_preview_anchor = None
+        self._clear_drawing_preview_state()
         self._suppress_next_left_click = False
         if tool is not None:
             self._trade_line_mode = None
@@ -550,7 +552,7 @@ class ChartWidget(QWidget):
             for drawing in drawings
         ]
         self._pending_drawing_anchors = []
-        self._drawing_preview_anchor = None
+        self._clear_drawing_preview_state()
         self._clear_drawing_drag_state()
         self._active_drag_target = ActiveDragTarget()
         self._apply_hover_target(self._empty_hover_target())
@@ -690,7 +692,7 @@ class ChartWidget(QWidget):
         self._drawings_hidden = hidden
         if hidden:
             self._pending_drawing_anchors = []
-            self._drawing_preview_anchor = None
+            self._clear_drawing_preview_state()
             self._clear_drawing_drag_state()
             self._active_drag_target = ActiveDragTarget()
             self._apply_hover_target(self._empty_hover_target())
@@ -718,7 +720,7 @@ class ChartWidget(QWidget):
         self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         if not preserve_viewport:
             self._pending_drawing_anchors = []
-            self._drawing_preview_anchor = None
+            self._clear_drawing_preview_state()
             self._active_drawing_tool = None
             self._trade_line_mode = None
             self._preview_order_type = None
@@ -797,7 +799,7 @@ class ChartWidget(QWidget):
     def clear_lines(self) -> None:
         self._drawings.clear()
         self._pending_drawing_anchors = []
-        self._drawing_preview_anchor = None
+        self._clear_drawing_preview_state()
         self._active_drawing_tool = None
         self._clear_drawing_drag_state()
         self._active_drag_target = ActiveDragTarget()
@@ -842,7 +844,7 @@ class ChartWidget(QWidget):
         if event.key() == Qt.Key.Key_Escape:
             if self._pending_drawing_anchors:
                 self._pending_drawing_anchors = []
-                self._drawing_preview_anchor = None
+                self._clear_drawing_preview_state()
                 self._rebuild_line_items()
                 self.set_active_drawing_tool(None)
                 event.accept()
@@ -856,6 +858,11 @@ class ChartWidget(QWidget):
                 event.accept()
                 return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Control and self._active_drawing_tool is not None:
+            self._rebuild_line_items()
+        super().keyReleaseEvent(event)
 
     def _sync_plot_data(self) -> None:
         local_cursor = self._cursor - self._global_start_index if self._cursor >= 0 else -1
@@ -957,7 +964,7 @@ class ChartWidget(QWidget):
         preview = self._current_preview_drawing()
         if preview is not None:
             self._add_drawing_items(preview, preview=True)
-        self._add_snap_preview_item()
+        self._add_snap_preview_guide_item()
 
     def _rebuild_trade_marker_items(self) -> None:
         for item in list(self.price_plot.items):
@@ -1338,10 +1345,14 @@ class ChartWidget(QWidget):
         if self._active_drawing_tool is not None:
             if self._data_scene_rect().contains(pos):
                 point = self.price_plot.vb.mapSceneToView(pos)
-                anchor = self._normalized_drawing_anchor(DrawingAnchor(float(point.x()), float(point.y())))
+                raw_anchor = DrawingAnchor(float(point.x()), float(point.y()))
+                anchor = self._normalized_drawing_anchor(raw_anchor)
+                self._drawing_preview_raw_anchor = self._stabilize_drawing_anchor(raw_anchor)
                 self._drawing_preview_anchor = anchor
                 self._log_interaction(
                     "mouse_move_drawing_preview",
+                    raw_x=round(self._drawing_preview_raw_anchor.x, 3),
+                    raw_y=round(self._drawing_preview_raw_anchor.y, 3),
                     mapped_x=round(anchor.x, 3),
                     mapped_y=round(anchor.y, 3),
                     pending_anchors=len(self._pending_drawing_anchors),
@@ -1349,7 +1360,7 @@ class ChartWidget(QWidget):
                 self._rebuild_line_items()
             else:
                 self._log_interaction("mouse_move_drawing_preview_outside_chart")
-                self._drawing_preview_anchor = None
+                self._clear_drawing_preview_state()
                 self._rebuild_line_items()
         if (
             not self._crosshair_enabled
@@ -2055,22 +2066,29 @@ class ChartWidget(QWidget):
             item.setZValue(20)
             self.price_plot.addItem(item)
 
-    def _add_snap_preview_item(self) -> None:
-        if self._active_drawing_tool is None or self._drawing_preview_anchor is None:
+    def _add_snap_preview_guide_item(self) -> None:
+        if self._active_drawing_tool is None:
+            return
+        if self._drawing_preview_raw_anchor is None or self._drawing_preview_anchor is None:
             return
         if not (self._current_keyboard_modifiers() & Qt.KeyboardModifier.ControlModifier):
             return
-        item = pg.ScatterPlotItem(
-            [self._drawing_preview_anchor.x],
-            [self._drawing_preview_anchor.y],
-            symbol="o",
-            size=11,
-            brush=pg.mkBrush("#fff7cc"),
-            pen=pg.mkPen("#f5b700", width=2.4),
+        if self._pending_drawing_anchors:
+            return
+        raw_anchor = self._drawing_preview_raw_anchor
+        snapped_anchor = self._drawing_preview_anchor
+        if abs(raw_anchor.x - snapped_anchor.x) <= 1e-6 and abs(raw_anchor.y - snapped_anchor.y) <= 1e-6:
+            return
+        guide_color = QColor("#f5b700")
+        guide_color.setAlpha(170)
+        item = pg.PlotCurveItem(
+            [raw_anchor.x, snapped_anchor.x],
+            [raw_anchor.y, snapped_anchor.y],
+            pen=pg.mkPen(guide_color, width=1.6, style=Qt.PenStyle.DashLine),
         )
         item._barbybar_line = True
-        item._barbybar_snap_preview = True
-        item.setZValue(21)
+        item._barbybar_snap_preview_guide = True
+        item.setZValue(20.5)
         self.price_plot.addItem(item)
 
     def _segment_distance_to_scene_pos(self, first: DrawingAnchor, second: DrawingAnchor, scene_pos) -> float:
@@ -2186,6 +2204,7 @@ class ChartWidget(QWidget):
             needed_anchors=needed,
         )
         if len(self._pending_drawing_anchors) < needed:
+            self._drawing_preview_raw_anchor = anchor
             self._drawing_preview_anchor = anchor
             self._rebuild_line_items()
             return
@@ -2196,7 +2215,7 @@ class ChartWidget(QWidget):
         )
         self._drawings.append(drawing)
         self._pending_drawing_anchors = []
-        self._drawing_preview_anchor = None
+        self._clear_drawing_preview_state()
         self._active_drawing_tool = None
         self._sync_plot_data()
         self._apply_viewport()
@@ -2568,16 +2587,42 @@ class ChartWidget(QWidget):
             self._hovered_anchor_index = hovered_anchor_index
             self._rebuild_line_items()
 
+    def _drawing_snap_target(self, anchor: DrawingAnchor) -> DrawingAnchor | None:
+        if not self._bars or self._cursor < 0:
+            return None
+        raw_scene = self.price_plot.vb.mapViewToScene(QPointF(anchor.x, anchor.y))
+        pixels_per_bar = self._pixels_per_bar()
+        if pixels_per_bar <= 0.0001:
+            return None
+        bars_radius = max(1, int(ceil(DRAWING_SNAP_DISTANCE_PX / pixels_per_bar)))
+        center_index = int(round(anchor.x))
+        start_index = max(self._global_start_index, center_index - bars_radius)
+        end_index = min(self._cursor, center_index + bars_radius)
+        best_anchor: DrawingAnchor | None = None
+        best_distance: float | None = None
+        for index in range(start_index, end_index + 1):
+            local_index = index - self._global_start_index
+            if local_index < 0 or local_index >= len(self._bars):
+                continue
+            bar = self._bars[local_index]
+            for price in (bar.open, bar.high, bar.low, bar.close):
+                snapped_scene = self.price_plot.vb.mapViewToScene(QPointF(float(index), float(price)))
+                distance = hypot(float(raw_scene.x()) - float(snapped_scene.x()), float(raw_scene.y()) - float(snapped_scene.y()))
+                if distance > DRAWING_SNAP_DISTANCE_PX:
+                    continue
+                if best_distance is None or distance < best_distance:
+                    best_distance = distance
+                    best_anchor = DrawingAnchor(float(index), float(price))
+        return best_anchor
+
     def _normalized_drawing_anchor(self, anchor: DrawingAnchor) -> DrawingAnchor:
         anchor = self._stabilize_drawing_anchor(anchor)
         if not (self._current_keyboard_modifiers() & Qt.KeyboardModifier.ControlModifier):
             return anchor
-        hover = self._hover_bar_at(anchor.x)
-        if hover is None:
+        snapped_anchor = self._drawing_snap_target(anchor)
+        if snapped_anchor is None:
             return anchor
-        index, bar = hover
-        snapped_price = min((bar.open, bar.high, bar.low, bar.close), key=lambda price: abs(price - anchor.y))
-        return DrawingAnchor(float(index), float(snapped_price))
+        return snapped_anchor
 
     @staticmethod
     def _stabilize_drawing_anchor(anchor: DrawingAnchor) -> DrawingAnchor:
@@ -2585,6 +2630,11 @@ class ChartWidget(QWidget):
 
     def _current_keyboard_modifiers(self):
         return QApplication.keyboardModifiers()
+
+    def _pixels_per_bar(self) -> float:
+        first = self.price_plot.vb.mapViewToScene(QPointF(0.0, 0.0))
+        second = self.price_plot.vb.mapViewToScene(QPointF(1.0, 0.0))
+        return abs(float(second.x()) - float(first.x()))
 
     def _current_preview_drawing(self) -> ChartDrawing | None:
         tool = self._active_drawing_tool
@@ -3155,7 +3205,7 @@ class ChartWidget(QWidget):
         previous_mode = self._interaction_mode
         self._interaction_mode = mode
         if mode is not InteractionMode.DRAWING:
-            self._drawing_preview_anchor = None
+            self._clear_drawing_preview_state()
         if mode is InteractionMode.DRAWING:
             self._set_dragging(False)
             self._suppress_next_left_click = False
@@ -3164,6 +3214,10 @@ class ChartWidget(QWidget):
         self._log_interaction("set_interaction_mode", previous_mode=previous_mode.value, mode=mode.value)
         self._sync_cursor()
         self.interactionModeChanged.emit(mode)
+
+    def _clear_drawing_preview_state(self) -> None:
+        self._drawing_preview_raw_anchor = None
+        self._drawing_preview_anchor = None
 
     def _sync_cursor(self) -> None:
         if self._is_dragging:

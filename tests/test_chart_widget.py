@@ -14,6 +14,7 @@ from barbybar.ui.chart_widget import (
     CANDLE_BODY_BORDER_WIDTH,
     CANDLE_WICK_WIDTH,
     ChartWidget,
+    DRAWING_SNAP_DISTANCE_PX,
     DOWN_CANDLE_COLOR,
     HoverTargetType,
     InteractionMode,
@@ -50,6 +51,35 @@ def _bars(count: int = 240) -> list[Bar]:
 def _app() -> QApplication:
     app = QApplication.instance()
     return app or QApplication([])
+
+
+def _snap_preview_guide_items(widget: ChartWidget) -> list[object]:
+    return [item for item in widget.price_plot.items if getattr(item, "_barbybar_snap_preview_guide", False)]
+
+
+def _guide_item_points(item: object) -> tuple[list[float], list[float]]:
+    x_data, y_data = item.getData()
+    return list(x_data), list(y_data)
+
+
+def _scene_point_with_y_offset(widget: ChartWidget, x: float, price: float, offset_px: float) -> QPointF:
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(x, price))
+    return QPointF(scene_pos.x(), scene_pos.y() + offset_px)
+
+
+def _scene_point_with_offset(widget: ChartWidget, x: float, price: float, offset_x_px: float = 0.0, offset_y_px: float = 0.0) -> QPointF:
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(x, price))
+    return QPointF(scene_pos.x() + offset_x_px, scene_pos.y() + offset_y_px)
+
+
+def _assert_no_snap_target(widget: ChartWidget, x: float, price: float) -> QPointF:
+    for offset_x_px in (0.0, 40.0, 80.0, 120.0):
+        for offset_y_px in (-140.0, -100.0, 100.0, 140.0):
+            scene_pos = _scene_point_with_offset(widget, x, price, offset_x_px=offset_x_px, offset_y_px=offset_y_px)
+            view_pos = widget.price_plot.vb.mapSceneToView(scene_pos)
+            if widget._drawing_snap_target(DrawingAnchor(float(view_pos.x()), float(view_pos.y()))) is None:
+                return scene_pos
+    raise AssertionError("Could not find a point outside the snap radius")
 
 
 @pytest.fixture(scope="module")
@@ -1351,14 +1381,52 @@ def test_ctrl_click_snaps_drawing_anchor_to_nearest_ohlc(widget: ChartWidget, ap
     monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
     app.processEvents()
 
-    click = _FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(10.4, 110.7)))
+    bar = widget._bars[10]
+    click = _FakeSceneClick(_scene_point_with_offset(widget, 10.0, bar.high, offset_x_px=4.0, offset_y_px=-4.0))
     widget._handle_scene_click(click)
 
     anchor = widget._pending_drawing_anchors[0]
-    bar = widget._bars[10]
 
     assert anchor.x == 10.0
     assert anchor.y == bar.high
+
+
+def test_ctrl_click_snaps_to_nearest_ohlc_across_nearby_bars(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    target_bar = widget._bars[11]
+    scene_pos = _scene_point_with_offset(widget, 11.0, target_bar.high, offset_x_px=-8.0, offset_y_px=-6.0)
+    widget._handle_scene_click(_FakeSceneClick(scene_pos))
+
+    anchor = widget._pending_drawing_anchors[0]
+    assert anchor.x == 11.0
+    assert anchor.y == target_bar.high
+
+
+def test_ctrl_click_does_not_snap_drawing_anchor_when_price_is_far(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    bar = widget._bars[10]
+    scene_pos = _assert_no_snap_target(widget, 10.0, bar.high)
+    widget._handle_scene_click(_FakeSceneClick(scene_pos))
+
+    anchor = widget._pending_drawing_anchors[0]
+    view_pos = widget.price_plot.vb.mapSceneToView(scene_pos)
+
+    assert anchor.x == pytest.approx(view_pos.x())
+    assert anchor.y == pytest.approx(view_pos.y())
 
 
 def test_ctrl_preview_anchor_uses_same_snap_rule(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
@@ -1370,15 +1438,16 @@ def test_ctrl_preview_anchor_uses_same_snap_rule(widget: ChartWidget, app: QAppl
     monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
     app.processEvents()
 
-    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(11.3, 111.7)),))
+    bar = widget._bars[11]
+    widget._handle_mouse_moved((_scene_point_with_offset(widget, 11.0, bar.high, offset_x_px=4.0, offset_y_px=-4.0),))
 
     anchor = widget._drawing_preview_anchor
     assert anchor is not None
     assert anchor.x == 11.0
-    assert anchor.y == widget._bars[11].high
+    assert anchor.y == bar.high
 
 
-def test_ctrl_preview_shows_snap_highlight_item(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+def test_ctrl_preview_anchor_remains_free_when_price_is_far(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
     widget.resize(900, 600)
     widget.show()
     widget.set_full_data(_bars())
@@ -1387,10 +1456,51 @@ def test_ctrl_preview_shows_snap_highlight_item(widget: ChartWidget, app: QAppli
     monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
     app.processEvents()
 
-    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(11.3, 111.7)),))
+    bar = widget._bars[11]
+    scene_pos = _assert_no_snap_target(widget, 11.0, bar.high)
+    widget._handle_mouse_moved((scene_pos,))
+
+    anchor = widget._drawing_preview_anchor
+    view_pos = widget.price_plot.vb.mapSceneToView(scene_pos)
+    assert anchor is not None
+    assert anchor.x == pytest.approx(view_pos.x())
+    assert anchor.y == pytest.approx(view_pos.y())
+
+
+def test_ctrl_preview_does_not_show_snap_highlight_item(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    widget._handle_mouse_moved((_scene_point_with_offset(widget, 11.0, widget._bars[11].high, offset_x_px=4.0, offset_y_px=-4.0),))
 
     snap_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_snap_preview", False)]
-    assert len(snap_items) == 1
+    assert snap_items == []
+
+
+def test_ctrl_preview_shows_snap_guide_segment_when_anchor_moves(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    bar = widget._bars[11]
+    scene_pos = _scene_point_with_offset(widget, 11.0, bar.high, offset_x_px=4.0, offset_y_px=-4.0)
+    widget._handle_mouse_moved((scene_pos,))
+
+    guide_items = _snap_preview_guide_items(widget)
+    assert len(guide_items) == 1
+    x_data, y_data = _guide_item_points(guide_items[0])
+    raw_view_pos = widget.price_plot.vb.mapSceneToView(scene_pos)
+    assert x_data == pytest.approx([raw_view_pos.x(), 11.0])
+    assert y_data == pytest.approx([raw_view_pos.y(), bar.high])
 
 
 def test_preview_does_not_show_snap_highlight_without_ctrl(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
@@ -1402,13 +1512,12 @@ def test_preview_does_not_show_snap_highlight_without_ctrl(widget: ChartWidget, 
     monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.NoModifier)
     app.processEvents()
 
-    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(11.3, 111.7)),))
+    widget._handle_mouse_moved((_scene_point_with_offset(widget, 11.0, widget._bars[11].high, offset_x_px=4.0, offset_y_px=-4.0),))
 
-    snap_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_snap_preview", False)]
-    assert snap_items == []
+    assert _snap_preview_guide_items(widget) == []
 
 
-def test_ctrl_preview_snap_highlight_clears_outside_chart(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+def test_ctrl_preview_guide_clears_outside_chart(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
     widget.resize(900, 600)
     widget.show()
     widget.set_full_data(_bars())
@@ -1417,16 +1526,142 @@ def test_ctrl_preview_snap_highlight_clears_outside_chart(widget: ChartWidget, a
     monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
     app.processEvents()
 
-    inside = widget.price_plot.vb.mapViewToScene(QPointF(11.3, 111.7))
+    inside = _scene_point_with_offset(widget, 11.0, widget._bars[11].high, offset_x_px=4.0, offset_y_px=-4.0)
     widget._handle_mouse_moved((inside,))
-    snap_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_snap_preview", False)]
-    assert len(snap_items) == 1
+    assert len(_snap_preview_guide_items(widget)) == 1
 
     outside = widget.price_plot.sceneBoundingRect().topLeft() - QPointF(20.0, 20.0)
     widget._handle_mouse_moved((outside,))
 
-    snap_items = [item for item in widget.price_plot.items if getattr(item, "_barbybar_snap_preview", False)]
-    assert snap_items == []
+    assert _snap_preview_guide_items(widget) == []
+
+
+def test_ctrl_preview_does_not_show_snap_guide_when_price_does_not_move(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    snapped_price = widget._bars[11].high
+    widget._handle_mouse_moved((widget.price_plot.vb.mapViewToScene(QPointF(11.0, snapped_price)),))
+
+    assert _snap_preview_guide_items(widget) == []
+
+
+def test_ctrl_preview_guide_ends_at_nearest_snap_target(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    bar = widget._bars[11]
+    scene_pos = _scene_point_with_offset(widget, 11.0, bar.high, offset_x_px=12.0, offset_y_px=-6.0)
+    widget._handle_mouse_moved((scene_pos,))
+
+    guide_items = _snap_preview_guide_items(widget)
+    assert len(guide_items) == 1
+    x_data, y_data = _guide_item_points(guide_items[0])
+    raw_view_pos = widget.price_plot.vb.mapSceneToView(scene_pos)
+    expected_anchor = widget._drawing_snap_target(DrawingAnchor(float(raw_view_pos.x()), float(raw_view_pos.y())))
+    assert expected_anchor is not None
+    assert x_data == pytest.approx([raw_view_pos.x(), expected_anchor.x])
+    assert y_data == pytest.approx([raw_view_pos.y(), expected_anchor.y])
+
+
+def test_ctrl_preview_hides_snap_feedback_when_price_is_far(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    scene_pos = _assert_no_snap_target(widget, 11.0, widget._bars[11].high)
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert _snap_preview_guide_items(widget) == []
+
+
+def test_ctrl_preview_second_anchor_uses_snap_without_showing_guide(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    first_click = _FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0)))
+    widget._handle_scene_click(first_click)
+
+    bar = widget._bars[11]
+    scene_pos = _scene_point_with_offset(widget, 11.0, bar.high, offset_x_px=4.0, offset_y_px=-4.0)
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert _snap_preview_guide_items(widget) == []
+    assert widget._drawing_preview_anchor is not None
+    assert widget._drawing_preview_anchor.x == 11.0
+    assert widget._drawing_preview_anchor.y == bar.high
+
+
+def test_single_anchor_tool_shows_snap_guide_on_first_point(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.HORIZONTAL_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    bar = widget._bars[11]
+    scene_pos = _scene_point_with_offset(widget, 11.0, bar.high, offset_x_px=4.0, offset_y_px=-4.0)
+    widget._handle_mouse_moved((scene_pos,))
+
+    guide_items = _snap_preview_guide_items(widget)
+    assert len(guide_items) == 1
+
+
+def test_key_release_clears_snap_preview_guide_without_mouse_move(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    modifiers = {"value": Qt.KeyboardModifier.ControlModifier}
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: modifiers["value"])
+    app.processEvents()
+
+    widget._handle_mouse_moved((_scene_point_with_offset(widget, 11.0, widget._bars[11].high, offset_x_px=4.0, offset_y_px=-4.0),))
+    assert len(_snap_preview_guide_items(widget)) == 1
+
+    modifiers["value"] = Qt.KeyboardModifier.NoModifier
+    widget.keyReleaseEvent(QKeyEvent(QKeyEvent.Type.KeyRelease, Qt.Key.Key_Control, Qt.KeyboardModifier.NoModifier))
+
+    assert _snap_preview_guide_items(widget) == []
+
+
+def test_disabling_drawing_tool_clears_snap_preview_guide(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    widget._handle_mouse_moved((_scene_point_with_offset(widget, 11.0, widget._bars[11].high, offset_x_px=4.0, offset_y_px=-4.0),))
+    assert len(_snap_preview_guide_items(widget)) == 1
+
+    widget.set_active_drawing_tool(None)
+
+    assert _snap_preview_guide_items(widget) == []
 
 
 def test_anchor_remains_free_without_ctrl(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
