@@ -2163,7 +2163,7 @@ class ChartWidget(QWidget):
             OrderLineType.REVERSE: "反",
             OrderLineType.STOP_LOSS: "止损",
             OrderLineType.TAKE_PROFIT: "止盈",
-            OrderLineType.AVERAGE_PRICE: "成本",
+            OrderLineType.AVERAGE_PRICE: "多单" if self._position_direction == "long" else "空单" if self._position_direction == "short" else "持仓",
         }
         quantity = int(round(line.quantity))
         label = f"{labels[line.order_type]} {quantity}手 {format_price(line.price, self._tick_size)}"

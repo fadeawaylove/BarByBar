@@ -2656,7 +2656,7 @@ def test_average_price_label_includes_current_pnl_for_long(widget: ChartWidget) 
         created_at=datetime(2025, 1, 1, 9, 0),
     )
 
-    assert widget._order_line_label(line) == "成本 1手 108.0 (+1.8)"
+    assert widget._order_line_label(line) == "多单 1手 108.0 (+1.8)"
 
 
 def test_average_price_label_includes_current_pnl_for_long_loss(widget: ChartWidget) -> None:
@@ -2673,7 +2673,7 @@ def test_average_price_label_includes_current_pnl_for_long_loss(widget: ChartWid
         created_at=datetime(2025, 1, 1, 9, 0),
     )
 
-    assert widget._order_line_label(line) == "成本 1手 110.0 (-0.2)"
+    assert widget._order_line_label(line) == "多单 1手 110.0 (-0.2)"
 
 
 def test_average_price_label_includes_current_pnl_for_short(widget: ChartWidget) -> None:
@@ -2690,7 +2690,7 @@ def test_average_price_label_includes_current_pnl_for_short(widget: ChartWidget)
         created_at=datetime(2025, 1, 1, 9, 0),
     )
 
-    assert widget._order_line_label(line) == "成本 1手 112.0 (+2.2)"
+    assert widget._order_line_label(line) == "空单 1手 112.0 (+2.2)"
 
 
 def test_average_price_label_shows_zero_when_flat(widget: ChartWidget) -> None:
@@ -2707,7 +2707,7 @@ def test_average_price_label_shows_zero_when_flat(widget: ChartWidget) -> None:
         created_at=datetime(2025, 1, 1, 9, 0),
     )
 
-    assert widget._order_line_label(line) == "成本 1手 109.8 (0)"
+    assert widget._order_line_label(line) == "多单 1手 109.8 (0)"
 
 
 def test_average_price_label_falls_back_without_position_direction(widget: ChartWidget) -> None:
@@ -2724,7 +2724,7 @@ def test_average_price_label_falls_back_without_position_direction(widget: Chart
         created_at=datetime(2025, 1, 1, 9, 0),
     )
 
-    assert widget._order_line_label(line) == "成本 1手 108"
+    assert widget._order_line_label(line) == "持仓 1手 108"
 
 
 def test_average_price_label_falls_back_without_active_bar(widget: ChartWidget) -> None:
@@ -2739,7 +2739,7 @@ def test_average_price_label_falls_back_without_active_bar(widget: ChartWidget) 
         created_at=datetime(2025, 1, 1, 9, 0),
     )
 
-    assert widget._order_line_label(line) == "成本 1手 108"
+    assert widget._order_line_label(line) == "多单 1手 108"
 
 
 def test_order_line_style_uses_expected_colors() -> None:

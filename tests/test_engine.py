@@ -140,6 +140,132 @@ def test_nearest_long_stop_loss_triggers_first_when_multiple_lines_are_hit() -> 
     assert engine.trades[-1].exit_price == 99
 
 
+def test_long_stop_loss_gap_down_does_not_trigger_when_bar_range_excludes_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=97, high=98, low=95, close=96, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is True
+    assert all(action.action_type is not ActionType.CLOSE for action in engine.actions)
+
+
+def test_long_take_profit_gap_up_does_not_trigger_when_bar_range_excludes_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=105, high=106, low=104, close=105, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is True
+    assert all(action.action_type is not ActionType.CLOSE for action in engine.actions)
+
+
+def test_short_stop_loss_gap_up_does_not_trigger_when_bar_range_excludes_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=105, high=106, low=104, close=105, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_SHORT, quantity=1, price=100)
+    engine.place_order_line(OrderLineType.STOP_LOSS, price=102, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is True
+    assert all(action.action_type is not ActionType.CLOSE for action in engine.actions)
+
+
+def test_short_take_profit_gap_down_does_not_trigger_when_bar_range_excludes_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=95, high=96, low=94, close=95, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_SHORT, quantity=1, price=100)
+    engine.place_order_line(OrderLineType.TAKE_PROFIT, price=98, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is True
+    assert all(action.action_type is not ActionType.CLOSE for action in engine.actions)
+
+
+def test_long_stop_loss_triggers_when_display_range_contains_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100.0, high=100.2, low=99.8, close=100.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100.0, high=100.2, low=99.91, close=100.0, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0, tick_size=0.2)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100.0)
+    engine.place_order_line(OrderLineType.STOP_LOSS, price=100.0, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].exit_price == 100.0
+
+
+def test_long_take_profit_triggers_when_display_range_contains_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100.0, high=100.2, low=99.8, close=100.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100.0, high=100.09, low=99.8, close=100.0, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0, tick_size=0.2)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100.0)
+    engine.place_order_line(OrderLineType.TAKE_PROFIT, price=100.0, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].exit_price == 100.0
+
+
+def test_short_stop_loss_triggers_when_display_range_contains_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100.0, high=100.2, low=99.8, close=100.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100.0, high=100.09, low=99.8, close=100.0, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0, tick_size=0.2)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_SHORT, quantity=1, price=100.0)
+    engine.place_order_line(OrderLineType.STOP_LOSS, price=100.0, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].exit_price == 100.0
+
+
+def test_entry_order_line_triggers_when_display_range_contains_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100.0, high=100.2, low=99.8, close=100.0, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100.0, high=100.09, low=99.8, close=100.0, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0, tick_size=0.2)
+    engine = ReviewEngine(session, bars)
+    engine.place_order_line(OrderLineType.ENTRY_LONG, price=100.0, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.direction == "long"
+
+
 def test_exit_order_line_closes_existing_position() -> None:
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
     engine = ReviewEngine(session, sample_bars())

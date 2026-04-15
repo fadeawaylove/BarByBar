@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import time, timedelta
 
+from barbybar.data.tick_size import snap_price
 from barbybar.domain.models import (
     ActionType,
     Bar,
@@ -503,14 +504,14 @@ class ReviewEngine:
         take_line = self._select_triggered_protective_line(OrderLineType.TAKE_PROFIT, index, bar)
         hit_line: OrderLine | None = None
         if position.direction == "long":
-            if stop_line and bar.low <= stop_line.price:
+            if stop_line and self._bar_contains_order_price(bar, stop_line.price):
                 hit_line = stop_line
-            elif take_line and bar.high >= take_line.price:
+            elif take_line and self._bar_contains_order_price(bar, take_line.price):
                 hit_line = take_line
         else:
-            if stop_line and bar.high >= stop_line.price:
+            if stop_line and self._bar_contains_order_price(bar, stop_line.price):
                 hit_line = stop_line
-            elif take_line and bar.low <= take_line.price:
+            elif take_line and self._bar_contains_order_price(bar, take_line.price):
                 hit_line = take_line
         if hit_line is None:
             self._update_drawdown(bar.close)
@@ -542,7 +543,7 @@ class ReviewEngine:
             return False
         hit_line: OrderLine | None = None
         for line in entry_lines:
-            if bar.low <= line.price <= bar.high:
+            if self._bar_contains_order_price(bar, line.price):
                 hit_line = line
                 break
         if hit_line is None:
@@ -579,7 +580,7 @@ class ReviewEngine:
             return False
         hit_line: OrderLine | None = None
         for line in flattening_lines:
-            if min(bar.low, bar.high) <= line.price <= max(bar.low, bar.high):
+            if self._bar_contains_order_price(bar, line.price):
                 hit_line = line
                 break
         if hit_line is None:
@@ -859,15 +860,22 @@ class ReviewEngine:
             return None
         if position.direction == "long":
             if order_type is OrderLineType.STOP_LOSS:
-                hit_lines = [line for line in candidates if bar.low <= line.price]
+                hit_lines = [line for line in candidates if self._bar_contains_order_price(bar, line.price)]
                 return max(hit_lines, key=lambda line: line.price, default=None)
-            hit_lines = [line for line in candidates if bar.high >= line.price]
+            hit_lines = [line for line in candidates if self._bar_contains_order_price(bar, line.price)]
             return min(hit_lines, key=lambda line: line.price, default=None)
         if order_type is OrderLineType.STOP_LOSS:
-            hit_lines = [line for line in candidates if bar.high >= line.price]
+            hit_lines = [line for line in candidates if self._bar_contains_order_price(bar, line.price)]
             return min(hit_lines, key=lambda line: line.price, default=None)
-        hit_lines = [line for line in candidates if bar.low <= line.price]
+        hit_lines = [line for line in candidates if self._bar_contains_order_price(bar, line.price)]
         return max(hit_lines, key=lambda line: line.price, default=None)
+
+    def _bar_contains_order_price(self, bar: Bar, order_price: float) -> bool:
+        tick_size = max(float(self.session.tick_size), 0.0001)
+        low = snap_price(min(float(bar.low), float(bar.high)), tick_size)
+        high = snap_price(max(float(bar.low), float(bar.high)), tick_size)
+        price = snap_price(float(order_price), tick_size)
+        return low <= price <= high
 
     def _cancel_line(self, line: OrderLine) -> None:
         line.status = OrderStatus.CANCELLED
