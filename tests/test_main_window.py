@@ -1751,6 +1751,50 @@ def test_navigation_schedules_auto_save(window: MainWindow) -> None:
     window._session_dirty = False
 
 
+def test_step_forward_keeps_zoom_when_forward_window_extends(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    assert window.engine is not None
+
+    extended_bars = [
+        Bar(
+            timestamp=datetime(2025, 1, 1, 9, 0) + timedelta(minutes=index),
+            open=100 + index,
+            high=101 + index,
+            low=99 + index,
+            close=100.5 + index,
+            volume=1000 + index,
+        )
+        for index in range(120)
+    ]
+    window.engine.session.current_index = 39
+    window.engine.session.current_bar_time = window.engine.bars[39].timestamp
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
+    window.chart_widget.zoom_x(anchor_x=30, scale=0.5)
+    preserved_bars = window.chart_widget.viewport_state.bars_in_view
+
+    def fake_get_chart_window(*_args, **_kwargs) -> WindowBars:
+        return WindowBars(
+            bars=extended_bars,
+            global_start_index=0,
+            global_end_index=len(extended_bars) - 1,
+            anchor_global_index=window.engine.session.current_index,
+            total_count=len(extended_bars),
+        )
+
+    monkeypatch.setattr(window.repo, "get_chart_window", fake_get_chart_window)
+
+    window.step_forward()
+
+    assert window.chart_widget.viewport_state.bars_in_view == preserved_bars
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
 def test_space_shortcut_steps_forward_when_focus_allows(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_engine(window)
     start_index = window.engine.session.current_index

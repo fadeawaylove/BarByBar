@@ -195,6 +195,34 @@ def test_reset_viewport_restores_follow_latest(widget: ChartWidget) -> None:
     assert widget.viewport_state.right_edge_index == 121
 
 
+def test_set_window_data_preserve_viewport_keeps_user_zoom(widget: ChartWidget) -> None:
+    widget.resize(900, 600)
+    widget.set_full_data(_bars())
+    widget.set_cursor(199)
+    widget.zoom_x(anchor_x=50, scale=0.5)
+    preserved_bars = widget.viewport_state.bars_in_view
+
+    widget.set_window_data(_bars(180), cursor=170, total_count=240, global_start_index=20, preserve_viewport=True)
+
+    assert widget.viewport_state.bars_in_view == preserved_bars
+
+
+def test_set_window_data_preserve_viewport_clamps_existing_zoom_instead_of_resetting(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(199)
+    widget.viewport_state.bars_in_view = 180
+    widget.resize(120, 600)
+    app.processEvents()
+    readable_cap = widget._max_readable_bars_in_view()
+
+    widget.set_window_data(_bars(180), cursor=170, total_count=240, global_start_index=20, preserve_viewport=True)
+
+    assert widget.viewport_state.bars_in_view == readable_cap
+    assert widget.viewport_state.bars_in_view != 120
+
+
 def test_early_cursor_keeps_fixed_window_width(widget: ChartWidget) -> None:
     widget.set_full_data(_bars())
     widget.set_cursor(30)

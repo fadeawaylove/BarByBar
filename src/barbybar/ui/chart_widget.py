@@ -717,7 +717,10 @@ class ChartWidget(QWidget):
         if not preserve_viewport:
             self._reset_y_axis_offset()
         self._viewport.max_bars_in_view = max(200, self._total_count or len(self._bars))
-        self._viewport.bars_in_view = self._clamp_bars_in_view(120)
+        if preserve_viewport:
+            self._viewport.bars_in_view = self._clamp_bars_in_view(self._viewport.bars_in_view)
+        else:
+            self._viewport.bars_in_view = self._clamp_bars_in_view(120)
         if not preserve_viewport:
             self._pending_drawing_anchors = []
             self._clear_drawing_preview_state()
