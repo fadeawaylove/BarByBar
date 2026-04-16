@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
 from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
@@ -1749,6 +1749,32 @@ def test_navigation_schedules_auto_save(window: MainWindow) -> None:
     assert window._auto_save_timer.isActive()
     window._auto_save_timer.stop()
     window._session_dirty = False
+
+
+def test_space_shortcut_steps_forward_when_focus_allows(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    start_index = window.engine.session.current_index
+
+    monkeypatch.setattr(QApplication, "focusWidget", staticmethod(lambda: window.chart_widget))
+    window._handle_step_forward_shortcut()
+
+    assert window.engine.session.current_index == start_index + 1
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_space_shortcut_does_not_step_forward_while_typing(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    start_index = window.engine.session.current_index
+    input_widget = QLineEdit()
+
+    monkeypatch.setattr(QApplication, "focusWidget", staticmethod(lambda: input_widget))
+    assert window._focused_widget_blocks_step_forward_shortcut(input_widget) is True
+    assert window._focused_widget_blocks_step_forward_shortcut(window.chart_widget) is False
+
+    window._handle_step_forward_shortcut()
+
+    assert window.engine.session.current_index == start_index
 
 
 def test_step_forward_passes_flatten_toggle_state_to_engine(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:

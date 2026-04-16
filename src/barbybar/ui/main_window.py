@@ -11,6 +11,8 @@ from loguru import logger
 from PySide6.QtCore import QObject, QPointF, QRectF, QSize, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractButton,
+    QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -38,7 +40,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QColor, QCloseEvent, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QCloseEvent, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut
 
 from barbybar import __version__
 from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
@@ -1219,6 +1221,7 @@ class MainWindow(QMainWindow):
         self._timeframe_toolbar_group: QWidget | None = None
         self._template_toolbar_group: QWidget | None = None
         self._drawing_toolbar_group: QWidget | None = None
+        self.step_forward_shortcut: QShortcut | None = None
 
         self._load_ui_settings()
         self._build_ui()
@@ -1249,6 +1252,23 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self._busy_overlay = BusyOverlay(container)
         self._busy_overlay.setGeometry(container.rect())
+        self.step_forward_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        self.step_forward_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.step_forward_shortcut.activated.connect(self._handle_step_forward_shortcut)
+
+    def _focused_widget_blocks_step_forward_shortcut(self, widget: QWidget | None = None) -> bool:
+        focused_widget = widget or QApplication.focusWidget()
+        if focused_widget is None:
+            return False
+        return isinstance(
+            focused_widget,
+            (QAbstractButton, QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit),
+        )
+
+    def _handle_step_forward_shortcut(self) -> None:
+        if self._focused_widget_blocks_step_forward_shortcut():
+            return
+        self.step_forward()
 
     def _build_center_panel(self) -> QWidget:
         panel = QWidget()
