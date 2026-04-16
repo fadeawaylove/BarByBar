@@ -46,10 +46,19 @@ uv run pyinstaller --clean --noconfirm BarByBar.spec
 BarByBar publishes a Windows portable ZIP and a Windows setup installer to GitHub Releases when you push a version tag that points at a commit already contained in `master`.
 
 ```powershell
-# 1. make sure your release commit is already on master
-# 2. publish a new version tag from that commit
+# 1. update src\barbybar\__init__.py to the target version in a normal commit
+# 2. merge that commit into master
+# 3. create and push the release tag from master
 .\scripts\publish_release.ps1 patch
 ```
+
+`publish_release.ps1` no longer creates a release commit for you. It verifies that:
+
+- the working tree is clean
+- the current branch is `master`
+- `src\barbybar\__init__.py` already contains the next semantic version implied by `major|minor|patch`
+
+The release workflow then summarizes the commits between the previous tag and the current tag into Chinese release notes automatically.
 
 The GitHub Actions workflows are:
 
