@@ -188,9 +188,16 @@ if ($branch -ne 'master') {
     throw "Release tags must be created from master. Current branch: $branch"
 }
 
-if ($currentVersion -ne $nextVersion) {
-    throw "Package version is $currentVersion, but the next $normalizedPart release requires $nextVersion. Update src\\barbybar\\__init__.py in a normal commit on master before publishing."
-}
+$updatedContent = [regex]::Replace(
+    $versionFileContent,
+    '__version__\s*=\s*"[^"]+"',
+    "__version__ = `"$nextVersion`"",
+    1
+)
+Set-Content -Path $versionFile -Value $updatedContent -NoNewline
+
+Invoke-Git -Arguments @('add', $versionFile)
+Invoke-Git -Arguments @('commit', '-m', "Release $tag")
 
 Invoke-Git -Arguments @('push', 'origin', $branch)
 Invoke-Git -Arguments @('tag', $tag)
