@@ -2152,6 +2152,7 @@ def test_dataset_manager_filters_by_display_name_and_symbol(window: MainWindow) 
 
     dataset_dialog = DataSetManagerDialog(window.repo, window)
     try:
+        assert dataset_dialog.dataset_filter.placeholderText() == "按名称或品种筛选"
         assert dataset_dialog.dataset_list.count() == 3
 
         dataset_dialog.dataset_filter.setText("silver")
@@ -2167,6 +2168,37 @@ def test_dataset_manager_filters_by_display_name_and_symbol(window: MainWindow) 
     finally:
         dataset_dialog.close()
         dataset_dialog.deleteLater()
+
+
+def test_session_library_filters_by_title_symbol_and_tags(window: MainWindow) -> None:
+    dataset = window.repo.list_datasets()[0]
+    first = window.repo.create_session(dataset.id or 0, start_index=1, title="螺纹突破复盘")
+    second = window.repo.create_session(dataset.id or 0, start_index=2, title="午后整理观察")
+    first.tags = ["breakout", "morning"]
+    second.tags = ["range", "afternoon"]
+    window.repo.save_session(first, [], [])
+    window.repo.save_session(second, [], [])
+
+    session_dialog = SessionLibraryDialog(window.repo, window)
+    try:
+        assert session_dialog.session_filter.placeholderText() == "按名称、品种或标签筛选"
+
+        session_dialog.session_filter.setText("突破")
+        assert session_dialog.session_list.count() == 1
+        assert "螺纹突破复盘" in session_dialog.session_list.item(0).text()
+
+        session_dialog.session_filter.setText("if")
+        assert session_dialog.session_list.count() >= 2
+
+        session_dialog.session_filter.setText("AFTERNOON")
+        assert session_dialog.session_list.count() == 1
+        assert "午后整理观察" in session_dialog.session_list.item(0).text()
+
+        session_dialog.session_filter.setText("")
+        assert session_dialog.session_list.count() == 2
+    finally:
+        session_dialog.close()
+        session_dialog.deleteLater()
 
 
 def test_import_csv_imports_single_file_and_uses_busy_overlay(monkeypatch, app: QApplication) -> None:

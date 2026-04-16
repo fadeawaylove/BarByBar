@@ -826,7 +826,7 @@ class DataSetManagerDialog(QDialog):
         self._import_folder_button = import_folder_button
 
         self.dataset_filter = QLineEdit()
-        self.dataset_filter.setPlaceholderText("按文件名或品种筛选")
+        self.dataset_filter.setPlaceholderText("按名称或品种筛选")
         self.dataset_filter.textChanged.connect(self._refresh_datasets)
         layout.addWidget(self.dataset_filter)
 
@@ -1024,7 +1024,7 @@ class SessionLibraryDialog(QDialog):
 
         layout = QVBoxLayout(self)
         self.session_filter = QLineEdit()
-        self.session_filter.setPlaceholderText("按品种或标签筛选")
+        self.session_filter.setPlaceholderText("按名称、品种或标签筛选")
         self.session_filter.textChanged.connect(self._refresh_sessions)
         layout.addWidget(self.session_filter)
 
@@ -1047,11 +1047,9 @@ class SessionLibraryDialog(QDialog):
         self._refresh_sessions()
 
     def _refresh_sessions(self) -> None:
-        filter_text = self.session_filter.text().strip()
         self.session_list.clear()
-        symbol = filter_text.upper() if filter_text.isalpha() else ""
-        tag = filter_text if filter_text and not filter_text.isalpha() else ""
-        for session in self.repo.list_sessions(symbol=symbol, tag=tag):
+        filter_text = self.session_filter.text().strip()
+        for session in self.repo.list_sessions(query=filter_text):
             status_text = "完成" if session.status is SessionStatus.COMPLETED else "进行中"
             item = QListWidgetItem(
                 f"{session.title} | {session.timeframe} | {status_text} | PnL {session.stats.total_pnl:.2f}"

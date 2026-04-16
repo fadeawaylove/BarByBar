@@ -6,7 +6,7 @@ from uuid import uuid4
 from barbybar.data.tick_size import default_tick_size_for_symbol
 from barbybar.data.timeframe import aggregate_bars, find_bar_index_for_timestamp, normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType, SessionStatus
 from barbybar.storage.repository import Repository
 
 
@@ -464,6 +464,33 @@ def test_save_session_persists_drawings_by_session() -> None:
         assert loaded_first[1].anchors[1].y == 110.0
         assert [drawing.tool_type for drawing in loaded_second] == [DrawingToolType.HORIZONTAL_LINE]
         assert len(loaded_second[0].anchors) == 1
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_list_sessions_query_matches_title_symbol_and_tags() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset_if = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        dataset_ag = repo.import_csv(Path("sample_data/if_sample.csv"), "AG9999", "1m")
+
+        breakout = repo.create_session(dataset_if.id or 0, start_index=1, title="螺纹突破复盘")
+        balance = repo.create_session(dataset_ag.id or 0, start_index=2, title="白银震荡观察")
+
+        breakout.tags = ["breakout", "morning"]
+        breakout.status = SessionStatus.COMPLETED
+        balance.tags = ["range", "afternoon"]
+        repo.save_session(breakout, [], [])
+        repo.save_session(balance, [], [])
+
+        assert [session.id for session in repo.list_sessions(query="突破")] == [breakout.id]
+        assert [session.id for session in repo.list_sessions(query="ag99")] == [balance.id]
+        assert [session.id for session in repo.list_sessions(query="MORNING")] == [breakout.id]
+        assert [session.id for session in repo.list_sessions(query="突破", status=breakout.status)] == [breakout.id]
+        assert {session.id for session in repo.list_sessions(query="")} == {breakout.id, balance.id}
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

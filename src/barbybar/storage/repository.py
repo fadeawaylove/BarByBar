@@ -409,19 +409,31 @@ class Repository:
         index = max(0, min(global_index, len(meta) - 1))
         return meta[index].timestamp
 
-    def list_sessions(self, *, symbol: str = "", tag: str = "", status: SessionStatus | None = None, direction: str = "") -> list[ReviewSession]:
-        query = "SELECT * FROM sessions WHERE 1 = 1"
+    def list_sessions(
+        self,
+        *,
+        symbol: str = "",
+        tag: str = "",
+        status: SessionStatus | None = None,
+        direction: str = "",
+        query: str = "",
+    ) -> list[ReviewSession]:
+        sql = "SELECT * FROM sessions WHERE 1 = 1"
         params: list[object] = []
         if symbol:
-            query += " AND symbol = ?"
+            sql += " AND symbol = ?"
             params.append(symbol)
         if status:
-            query += " AND status = ?"
+            sql += " AND status = ?"
             params.append(status.value)
         if tag:
-            query += " AND tags_json LIKE ?"
+            sql += " AND tags_json LIKE ?"
             params.append(f"%{tag}%")
-        rows = self.conn.execute(query + " ORDER BY updated_at DESC, id DESC", params).fetchall()
+        if query:
+            search = f"%{query.strip().lower()}%"
+            sql += " AND (LOWER(title) LIKE ? OR LOWER(symbol) LIKE ? OR LOWER(tags_json) LIKE ?)"
+            params.extend([search, search, search])
+        rows = self.conn.execute(sql + " ORDER BY updated_at DESC, id DESC", params).fetchall()
         sessions = [self._session_from_row(row) for row in rows]
         if direction:
             sessions = [session for session in sessions if session.position.direction == direction]
