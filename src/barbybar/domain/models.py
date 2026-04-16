@@ -470,4 +470,5 @@ class ReviewSession:
     position: PositionState = field(default_factory=PositionState)
     stats: SessionStats = field(default_factory=SessionStats)
     created_at: datetime | None = None
+    last_opened_at: datetime | None = None
     updated_at: datetime | None = None

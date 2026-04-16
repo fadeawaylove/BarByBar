@@ -217,8 +217,11 @@ class Repository:
         session_title = title or f"{dataset.symbol} {dataset.timeframe} {dataset.start_time:%Y-%m-%d %H:%M}"
         cursor = self.conn.execute(
             """
-            INSERT INTO sessions(dataset_id, symbol, timeframe, replay_timeframe, chart_timeframe, title, start_index, current_index, current_bar_time, tick_size, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sessions(
+                dataset_id, symbol, timeframe, replay_timeframe, chart_timeframe, title,
+                start_index, current_index, current_bar_time, tick_size, status, last_opened_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             (
                 dataset_id,
@@ -236,6 +239,18 @@ class Repository:
         )
         self.conn.commit()
         return self.get_session(int(cursor.lastrowid))
+
+    def touch_session_opened(self, session_id: int) -> None:
+        self.get_session(session_id)
+        self.conn.execute(
+            """
+            UPDATE sessions
+            SET last_opened_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (session_id,),
+        )
+        self.conn.commit()
 
     def save_session(
         self,
@@ -439,6 +454,12 @@ class Repository:
             sessions = [session for session in sessions if session.position.direction == direction]
         return sessions
 
+    def list_recently_opened_sessions(self) -> list[ReviewSession]:
+        rows = self.conn.execute(
+            "SELECT * FROM sessions ORDER BY last_opened_at DESC, id DESC"
+        ).fetchall()
+        return [self._session_from_row(row) for row in rows]
+
     def delete_session(self, session_id: int) -> None:
         self.get_session(session_id)
         self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
@@ -540,6 +561,7 @@ class Repository:
             position=PositionState.from_dict(json.loads(row["position_json"])),
             stats=SessionStats.from_dict(json.loads(row["stats_json"])),
             created_at=_dt(row["created_at"]),
+            last_opened_at=_dt(row["last_opened_at"]) if "last_opened_at" in row.keys() else _dt(row["updated_at"]),
             updated_at=_dt(row["updated_at"]),
         )
 

@@ -612,6 +612,59 @@ def test_main_window_restores_drawing_style_presets_from_saved_session(app: QApp
         app.processEvents()
 
 
+def test_main_window_autoloads_last_opened_session_even_without_new_save(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(180):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    dataset = repo.import_csv(csv_path, "IF", "1m")
+    saved_session = repo.create_session(dataset.id or 0, start_index=10, title="已保存案例")
+    saved_session.current_index = 12
+    saved_session.current_bar_time = start + timedelta(minutes=12)
+    repo.save_session(saved_session, [], [])
+    opened_session = repo.create_session(dataset.id or 0, start_index=30, title="最后打开案例")
+    repo.conn.execute(
+        "UPDATE sessions SET last_opened_at = ? WHERE id = ?",
+        ("2025-01-01T00:00:00", saved_session.id),
+    )
+    repo.conn.execute(
+        "UPDATE sessions SET last_opened_at = ? WHERE id = ?",
+        ("2025-01-01T00:00:00", opened_session.id),
+    )
+    repo.conn.commit()
+
+    first_window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, first_window)
+        first_window._load_session(opened_session.id or 0)
+        _wait_for_loaded_session(app, first_window)
+        assert first_window.current_session_id == opened_session.id
+    finally:
+        first_window.close()
+        first_window.deleteLater()
+        app.processEvents()
+
+    reopened_window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, reopened_window)
+        assert reopened_window.current_session_id == opened_session.id
+        assert reopened_window.engine is not None
+        assert reopened_window.engine.session.title == "最后打开案例"
+    finally:
+        reopened_window.close()
+        reopened_window.deleteLater()
+        app.processEvents()
+
+
 def test_main_window_loads_global_drawing_templates_from_store(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
     temp_root = Path("C:/code/BarByBar/.pytest-temp")
     temp_root.mkdir(exist_ok=True)

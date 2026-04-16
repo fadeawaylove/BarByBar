@@ -468,6 +468,31 @@ def test_save_session_persists_drawings_by_session() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_touch_session_opened_updates_recently_opened_order_without_saving() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        first = repo.create_session(dataset.id or 0, start_index=1, title="先打开的案例")
+        second = repo.create_session(dataset.id or 0, start_index=2, title="后打开的案例")
+
+        repo.conn.execute(
+            "UPDATE sessions SET last_opened_at = '2025-01-01 00:00:00' WHERE id IN (?, ?)",
+            (first.id, second.id),
+        )
+        repo.conn.commit()
+        repo.touch_session_opened(first.id or 0)
+
+        recent = repo.list_recently_opened_sessions()
+
+        assert recent[0].id == first.id
+        assert recent[1].id == second.id
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_list_sessions_query_matches_title_symbol_and_tags() -> None:
     temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
     temp_dir.mkdir(parents=True, exist_ok=True)

@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     position_json TEXT NOT NULL DEFAULT '{}',
     stats_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(dataset_id) REFERENCES datasets(id) ON DELETE CASCADE
 );
@@ -134,6 +135,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sessions ADD COLUMN tick_size REAL NOT NULL DEFAULT 1.0")
     if "drawing_style_presets_json" not in columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN drawing_style_presets_json TEXT NOT NULL DEFAULT '{}'")
+    if "last_opened_at" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN last_opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+        conn.execute("UPDATE sessions SET last_opened_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")
     order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
     if order_columns and "note" not in order_columns:
         conn.execute("ALTER TABLE order_lines ADD COLUMN note TEXT NOT NULL DEFAULT ''")

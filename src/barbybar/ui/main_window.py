@@ -1839,7 +1839,7 @@ class MainWindow(QMainWindow):
             self._autoload_recent_session()
 
     def _autoload_recent_session(self) -> None:
-        sessions = self.repo.list_sessions()
+        sessions = self.repo.list_recently_opened_sessions()
         if not sessions:
             self._clear_current_session()
             self.statusBar().showMessage("请先导入文件夹或打开数据集/案例库", 5000)
@@ -2781,6 +2781,9 @@ class MainWindow(QMainWindow):
             "event=load_applied elapsed_ms={elapsed_ms:.3f}",
             elapsed_ms=(perf_counter() - started) * 1000,
         )
+        if session.id is not None:
+            self.repo.touch_session_opened(session.id)
+            self.engine.session.last_opened_at = self.repo.get_session(session.id).last_opened_at
         self.hide_busy_overlay()
 
     @Slot(int, str)
