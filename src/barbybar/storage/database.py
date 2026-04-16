@@ -136,7 +136,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "drawing_style_presets_json" not in columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN drawing_style_presets_json TEXT NOT NULL DEFAULT '{}'")
     if "last_opened_at" not in columns:
-        conn.execute("ALTER TABLE sessions ADD COLUMN last_opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+        # SQLite does not allow adding a column with a non-constant default like CURRENT_TIMESTAMP.
+        conn.execute("ALTER TABLE sessions ADD COLUMN last_opened_at TEXT")
         conn.execute("UPDATE sessions SET last_opened_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")
     order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
     if order_columns and "note" not in order_columns:

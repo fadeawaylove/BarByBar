@@ -587,19 +587,40 @@ def test_hover_info_contains_ohlc_and_mouse_price(widget: ChartWidget) -> None:
     assert widget._hover_high_label.text() == "高 106.1"
     assert widget._hover_low_label.text() == "低 103.4"
     assert widget._hover_close_label.text() == "收 104.9"
+    assert widget._hover_range_label.text() == "幅 2.7"
 
 
-def test_hover_info_highlights_extreme_by_direction(widget: ChartWidget) -> None:
+def test_hover_info_always_colors_high_red_and_low_green(widget: ChartWidget) -> None:
     bullish = Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=10, high=12, low=9, close=11, volume=1)
     bearish = Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=11, high=12, low=8, close=9, volume=1)
 
     widget._update_hover_info(bullish, 11)
     assert "#d84a4a" in widget._hover_high_label.styleSheet()
-    assert "#1f8b24" not in widget._hover_low_label.styleSheet()
+    assert "#1f8b24" in widget._hover_low_label.styleSheet()
 
     widget._update_hover_info(bearish, 9)
     assert "#1f8b24" in widget._hover_low_label.styleSheet()
-    assert "#d84a4a" not in widget._hover_high_label.styleSheet()
+    assert "#d84a4a" in widget._hover_high_label.styleSheet()
+
+
+def test_trade_hover_clears_range_line_from_bar_hover(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_tick_size(0.2)
+    widget._update_hover_info(widget._bars[5], 123.45)
+    assert widget._hover_range_label.text() == "幅 2.7"
+
+    widget.set_trade_actions([SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1)])
+    app.processEvents()
+    marker = widget._trade_markers[0]
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(marker.x, marker.y))
+
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget._hover_card.isHidden() is False
+    assert widget._hover_range_label.text() == ""
 
 
 def test_hide_crosshair_hides_hover_popup(widget: ChartWidget) -> None:

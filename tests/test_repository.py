@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 from datetime import datetime, timedelta
 import shutil
 from uuid import uuid4
@@ -87,6 +88,75 @@ def test_find_dataset_by_display_name_returns_latest_match() -> None:
 
         assert found is not None
         assert found.display_name == "AG9999.csv"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_repository_migrates_legacy_sessions_without_last_opened_at() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "legacy.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE datasets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL DEFAULT '',
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                total_bars INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                replay_timeframe TEXT NOT NULL DEFAULT '1m',
+                chart_timeframe TEXT NOT NULL DEFAULT '1m',
+                title TEXT NOT NULL,
+                start_index INTEGER NOT NULL,
+                current_index INTEGER NOT NULL,
+                current_bar_time TEXT,
+                tick_size REAL NOT NULL DEFAULT 1.0,
+                status TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                drawing_style_presets_json TEXT NOT NULL DEFAULT '{}',
+                position_json TEXT NOT NULL DEFAULT '{}',
+                stats_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            INSERT INTO datasets(id, display_name, symbol, timeframe, source_path, total_bars, start_time, end_time, created_at)
+            VALUES (1, 'legacy.csv', 'IF', '1m', 'legacy.csv', 10, '2025-01-01T09:00:00', '2025-01-01T09:09:00', '2025-01-01T09:00:00');
+
+            INSERT INTO sessions(
+                id, dataset_id, symbol, timeframe, replay_timeframe, chart_timeframe, title,
+                start_index, current_index, current_bar_time, tick_size, status, notes, tags_json,
+                drawing_style_presets_json, position_json, stats_json, created_at, updated_at
+            )
+            VALUES (
+                1, 1, 'IF', '1m', '1m', '1m', 'legacy session',
+                0, 0, '2025-01-01T09:00:00', 1.0, 'active', '', '[]',
+                '{}', '{}', '{}', '2025-01-01T09:00:00', '2025-01-02T10:00:00'
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        repo = Repository(db_path)
+        session = repo.get_session(1)
+
+        assert session.last_opened_at is not None
+        assert session.last_opened_at == datetime(2025, 1, 2, 10, 0)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

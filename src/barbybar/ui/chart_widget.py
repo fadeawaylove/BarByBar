@@ -1435,16 +1435,13 @@ class ChartWidget(QWidget):
         self._hover_high_label.setText(f"高 {format_price(bar.high, self._tick_size)}")
         self._hover_low_label.setText(f"低 {format_price(bar.low, self._tick_size)}")
         self._hover_close_label.setText(f"收 {format_price(bar.close, self._tick_size)}")
+        self._hover_range_label.setText(f"幅 {format_price(bar.high - bar.low, self._tick_size)}")
         neutral_style = "color: #2c2c2c; font-size: 12px;"
-        bullish = bar.close >= bar.open
         self._hover_open_label.setStyleSheet(neutral_style)
-        self._hover_high_label.setStyleSheet(
-            "color: #d84a4a; font-size: 12px; font-weight: 600;" if bullish else neutral_style
-        )
-        self._hover_low_label.setStyleSheet(
-            "color: #1f8b24; font-size: 12px; font-weight: 600;" if not bullish else neutral_style
-        )
+        self._hover_high_label.setStyleSheet("color: #d84a4a; font-size: 12px; font-weight: 600;")
+        self._hover_low_label.setStyleSheet("color: #1f8b24; font-size: 12px; font-weight: 600;")
         self._hover_close_label.setStyleSheet(neutral_style)
+        self._hover_range_label.setStyleSheet(neutral_style)
         self._hover_card.layout().activate()
         self._hover_card.adjustSize()
         self._position_hover_card()
@@ -1458,6 +1455,7 @@ class ChartWidget(QWidget):
             self._hover_high_label,
             self._hover_low_label,
             self._hover_close_label,
+            self._hover_range_label,
         ]
         for label, text in zip(labels, detail_lines + [""] * max(0, len(labels) - len(detail_lines))):
             label.setText(text)
@@ -1603,12 +1601,14 @@ class ChartWidget(QWidget):
         self._hover_high_label = QLabel()
         self._hover_low_label = QLabel()
         self._hover_close_label = QLabel()
+        self._hover_range_label = QLabel()
         for label in [
             self._hover_time_label,
             self._hover_open_label,
             self._hover_high_label,
             self._hover_low_label,
             self._hover_close_label,
+            self._hover_range_label,
         ]:
             label.setStyleSheet("color: #2c2c2c; font-size: 12px;")
             layout.addWidget(label)
