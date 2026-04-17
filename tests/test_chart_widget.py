@@ -2063,6 +2063,7 @@ def test_fib_drawing_renders_level_labels(widget: ChartWidget, app: QApplication
     assert len(label_items) == 4
     assert any("0.5" in item.toPlainText() for item in label_items)
     assert all(item.pos().x() > 15.0 for item in label_items)
+    assert all(item.fill.style() == Qt.BrushStyle.NoBrush for item in label_items)
 
 
 def test_text_tool_creates_placeholder_after_single_click(widget: ChartWidget, app: QApplication) -> None:

@@ -2791,7 +2791,7 @@ class ChartWidget(QWidget):
                 parts.append(format_price(self._snap_price(price), self._tick_size))
             if not parts:
                 continue
-            item = pg.TextItem("  ".join(parts), color=str(style["color"]), fill=pg.mkBrush(255, 255, 255, 220), anchor=(0, 0.5))
+            item = pg.TextItem("  ".join(parts), color=str(style["color"]), fill=QBrush(Qt.BrushStyle.NoBrush), anchor=(0, 0.5))
             item.setPos(right + self._FIB_LABEL_X_OFFSET, price)
             items.append(item)
         return items

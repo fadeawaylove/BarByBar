@@ -24,6 +24,17 @@ def _git_output(*args: str) -> list[str]:
     return result.stdout.splitlines()
 
 
+def _write_stdout(text: str) -> None:
+    data = f"{text}\n".encode("utf-8", errors="replace")
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        buffer.write(data)
+        buffer.flush()
+        return
+    sys.stdout.write(data.decode("utf-8", errors="replace"))
+    sys.stdout.flush()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate release notes from git commits.")
     parser.add_argument("--tag", required=True)
@@ -57,11 +68,11 @@ def main() -> int:
             "commit_lines": commit_lines,
             "output_path": str(output_path),
         }
-        print("RELEASE_NOTES_DEBUG_START")
-        print(json.dumps(debug_payload, ensure_ascii=False, indent=2))
-        print("RELEASE_NOTES_MARKDOWN_START")
-        print(notes)
-        print("RELEASE_NOTES_MARKDOWN_END")
+        _write_stdout("RELEASE_NOTES_DEBUG_START")
+        _write_stdout(json.dumps(debug_payload, ensure_ascii=False, indent=2))
+        _write_stdout("RELEASE_NOTES_MARKDOWN_START")
+        _write_stdout(notes)
+        _write_stdout("RELEASE_NOTES_MARKDOWN_END")
     return 0
 
 
