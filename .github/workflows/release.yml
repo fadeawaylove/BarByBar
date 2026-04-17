@@ -71,10 +71,17 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $repoUrl = "https://github.com/${{ github.repository }}"
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
-          python .\scripts\generate_release_notes.py --tag $tag --repo-url $repoUrl --output $notesPath
+          python .\scripts\generate_release_notes.py --tag $tag --repo-url $repoUrl --output $notesPath --verbose
           "RELEASE_NOTES_PATH=$notesPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Upload release asset
+      - name: Upload release notes artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-${{ github.ref_name }}
+          path: ${{ env.RELEASE_NOTES_PATH }}
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -82,3 +89,12 @@ jobs:
           files: |
             dist/BarByBar-${{ github.ref_name }}-windows-x64.zip
             dist/BarByBar-${{ github.ref_name }}-windows-x64-setup.exe
+
+      - name: Force overwrite release body
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $notesPath = "${{ env.RELEASE_NOTES_PATH }}"
+          gh release edit $tag --notes-file $notesPath

@@ -51,3 +51,22 @@ def test_release_notes_use_fallback_when_only_release_commit_exists() -> None:
     assert "本次版本主要为发版整理，未检测到独立功能提交。" in notes
     assert "## 完整提交" in notes
     assert "无可展示的独立功能提交" in notes
+
+
+def test_release_notes_debug_payload_is_json_serializable() -> None:
+    commits = parse_commit_lines(
+        [
+            "1111111\tRelease v0.3.17",
+            "2222222\tFix release notes script import path",
+        ]
+    )
+
+    notes = build_release_notes(
+        tag="v0.3.17",
+        compare_label="v0.3.16...v0.3.17",
+        compare_url="https://github.com/example/repo/compare/v0.3.16...v0.3.17",
+        commits=commits,
+    )
+
+    assert "Fix release notes script import path" in notes
+    assert "v0.3.16...v0.3.17" in notes

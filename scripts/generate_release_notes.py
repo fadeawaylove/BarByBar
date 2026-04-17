@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -28,6 +29,7 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     tag = args.tag.strip()
@@ -46,6 +48,20 @@ def main() -> int:
 
     output_path = Path(args.output)
     output_path.write_text(notes, encoding="utf-8")
+    if args.verbose:
+        debug_payload = {
+            "tag": tag,
+            "previous_tag": previous_tag,
+            "compare_range": compare_range,
+            "compare_label": compare_label,
+            "commit_lines": commit_lines,
+            "output_path": str(output_path),
+        }
+        print("RELEASE_NOTES_DEBUG_START")
+        print(json.dumps(debug_payload, ensure_ascii=False, indent=2))
+        print("RELEASE_NOTES_MARKDOWN_START")
+        print(notes)
+        print("RELEASE_NOTES_MARKDOWN_END")
     return 0
 
 
