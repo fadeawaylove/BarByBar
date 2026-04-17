@@ -31,7 +31,12 @@ jobs:
       - name: Verify tagged commit is on master
         shell: pwsh
         run: |
-          git fetch origin master --depth=1
+          if ((git rev-parse --is-shallow-repository).Trim() -eq "true") {
+            git fetch --force --tags --unshallow origin
+          } else {
+            git fetch --force --tags origin
+          }
+          git fetch --force origin +refs/heads/master:refs/remotes/origin/master
           git merge-base --is-ancestor $env:GITHUB_SHA origin/master
           if ($LASTEXITCODE -ne 0) {
             throw "Tagged commit $env:GITHUB_SHA is not contained in origin/master."
