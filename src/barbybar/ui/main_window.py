@@ -45,7 +45,7 @@ from PySide6.QtGui import QColor, QCloseEvent, QIcon, QKeySequence, QPainter, QP
 from barbybar import __version__
 from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
 from barbybar.data.tick_size import format_price, price_decimals_for_tick, snap_price
-from barbybar.data.timeframe import normalize_timeframe, supported_replay_timeframes
+from barbybar.data.timeframe import SUPPORTED_REPLAY_TIMEFRAMES, default_chart_timeframe, normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import (
     ActionType,
@@ -1284,8 +1284,9 @@ class MainWindow(QMainWindow):
         drawing_toolbar.setSpacing(4)
         self.timeframe_button_group = QButtonGroup(self)
         self.timeframe_button_group.setExclusive(True)
-        for timeframe in ["1m", "2m", "5m", "15m", "30m", "60m"]:
-            button = QPushButton(timeframe)
+        timeframe_labels = {"5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m", "1d": "日线"}
+        for timeframe in SUPPORTED_REPLAY_TIMEFRAMES:
+            button = QPushButton(timeframe_labels.get(timeframe, timeframe))
             button.setCheckable(True)
             button.clicked.connect(lambda _, tf=timeframe: self.change_chart_timeframe(tf))
             self.timeframe_button_group.addButton(button)
@@ -1868,7 +1869,7 @@ class MainWindow(QMainWindow):
         self._trade_review_items = []
         self._selected_trade_number = None
         self._selected_trade_view = "entry"
-        self.chart_widget.set_window_data([], -1, 0, 0)
+        self.chart_widget.set_window_data([], -1, 0, 0, timeframe="")
         self.chart_widget.set_drawings([])
         self.chart_widget.set_trade_actions([])
         self.chart_widget.set_position_direction(None)
@@ -2161,6 +2162,7 @@ class MainWindow(QMainWindow):
             self.engine.session.current_index,
             self.engine.total_count,
             self.engine.window_start_index,
+            timeframe=self.engine.session.chart_timeframe,
         )
         self._update_ui_from_engine()
         return self.engine.window_start_index <= target_index <= self.engine.window_end_index
@@ -2306,10 +2308,13 @@ class MainWindow(QMainWindow):
         if normalized == self.engine.session.chart_timeframe:
             return
         self._flush_pending_auto_save("change_chart_timeframe")
+        anchor_time = self.engine.session.current_bar_time or self.engine.current_bar.timestamp
+        self.engine.session.chart_timeframe = normalized
+        self.engine.session.current_bar_time = anchor_time
+        self.save_session(trigger="change_chart_timeframe")
         logger.bind(component="chart", session_id=self.current_session_id, chart_timeframe=normalized).info(
             "event=change_chart_timeframe"
         )
-        anchor_time = self.engine.session.current_bar_time or self.engine.current_bar.timestamp
         self._start_session_load(
             self.current_session_id,
             chart_timeframe=normalized,
@@ -2321,6 +2326,8 @@ class MainWindow(QMainWindow):
     def _set_timeframe_choices(self, source_timeframe: str, current_timeframe: str) -> None:
         choices = supported_replay_timeframes(source_timeframe)
         current = normalize_timeframe(current_timeframe)
+        if current not in choices and choices:
+            current = default_chart_timeframe(source_timeframe)
         for timeframe, button in self.timeframe_buttons.items():
             button.blockSignals(True)
             button.setEnabled(timeframe in choices)
@@ -2757,6 +2764,7 @@ class MainWindow(QMainWindow):
                 self.engine.session.current_index,
                 self.engine.total_count,
                 self.engine.window_start_index,
+                timeframe=chart_timeframe,
             )
             self.chart_widget.set_drawings(drawings)
             self._sync_chart_interaction_controls()
@@ -2867,6 +2875,7 @@ class MainWindow(QMainWindow):
             self.engine.total_count,
             self.engine.window_start_index,
             preserve_viewport=True,
+            timeframe=self.engine.session.chart_timeframe,
         )
 
     def _ensure_window_for_backward(self) -> None:
@@ -2896,6 +2905,7 @@ class MainWindow(QMainWindow):
             self.engine.total_count,
             self.engine.window_start_index,
             preserve_viewport=True,
+            timeframe=self.engine.session.chart_timeframe,
         )
 
     def _schedule_auto_save(self, reason: str) -> None:

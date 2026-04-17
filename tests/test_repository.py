@@ -5,7 +5,7 @@ import shutil
 from uuid import uuid4
 
 from barbybar.data.tick_size import default_tick_size_for_symbol
-from barbybar.data.timeframe import aggregate_bars, find_bar_index_for_timestamp, normalize_timeframe, supported_replay_timeframes
+from barbybar.data.timeframe import aggregate_bars, default_chart_timeframe, find_bar_index_for_timestamp, normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType, SessionStatus
 from barbybar.storage.repository import Repository
@@ -213,12 +213,16 @@ def test_normalize_timeframe_accepts_numeric_aliases() -> None:
     assert normalize_timeframe("5") == "5m"
 
 
-def test_supported_replay_timeframes_excludes_1d() -> None:
-    assert supported_replay_timeframes("1m") == ["1m", "2m", "5m", "15m", "30m", "60m"]
+def test_supported_replay_timeframes_include_1d_and_hide_1m_2m() -> None:
+    assert supported_replay_timeframes("1m") == ["5m", "15m", "30m", "60m", "1d"]
 
 
-def test_supported_replay_timeframes_for_2m_only_include_integer_multiples() -> None:
-    assert supported_replay_timeframes("2m") == ["2m", "30m", "60m"]
+def test_supported_replay_timeframes_for_2m_only_include_supported_integer_multiples() -> None:
+    assert supported_replay_timeframes("2m") == ["30m", "60m", "1d"]
+
+
+def test_default_chart_timeframe_for_1m_dataset_is_5m() -> None:
+    assert default_chart_timeframe("1m") == "5m"
 
 
 def test_aggregate_bars_supports_2m_timeframe() -> None:
@@ -244,6 +248,48 @@ def test_aggregate_bars_supports_2m_timeframe() -> None:
     assert aggregated[0].high == 102
     assert aggregated[0].low == 99
     assert aggregated[0].volume == 21
+
+
+def test_aggregate_bars_supports_daily_timeframe_for_day_session_products() -> None:
+    source = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=102, low=99, close=101, volume=10),
+        Bar(timestamp=datetime(2025, 1, 1, 14, 59), open=101, high=103, low=100, close=102, volume=20),
+        Bar(timestamp=datetime(2025, 1, 2, 9, 0), open=103, high=105, low=102, close=104, volume=30),
+        Bar(timestamp=datetime(2025, 1, 2, 14, 59), open=104, high=106, low=103, close=105, volume=40),
+    ]
+
+    aggregated = aggregate_bars(source, "1m", "1d")
+
+    assert len(aggregated) == 2
+    assert aggregated[0].timestamp == datetime(2025, 1, 1, 14, 59)
+    assert aggregated[0].open == 100
+    assert aggregated[0].close == 102
+    assert aggregated[0].high == 103
+    assert aggregated[0].low == 99
+    assert aggregated[0].volume == 30
+    assert aggregated[1].timestamp == datetime(2025, 1, 2, 14, 59)
+
+
+def test_aggregate_bars_supports_daily_timeframe_for_night_session_products() -> None:
+    source = [
+        Bar(timestamp=datetime(2025, 1, 1, 21, 0), open=100, high=102, low=99, close=101, volume=10),
+        Bar(timestamp=datetime(2025, 1, 2, 9, 0), open=101, high=104, low=100, close=103, volume=20),
+        Bar(timestamp=datetime(2025, 1, 2, 14, 59), open=103, high=105, low=102, close=104, volume=30),
+        Bar(timestamp=datetime(2025, 1, 2, 21, 0), open=104, high=106, low=103, close=105, volume=40),
+        Bar(timestamp=datetime(2025, 1, 3, 9, 0), open=105, high=107, low=104, close=106, volume=50),
+        Bar(timestamp=datetime(2025, 1, 3, 14, 59), open=106, high=108, low=105, close=107, volume=60),
+    ]
+
+    aggregated = aggregate_bars(source, "1m", "1d")
+
+    assert len(aggregated) == 2
+    assert aggregated[0].timestamp == datetime(2025, 1, 2, 14, 59)
+    assert aggregated[0].open == 100
+    assert aggregated[0].close == 104
+    assert aggregated[0].high == 105
+    assert aggregated[0].low == 99
+    assert aggregated[0].volume == 60
+    assert aggregated[1].timestamp == datetime(2025, 1, 3, 14, 59)
 
 
 def test_find_bar_index_for_timestamp_aligns_to_containing_bar() -> None:
@@ -309,7 +355,7 @@ def test_get_chart_window_returns_local_aggregate_slice_for_5m() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def test_get_session_falls_back_from_deprecated_1d_chart_timeframe() -> None:
+def test_get_session_keeps_supported_1d_chart_timeframe() -> None:
     temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
     temp_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -322,7 +368,25 @@ def test_get_session_falls_back_from_deprecated_1d_chart_timeframe() -> None:
 
         loaded = repo.get_session(session.id or 0)
 
-        assert loaded.chart_timeframe == "1m"
+        assert loaded.chart_timeframe == "1d"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_get_session_falls_back_from_deprecated_1m_chart_timeframe() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        repo.conn.execute("UPDATE sessions SET chart_timeframe = '1m' WHERE id = ?", (session.id,))
+        repo.conn.commit()
+
+        loaded = repo.get_session(session.id or 0)
+
+        assert loaded.chart_timeframe == "5m"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

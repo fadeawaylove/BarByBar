@@ -133,7 +133,7 @@ def _wait_for_batch_import(app: QApplication, window: MainWindow, timeout_s: flo
 
 
 def test_main_window_uses_timeframe_shortcut_buttons(window: MainWindow) -> None:
-    assert set(window.timeframe_buttons) == {"1m", "2m", "5m", "15m", "30m", "60m"}
+    assert set(window.timeframe_buttons) == {"5m", "15m", "30m", "60m", "1d"}
 
 
 def test_main_window_exposes_bar_count_toggle_button(window: MainWindow) -> None:
@@ -534,11 +534,11 @@ def test_toolbar_group_margins_are_compact(window: MainWindow) -> None:
         assert margins.bottom() <= 4
 
 
-def test_set_timeframe_choices_supports_2m(window: MainWindow) -> None:
-    window._set_timeframe_choices("1m", "2m")
+def test_set_timeframe_choices_supports_1d(window: MainWindow) -> None:
+    window._set_timeframe_choices("1m", "1d")
 
-    assert window.timeframe_buttons["2m"].isEnabled()
-    assert window.timeframe_buttons["2m"].isChecked()
+    assert window.timeframe_buttons["1d"].isEnabled()
+    assert window.timeframe_buttons["1d"].isChecked()
 
 
 def test_main_window_autoloads_most_recent_session(app: QApplication) -> None:
@@ -566,10 +566,58 @@ def test_main_window_autoloads_most_recent_session(app: QApplication) -> None:
         _wait_for_loaded_session(app, main_window)
         assert main_window.current_session_id == session.id
         assert main_window.engine is not None
-        assert main_window.engine.session.current_index == 12
+        assert main_window.engine.session.chart_timeframe == "5m"
+        assert main_window.engine.session.current_bar_time == start + timedelta(minutes=12)
     finally:
         main_window.close()
         main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_reopens_with_last_selected_chart_timeframe(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(480):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    dataset = repo.import_csv(csv_path, "IF", "1m")
+    session = repo.create_session(dataset.id or 0, start_index=10)
+    repo.save_session(session, [], [])
+
+    first_window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, first_window)
+        assert first_window.engine is not None
+        first_window.change_chart_timeframe("60m")
+        started = perf_counter()
+        while perf_counter() - started < 5.0:
+            app.processEvents()
+            if first_window.engine is not None and first_window.engine.session.chart_timeframe == "60m":
+                break
+        assert first_window.engine is not None
+        assert first_window.engine.session.chart_timeframe == "60m"
+    finally:
+        first_window.close()
+        first_window.deleteLater()
+        app.processEvents()
+
+    reopened_window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, reopened_window)
+        assert reopened_window.engine is not None
+        assert reopened_window.engine.session.chart_timeframe == "60m"
+        assert reopened_window.timeframe_buttons["60m"].isChecked()
+    finally:
+        reopened_window.close()
+        reopened_window.deleteLater()
         app.processEvents()
 
 
@@ -1718,22 +1766,32 @@ def test_trade_history_click_and_toggle_jump_between_entry_and_exit(window: Main
 
 
 def test_trade_history_jump_outside_window_keeps_training_cursor(window: MainWindow, app: QApplication) -> None:
-    session = window.repo.create_session(1, start_index=0)
+    case_dir = window.repo.db_path.parent if window.repo.db_path is not None else Path("C:/code/BarByBar/.pytest-temp")
     start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "long-sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(800):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    dataset = window.repo.import_csv(csv_path, "IF", "1m", display_name="long-sample.csv")
+    session = window.repo.create_session(dataset.id or 0, start_index=0)
     session.current_index = 170
-    session.current_bar_time = start + timedelta(minutes=170)
+    session.current_bar_time = start + timedelta(minutes=790)
     actions = [
-        SessionAction(ActionType.OPEN_LONG, 5, start + timedelta(minutes=5), price=100.5, quantity=1),
-        SessionAction(ActionType.CLOSE, 10, start + timedelta(minutes=10), price=101.5, quantity=1),
+        SessionAction(ActionType.OPEN_LONG, 1, start + timedelta(minutes=1), price=100.5, quantity=1),
+        SessionAction(ActionType.CLOSE, 5, start + timedelta(minutes=5), price=101.5, quantity=1),
     ]
     window.repo.save_session(session, actions, [])
     window._load_session(session.id or 0)
     _wait_for_loaded_session(app, window)
     assert window.engine is not None
 
-    exit_index = 10
+    exit_index = 5
     current_index = window.engine.session.current_index
-    assert current_index == 170
+    assert window.engine.session.chart_timeframe == "5m"
+    assert window.engine.session.current_bar_time == start + timedelta(minutes=790)
     assert exit_index < window.engine.window_start_index
 
     window._update_ui_from_engine()
@@ -2065,7 +2123,8 @@ def test_set_timeframe_choices_does_not_trigger_replay_bar_loading(window: MainW
 
     window._set_timeframe_choices("1m", "5m")
 
-    assert window.timeframe_buttons["1m"].isEnabled()
+    assert window.timeframe_buttons["5m"].isEnabled()
+    assert window.timeframe_buttons["1d"].isEnabled()
     assert window.timeframe_buttons["5m"].isChecked()
 
 

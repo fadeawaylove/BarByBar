@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QBrush, QKeyEvent, QMouseEvent, QPainter, QPai
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsPathItem, QLabel, QLayout, QMenu, QVBoxLayout, QWidget
 
 from barbybar.data.tick_size import format_price
+from barbybar.data.timeframe import DAY_TIMEFRAME, normalize_timeframe, timeframe_to_minutes
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, normalize_drawing_style
 
 UP_CANDLE_COLOR = "#000000"
@@ -368,6 +369,7 @@ class ChartWidget(QWidget):
         self._preview_order_type: str | None = None
         self._preview_quantity = 1.0
         self._tick_size = 1.0
+        self._chart_timeframe = ""
         self._position_direction: str | None = None
         self._interaction_mode = InteractionMode.BROWSE
         self._is_dragging = False
@@ -709,8 +711,11 @@ class ChartWidget(QWidget):
         global_start_index: int,
         *,
         preserve_viewport: bool = False,
+        timeframe: str | None = None,
     ) -> None:
         self._bars = list(bars)
+        if timeframe is not None:
+            self._chart_timeframe = normalize_timeframe(timeframe)
         self._global_start_index = max(0, global_start_index)
         self._total_count = max(0, total_count)
         self._cursor = cursor if self._bars else -1
@@ -891,16 +896,22 @@ class ChartWidget(QWidget):
                 self.price_plot.removeItem(item)
         if not self._bars:
             return
-        timeframe_minutes = self._infer_timeframe_minutes()
+        if normalize_timeframe(self._chart_timeframe) == DAY_TIMEFRAME:
+            return
+        timeframe_minutes = self._session_annotation_timeframe_minutes()
         local_cursor = self._cursor - self._global_start_index if self._cursor >= 0 else -1
         stop = min(len(self._bars), local_cursor + 1)
+        show_session_annotations = timeframe_minutes < 60 * 24 and any(
+            self._session_marker_label(self._bars[index].timestamp, timeframe_minutes) is not None
+            for index in range(stop)
+        )
         session_label_y = self._annotation_y_position(0.03)
         session_counts: dict[tuple[str, datetime], int] = {}
         for index in range(stop):
             bar = self._bars[index]
             session_key = self._session_key(bar.timestamp)
             session_counts[session_key] = session_counts.get(session_key, 0) + 1
-            session_label = self._session_marker_label(bar.timestamp, timeframe_minutes)
+            session_label = self._session_marker_label(bar.timestamp, timeframe_minutes) if show_session_annotations else None
             if session_label is not None:
                 marker = pg.InfiniteLine(
                     pos=self._global_start_index + index - 0.5,
@@ -921,7 +932,7 @@ class ChartWidget(QWidget):
                 label.setZValue(5)
                 label.setPos(self._global_start_index + index - 0.5, session_label_y)
                 self.price_plot.addItem(label, ignoreBounds=True)
-            if self._is_session_end_bar(index, stop):
+            if show_session_annotations and self._is_session_end_bar(index, stop):
                 arrow = pg.ArrowItem(
                     pos=(float(self._global_start_index + index), self._session_end_marker_y(index)),
                     angle=-90,
@@ -3318,6 +3329,13 @@ class ChartWidget(QWidget):
             if delta_minutes > 0:
                 diffs.append(delta_minutes)
         return min(diffs) if diffs else 1
+
+    def _session_annotation_timeframe_minutes(self) -> int:
+        if self._chart_timeframe:
+            if self._chart_timeframe == DAY_TIMEFRAME:
+                return 60 * 24
+            return timeframe_to_minutes(self._chart_timeframe)
+        return self._infer_timeframe_minutes()
 
     @staticmethod
     def _is_session_open_marker(bar_time: time, timeframe_minutes: int) -> bool:

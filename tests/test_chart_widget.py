@@ -397,6 +397,50 @@ def test_session_end_markers_do_not_accumulate_on_rebuild(widget: ChartWidget) -
     assert len(markers) == 2
 
 
+def test_daily_bars_do_not_render_intraday_session_markers(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 2, 14, 59), open=100, high=102, low=99, close=101, volume=1),
+        Bar(timestamp=datetime(2025, 1, 3, 14, 59), open=101, high=103, low=100, close=102, volume=1),
+    ]
+
+    widget.set_window_data(bars, cursor=1, total_count=2, global_start_index=0, timeframe="1d")
+
+    session_markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_marker", False)]
+    session_end_markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_end_marker", False)]
+
+    assert session_markers == []
+    assert session_end_markers == []
+
+
+def test_single_daily_bar_does_not_render_tail_arrow(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 3, 14, 59), open=101, high=103, low=100, close=102, volume=1),
+    ]
+
+    widget.set_window_data(bars, cursor=0, total_count=1, global_start_index=0, timeframe="1d")
+
+    session_markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_marker", False)]
+    session_end_markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_end_marker", False)]
+
+    assert session_markers == []
+    assert session_end_markers == []
+
+
+def test_explicit_daily_timeframe_suppresses_session_arrows_for_intraday_like_timestamps(widget: ChartWidget) -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 2, 9, 0), open=100, high=101, low=99, close=100.5, volume=1),
+        Bar(timestamp=datetime(2025, 1, 3, 14, 59), open=101, high=103, low=100, close=102, volume=1),
+    ]
+
+    widget.set_window_data(bars, cursor=1, total_count=2, global_start_index=0, timeframe="1d")
+
+    session_markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_marker", False)]
+    session_end_markers = [item for item in widget.price_plot.items if getattr(item, "_barbybar_session_end_marker", False)]
+
+    assert session_markers == []
+    assert session_end_markers == []
+
+
 def test_bar_count_labels_are_hidden_by_default(widget: ChartWidget) -> None:
     widget.set_window_data(_bars(10), cursor=9, total_count=10, global_start_index=0)
 

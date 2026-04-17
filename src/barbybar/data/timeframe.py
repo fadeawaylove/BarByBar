@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from bisect import bisect_right
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from barbybar.domain.models import Bar
 
 MINUTE_TIMEFRAMES = ("1m", "2m", "5m", "15m", "30m", "60m")
-SUPPORTED_REPLAY_TIMEFRAMES = MINUTE_TIMEFRAMES
+SUPPORTED_REPLAY_TIMEFRAMES = ("5m", "15m", "30m", "60m", "1d")
+DAY_TIMEFRAME = "1d"
+DAY_SESSION_OPEN = time(9, 0)
+NIGHT_SESSION_OPEN = time(21, 0)
 
 
 def normalize_timeframe(value: str) -> str:
@@ -33,18 +36,33 @@ def normalize_timeframe(value: str) -> str:
 
 def timeframe_to_minutes(timeframe: str) -> int:
     normalized = normalize_timeframe(timeframe)
-    if normalized == "1d":
+    if normalized == DAY_TIMEFRAME:
         return 60 * 24
     if normalized.endswith("m") and normalized[:-1].isdigit():
         return int(normalized[:-1])
     raise ValueError(f"Unsupported timeframe: {timeframe}")
 
 
+def default_chart_timeframe(source_timeframe: str) -> str:
+    normalized = normalize_timeframe(source_timeframe)
+    supported = supported_replay_timeframes(normalized)
+    if normalized in supported:
+        return normalized
+    if supported:
+        return supported[0]
+    return normalized
+
+
 def supported_replay_timeframes(source_timeframe: str) -> list[str]:
     source = normalize_timeframe(source_timeframe)
+    if source == DAY_TIMEFRAME:
+        return [DAY_TIMEFRAME]
     source_minutes = timeframe_to_minutes(source)
     result: list[str] = []
     for candidate in SUPPORTED_REPLAY_TIMEFRAMES:
+        if candidate == DAY_TIMEFRAME:
+            result.append(candidate)
+            continue
         candidate_minutes = timeframe_to_minutes(candidate)
         if candidate_minutes >= source_minutes and candidate_minutes % source_minutes == 0:
             result.append(candidate)
@@ -56,6 +74,8 @@ def aggregate_bars(bars: list[Bar], source_timeframe: str, target_timeframe: str
     target = normalize_timeframe(target_timeframe)
     if source == target:
         return list(bars)
+    if target == DAY_TIMEFRAME:
+        return _aggregate_daily_bars(bars)
     source_minutes = timeframe_to_minutes(source)
     target_minutes = timeframe_to_minutes(target)
     if target_minutes < source_minutes or target_minutes % source_minutes != 0:
@@ -118,3 +138,38 @@ def _aggregate_bucket(bucket: list[Bar]) -> Bar:
         close=bucket[-1].close,
         volume=sum(item.volume for item in bucket),
     )
+
+
+def _aggregate_daily_bars(bars: list[Bar]) -> list[Bar]:
+    if not bars:
+        return []
+    ordered = sorted(bars, key=lambda item: item.timestamp)
+    has_night_session = _has_night_session(ordered)
+    aggregated: list[Bar] = []
+    bucket: list[Bar] = []
+    current_key: date | None = None
+    for bar in ordered:
+        bucket_key = _daily_bucket_key(bar.timestamp, has_night_session)
+        if current_key is None or bucket_key == current_key:
+            bucket.append(bar)
+            current_key = bucket_key
+            continue
+        aggregated.append(_aggregate_bucket(bucket))
+        bucket = [bar]
+        current_key = bucket_key
+    if bucket:
+        aggregated.append(_aggregate_bucket(bucket))
+    return aggregated
+
+
+def _has_night_session(bars: list[Bar]) -> bool:
+    return any(bar.timestamp.time() >= NIGHT_SESSION_OPEN or bar.timestamp.time() < DAY_SESSION_OPEN for bar in bars)
+
+
+def _daily_bucket_key(timestamp: datetime, has_night_session: bool) -> date:
+    if not has_night_session:
+        return timestamp.date()
+    bar_time = timestamp.time()
+    if bar_time >= NIGHT_SESSION_OPEN:
+        return (timestamp + timedelta(days=1)).date()
+    return timestamp.date()

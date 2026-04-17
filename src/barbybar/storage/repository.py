@@ -12,6 +12,7 @@ from barbybar.data.csv_importer import load_bars_from_csv
 from barbybar.data.tick_size import default_tick_size_for_symbol
 from barbybar.data.timeframe import (
     aggregate_bars,
+    default_chart_timeframe,
     find_timestamp_window,
     normalize_timeframe,
     supported_replay_timeframes,
@@ -204,13 +205,15 @@ class Repository:
     def get_replay_bars(self, dataset_id: int, replay_timeframe: str) -> list[Bar]:
         dataset = self.get_dataset(dataset_id)
         replay_timeframe = normalize_timeframe(replay_timeframe)
+        if replay_timeframe == normalize_timeframe(dataset.timeframe):
+            return self.get_bars(dataset_id)
         if replay_timeframe not in supported_replay_timeframes(dataset.timeframe):
             raise ValueError(f"{dataset.timeframe} cannot be replayed as {replay_timeframe}.")
         return aggregate_bars(self.get_bars(dataset_id), dataset.timeframe, replay_timeframe)
 
     def create_session(self, dataset_id: int, start_index: int, title: str | None = None) -> ReviewSession:
         dataset = self.get_dataset(dataset_id)
-        chart_timeframe = normalize_timeframe(dataset.timeframe)
+        chart_timeframe = default_chart_timeframe(dataset.timeframe)
         tick_size = default_tick_size_for_symbol(dataset.symbol)
         source_bars = self.get_bars(dataset_id)
         current_bar_time = source_bars[start_index].timestamp if source_bars else dataset.start_time
@@ -535,7 +538,7 @@ class Repository:
         persisted_timeframe = row["chart_timeframe"] or row["replay_timeframe"] or row["timeframe"]
         chart_timeframe = normalize_timeframe(persisted_timeframe)
         if chart_timeframe not in supported:
-            chart_timeframe = normalize_timeframe(row["timeframe"])
+            chart_timeframe = default_chart_timeframe(row["timeframe"])
             logger.bind(
                 component="session_repository",
                 session_id=row["id"],
@@ -578,6 +581,25 @@ class Repository:
         ]
         if normalized == source:
             meta = [_WindowMeta(timestamp=ts, source_start_offset=index, source_end_offset=index) for index, ts in enumerate(timestamps)]
+            self._window_meta_cache[key] = meta
+            return meta
+        if normalized == "1d":
+            bars = self.get_bars(dataset_id)
+            aggregated = aggregate_bars(bars, source, normalized)
+            meta: list[_WindowMeta] = []
+            source_index = 0
+            for aggregated_bar in aggregated:
+                bucket_start = source_index
+                while source_index < len(bars) and bars[source_index].timestamp <= aggregated_bar.timestamp:
+                    source_index += 1
+                bucket_end = max(bucket_start, source_index - 1)
+                meta.append(
+                    _WindowMeta(
+                        timestamp=aggregated_bar.timestamp,
+                        source_start_offset=bucket_start,
+                        source_end_offset=bucket_end,
+                    )
+                )
             self._window_meta_cache[key] = meta
             return meta
         factor = timeframe_to_minutes(normalized) // timeframe_to_minutes(source)
