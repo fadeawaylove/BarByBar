@@ -1668,6 +1668,7 @@ def test_update_ui_populates_training_stats_and_trade_history(window: MainWindow
     window._update_ui_from_engine()
 
     assert "Expectancy" in window.training_stats_label.text()
+    assert "总交易 1 笔" in window.training_stats_label.text()
     assert "总盈亏 3.00" in window.training_stats_label.text()
     assert window.open_trade_history_button.isEnabled() is True
 
