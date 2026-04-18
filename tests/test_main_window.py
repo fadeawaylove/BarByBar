@@ -1538,7 +1538,6 @@ def test_fib_drawing_dialog_rejects_invalid_levels() -> None:
     dialog.close()
     dialog.deleteLater()
 
-
 def test_fib_drawing_dialog_shows_inline_error_on_accept() -> None:
     dialog = DrawingPropertiesDialog(
         ChartDrawing(

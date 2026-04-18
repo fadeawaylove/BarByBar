@@ -251,6 +251,8 @@ class CandleViewBox(pg.ViewBox):
             )
             ev.ignore()
             return
+        if self.chart.handle_temporary_measure_drag_event(ev):
+            return
         if self.chart.handle_y_axis_drag_event(ev):
             return
         if self.chart.handle_order_line_drag_event(ev):
@@ -318,6 +320,8 @@ class CandleViewBox(pg.ViewBox):
 
 class ChartWidget(QWidget):
     _FIB_LABEL_X_OFFSET = 0.35
+    _TEMP_MEASURE_LABEL_X_OFFSET = 0.35
+    _TEMP_MEASURE_LABEL_Y_OFFSET = 0.35
     _MIN_BAR_PIXELS = 5.0
 
     lineAdded = Signal()
@@ -400,6 +404,9 @@ class ChartWidget(QWidget):
         self._y_axis_drag_active = False
         self._y_axis_drag_start_scene_y: float | None = None
         self._y_axis_drag_start_range: tuple[float, float] | None = None
+        self._temporary_measure_active = False
+        self._temporary_measure_start_anchor: DrawingAnchor | None = None
+        self._temporary_measure_end_anchor: DrawingAnchor | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -445,10 +452,25 @@ class ChartWidget(QWidget):
         self._drag_order_label = pg.TextItem("", color="#2c2c2c", fill=pg.mkBrush(255, 243, 191, 245), anchor=(1, 0.5))
         self._drag_order_label.setZValue(22)
         self.price_plot.addItem(self._drag_order_label)
+        self._temporary_measure_line = pg.PlotCurveItem([], [], pen=pg.mkPen("#2563eb", width=2, style=Qt.PenStyle.DashLine))
+        self._temporary_measure_line.setZValue(21)
+        self._temporary_measure_line._barbybar_temp_measure = True
+        self.price_plot.addItem(self._temporary_measure_line)
+        self._temporary_measure_handles = pg.ScatterPlotItem([], [], symbol="o", size=7, brush=pg.mkBrush("#ffffff"), pen=pg.mkPen("#2563eb", width=2))
+        self._temporary_measure_handles.setZValue(22)
+        self._temporary_measure_handles._barbybar_temp_measure = True
+        self.price_plot.addItem(self._temporary_measure_handles)
+        self._temporary_measure_label = pg.TextItem("", color="#1e293b", fill=pg.mkBrush(255, 255, 255, 240), anchor=(0, 1))
+        self._temporary_measure_label.setZValue(23)
+        self._temporary_measure_label._barbybar_temp_measure = True
+        self.price_plot.addItem(self._temporary_measure_label)
         self._v_line.hide()
         self._h_line.hide()
         self._preview_line.hide()
         self._drag_order_label.hide()
+        self._temporary_measure_line.hide()
+        self._temporary_measure_handles.hide()
+        self._temporary_measure_label.hide()
 
         layout.addWidget(self.graphics)
         self._build_hover_card()
@@ -527,6 +549,7 @@ class ChartWidget(QWidget):
 
     def set_active_drawing_tool(self, tool: DrawingToolType | None) -> None:
         self._log_interaction("set_active_drawing_tool_start", requested_tool=tool.value if tool else None)
+        self._clear_temporary_measurement()
         self._active_drawing_tool = tool
         self._pending_drawing_anchors = []
         self._clear_drawing_preview_state()
@@ -615,12 +638,16 @@ class ChartWidget(QWidget):
 
     def set_tick_size(self, tick_size: float) -> None:
         self._tick_size = max(float(tick_size), 0.0001)
+        self._rebuild_line_items()
+        if self._temporary_measure_active:
+            self._refresh_temporary_measurement_overlay()
 
     def set_position_direction(self, direction: str | None) -> None:
         self._position_direction = direction
 
     def begin_order_preview(self, order_type: str, quantity: float) -> None:
         self._log_interaction("begin_order_preview_start", order_type=order_type, quantity=quantity)
+        self._clear_temporary_measurement()
         self._preview_order_type = order_type
         self._preview_quantity = max(float(quantity), 1.0)
         self.set_active_drawing_tool(None)
@@ -729,6 +756,7 @@ class ChartWidget(QWidget):
         if not preserve_viewport:
             self._pending_drawing_anchors = []
             self._clear_drawing_preview_state()
+            self._clear_temporary_measurement()
             self._active_drawing_tool = None
             self._trade_line_mode = None
             self._preview_order_type = None
@@ -805,6 +833,7 @@ class ChartWidget(QWidget):
         self._apply_viewport()
 
     def clear_lines(self) -> None:
+        self._clear_temporary_measurement()
         self._drawings.clear()
         self._pending_drawing_anchors = []
         self._clear_drawing_preview_state()
@@ -850,6 +879,10 @@ class ChartWidget(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
+            if self._temporary_measure_active:
+                self._clear_temporary_measurement()
+                event.accept()
+                return
             if self._pending_drawing_anchors:
                 self._pending_drawing_anchors = []
                 self._clear_drawing_preview_state()
@@ -1380,6 +1413,7 @@ class ChartWidget(QWidget):
             not self._crosshair_enabled
             or self._cursor < 0
             or self._is_dragging
+            or self._temporary_measure_active
             or self._interaction_mode is InteractionMode.DRAWING
         ):
             self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
@@ -2355,6 +2389,102 @@ class ChartWidget(QWidget):
         self._rebuild_line_items()
         if changed:
             self.drawingsChanged.emit()
+
+    def handle_temporary_measure_drag_event(self, ev) -> bool:  # noqa: ANN001
+        alt_drag_requested = (
+            ev.button() == Qt.MouseButton.LeftButton
+            and bool(self._current_keyboard_modifiers() & Qt.KeyboardModifier.AltModifier)
+        )
+        if not self._temporary_measure_active and not alt_drag_requested:
+            return False
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return False
+        if self._active_drawing_tool is not None or self._interaction_mode is InteractionMode.ORDER_PREVIEW:
+            return False
+        if self._cursor < 0:
+            return False
+        scene_pos = ev.scenePos()
+        if not self._data_scene_rect().contains(scene_pos):
+            if ev.isFinish() and self._temporary_measure_active:
+                self._clear_temporary_measurement()
+                ev.accept()
+                return True
+            return self._temporary_measure_active
+        if ev.isStart():
+            self._start_temporary_measurement(scene_pos)
+            ev.accept()
+            return True
+        if not self._temporary_measure_active:
+            return False
+        if ev.isFinish():
+            self._suppress_next_left_click = True
+            self._clear_temporary_measurement()
+            ev.accept()
+            return True
+        self._update_temporary_measurement(scene_pos)
+        ev.accept()
+        return True
+
+    def _start_temporary_measurement(self, scene_pos) -> None:  # noqa: ANN001
+        anchor = self._measurement_anchor_from_scene(scene_pos)
+        self._temporary_measure_active = True
+        self._temporary_measure_start_anchor = anchor
+        self._temporary_measure_end_anchor = anchor
+        self._hide_crosshair()
+        self._refresh_temporary_measurement_overlay()
+
+    def _update_temporary_measurement(self, scene_pos) -> None:  # noqa: ANN001
+        if not self._temporary_measure_active or self._temporary_measure_start_anchor is None:
+            return
+        self._temporary_measure_end_anchor = self._measurement_anchor_from_scene(scene_pos)
+        self._refresh_temporary_measurement_overlay()
+
+    def _clear_temporary_measurement(self) -> None:
+        self._temporary_measure_active = False
+        self._temporary_measure_start_anchor = None
+        self._temporary_measure_end_anchor = None
+        self._temporary_measure_line.setData([], [])
+        self._temporary_measure_handles.setData([], [])
+        self._temporary_measure_label.setText("")
+        self._temporary_measure_line.hide()
+        self._temporary_measure_handles.hide()
+        self._temporary_measure_label.hide()
+
+    def _refresh_temporary_measurement_overlay(self) -> None:
+        start = self._temporary_measure_start_anchor
+        end = self._temporary_measure_end_anchor
+        if not self._temporary_measure_active or start is None or end is None:
+            self._clear_temporary_measurement()
+            return
+        self._temporary_measure_line.setData([start.x, end.x], [start.y, end.y])
+        self._temporary_measure_line.show()
+        self._temporary_measure_handles.setData([start.x, end.x], [start.y, end.y])
+        self._temporary_measure_handles.show()
+        self._temporary_measure_label.setText(self._temporary_measure_label_text(start, end))
+        label_x = max(start.x, end.x) + self._TEMP_MEASURE_LABEL_X_OFFSET
+        label_y = max(start.y, end.y) + self._TEMP_MEASURE_LABEL_Y_OFFSET
+        self._temporary_measure_label.setPos(label_x, label_y)
+        self._temporary_measure_label.show()
+
+    def _measurement_anchor_from_scene(self, scene_pos) -> DrawingAnchor:  # noqa: ANN001
+        point = self.price_plot.vb.mapSceneToView(scene_pos)
+        anchor = DrawingAnchor(float(point.x()), float(point.y()))
+        return self._normalized_measurement_anchor(anchor)
+
+    def _normalized_measurement_anchor(self, anchor: DrawingAnchor) -> DrawingAnchor:
+        anchor = self._stabilize_drawing_anchor(anchor)
+        if not (self._current_keyboard_modifiers() & Qt.KeyboardModifier.ControlModifier):
+            return anchor
+        snapped_anchor = self._drawing_snap_target(anchor)
+        if snapped_anchor is None:
+            return anchor
+        return snapped_anchor
+
+    def _temporary_measure_label_text(self, start: DrawingAnchor, end: DrawingAnchor) -> str:
+        delta = float(end.y) - float(start.y)
+        sign = "+" if delta >= 0 else "-"
+        price_delta = format_price(abs(delta), self._tick_size)
+        return f"{sign}{price_delta}"
 
     def handle_order_line_drag_event(self, ev) -> bool:  # noqa: ANN001
         if ev.button() != Qt.MouseButton.LeftButton or self._active_drawing_tool is not None or self._interaction_mode is InteractionMode.ORDER_PREVIEW:

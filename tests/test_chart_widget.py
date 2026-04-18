@@ -6,6 +6,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
+from barbybar.data.tick_size import format_price
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction
 from barbybar.ui.chart_widget import (
     AVERAGE_PRICE_LINE_COLOR,
@@ -1428,6 +1429,115 @@ def test_drag_end_next_mouse_move_restores_hover(widget: ChartWidget, app: QAppl
 
     assert widget._hover_card.isHidden() is False
     assert widget._axis_price_label.isHidden() is False
+
+
+def test_alt_left_drag_shows_temporary_measurement_without_panning(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.set_tick_size(0.2)
+    app.processEvents()
+    old_right = widget.viewport_state.right_edge_index
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.AltModifier)
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(105.0, 104.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+
+    assert widget.viewport_state.right_edge_index == old_right
+    assert widget._temporary_measure_active is True
+    assert widget._temporary_measure_line.isVisible() is True
+    assert widget._temporary_measure_label.isVisible() is True
+    assert widget._temporary_measure_label.toPlainText() == "+4.0"
+
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert widget._temporary_measure_active is False
+    assert widget._temporary_measure_line.isVisible() is False
+    assert widget._temporary_measure_label.isVisible() is False
+    assert widget.drawings() == []
+
+
+def test_temporary_measurement_updates_when_tick_size_changes(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.set_tick_size(1.0)
+    app.processEvents()
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.AltModifier)
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(105.0, 102.25))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    assert widget._temporary_measure_label.toPlainText() == "+2"
+
+    widget.set_tick_size(0.25)
+
+    assert widget._temporary_measure_label.toPlainText() == "+2.25"
+
+
+def test_ctrl_snap_applies_to_temporary_measurement(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_tick_size(0.2)
+    app.processEvents()
+    modifiers = Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ControlModifier
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: modifiers)
+
+    start_bar = widget._bars[10]
+    end_bar = widget._bars[11]
+    start = _scene_point_with_offset(widget, 10.0, start_bar.high, offset_x_px=4.0, offset_y_px=-4.0)
+    move = _scene_point_with_offset(widget, 11.0, end_bar.low, offset_x_px=4.0, offset_y_px=-4.0)
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+
+    expected_delta = end_bar.low - start_bar.high
+    expected_text = f"{'+' if expected_delta >= 0 else '-'}{format_price(abs(expected_delta), 0.2)}"
+    assert widget._temporary_measure_label.toPlainText() == expected_text
+
+
+def test_temporary_measurement_is_ignored_in_drawing_mode(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    app.processEvents()
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.AltModifier)
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(15.0, 104.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+
+    assert widget._temporary_measure_active is False
+    assert widget._temporary_measure_line.isVisible() is False
+
+
+def test_escape_cancels_temporary_measurement(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_tick_size(0.2)
+    app.processEvents()
+    monkeypatch.setattr(widget, "_current_keyboard_modifiers", lambda: Qt.KeyboardModifier.AltModifier)
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(15.0, 104.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    widget.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+
+    assert widget._temporary_measure_active is False
+    assert widget._temporary_measure_line.isVisible() is False
+    assert widget._temporary_measure_label.isVisible() is False
 
 
 def test_single_click_does_not_toggle_browse_mode_while_drawing(widget: ChartWidget, app: QApplication) -> None:
