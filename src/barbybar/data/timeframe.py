@@ -137,6 +137,7 @@ def _aggregate_bucket(bucket: list[Bar]) -> Bar:
         low=min(item.low for item in bucket),
         close=bucket[-1].close,
         volume=sum(item.volume for item in bucket),
+        open_timestamp=bucket[0].open_timestamp,
     )
 
 

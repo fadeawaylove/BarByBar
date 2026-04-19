@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection
 
@@ -75,16 +75,34 @@ class Repository:
             INSERT INTO datasets(display_name, symbol, timeframe, source_path, total_bars, start_time, end_time)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (resolved_display_name, symbol, timeframe, str(path), len(bars), bars[0].timestamp.isoformat(), bars[-1].timestamp.isoformat()),
+            (
+                resolved_display_name,
+                symbol,
+                timeframe,
+                str(path),
+                len(bars),
+                self._resolve_open_timestamp(bars[0], timeframe).isoformat(),
+                bars[-1].close_timestamp.isoformat(),
+            ),
         )
         dataset_id = int(cursor.lastrowid)
         self.conn.executemany(
             """
-            INSERT INTO bars(dataset_id, ts, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO bars(dataset_id, open_ts, close_ts, ts, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                (dataset_id, bar.timestamp.isoformat(), bar.open, bar.high, bar.low, bar.close, bar.volume)
+                (
+                    dataset_id,
+                    self._resolve_open_timestamp(bar, timeframe).isoformat(),
+                    bar.close_timestamp.isoformat(),
+                    bar.close_timestamp.isoformat(),
+                    bar.open,
+                    bar.high,
+                    bar.low,
+                    bar.close,
+                    bar.volume,
+                )
                 for bar in bars
             ],
         )
@@ -128,18 +146,20 @@ class Repository:
         return self._dataset_from_row(row)
 
     def get_bars(self, dataset_id: int) -> list[Bar]:
+        dataset = self.get_dataset(dataset_id)
         rows = self.conn.execute(
-            "SELECT ts, open, high, low, close, volume FROM bars WHERE dataset_id = ? ORDER BY ts",
+            "SELECT open_ts, close_ts, ts, open, high, low, close, volume FROM bars WHERE dataset_id = ? ORDER BY close_ts",
             (dataset_id,),
         ).fetchall()
         return [
             Bar(
-                timestamp=datetime.fromisoformat(row["ts"]),
+                timestamp=datetime.fromisoformat(row["close_ts"] or row["ts"]),
                 open=row["open"],
                 high=row["high"],
                 low=row["low"],
                 close=row["close"],
                 volume=row["volume"],
+                open_timestamp=self._row_open_timestamp(row, dataset.timeframe),
             )
             for row in rows
         ]
@@ -147,24 +167,26 @@ class Repository:
     def get_bars_window(self, dataset_id: int, start_index: int, count: int) -> list[Bar]:
         if count <= 0:
             return []
+        dataset = self.get_dataset(dataset_id)
         rows = self.conn.execute(
             """
-            SELECT ts, open, high, low, close, volume
+            SELECT open_ts, close_ts, ts, open, high, low, close, volume
             FROM bars
             WHERE dataset_id = ?
-            ORDER BY ts
+            ORDER BY close_ts
             LIMIT ? OFFSET ?
             """,
             (dataset_id, count, max(start_index, 0)),
         ).fetchall()
         return [
             Bar(
-                timestamp=datetime.fromisoformat(row["ts"]),
+                timestamp=datetime.fromisoformat(row["close_ts"] or row["ts"]),
                 open=row["open"],
                 high=row["high"],
                 low=row["low"],
                 close=row["close"],
                 volume=row["volume"],
+                open_timestamp=self._row_open_timestamp(row, dataset.timeframe),
             )
             for row in rows
         ]
@@ -640,6 +662,21 @@ class Repository:
                     low=min(bar.low for bar in bucket),
                     close=bucket[-1].close,
                     volume=sum(bar.volume for bar in bucket),
+                    open_timestamp=bucket[0].open_timestamp,
                 )
             )
         return result
+
+    @staticmethod
+    def _resolve_open_timestamp(bar: Bar, timeframe: str) -> datetime:
+        if bar.open_timestamp is not None:
+            return bar.open_timestamp
+        return bar.close_timestamp - timedelta(minutes=max(timeframe_to_minutes(timeframe), 1))
+
+    @staticmethod
+    def _row_open_timestamp(row, timeframe: str) -> datetime:
+        open_ts = row["open_ts"]
+        if open_ts:
+            return datetime.fromisoformat(open_ts)
+        close_ts = datetime.fromisoformat(row["close_ts"] or row["ts"])
+        return close_ts - timedelta(minutes=max(timeframe_to_minutes(timeframe), 1))

@@ -141,6 +141,15 @@ class Bar:
     low: float
     close: float
     volume: float
+    open_timestamp: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.open_timestamp is None:
+            self.open_timestamp = self.timestamp
+
+    @property
+    def close_timestamp(self) -> datetime:
+        return self.timestamp
 
 
 @dataclass(slots=True)

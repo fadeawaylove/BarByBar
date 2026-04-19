@@ -44,6 +44,7 @@ def _bars(count: int = 240) -> list[Bar]:
                 low=close - 1.5,
                 close=close,
                 volume=1000 + idx,
+                open_timestamp=start + timedelta(minutes=idx - 1),
             )
         )
     return bars
@@ -627,7 +628,7 @@ def test_hover_info_contains_ohlc_and_mouse_price(widget: ChartWidget) -> None:
     widget._update_hover_info(bars[5], 123.45)
 
     assert not widget._hover_card.isHidden()
-    assert widget._hover_time_label.text() == "2025-01-01 09:05"
+    assert widget._hover_time_label.text() == "开 2025-01-01 09:04 | 收 2025-01-01 09:05"
     assert widget._hover_open_label.text() == "开 104.1"
     assert widget._hover_high_label.text() == "高 106.1"
     assert widget._hover_low_label.text() == "低 103.4"
@@ -2482,14 +2483,33 @@ def test_hover_card_grows_after_text_update(widget: ChartWidget) -> None:
     assert widget._hover_card.height() > initial_height
 
 
-def test_hover_time_uses_bar_close_time(widget: ChartWidget) -> None:
+def test_hover_time_shows_open_and_close_time(widget: ChartWidget) -> None:
     bars = _bars()
     widget.set_full_data(bars)
     widget.set_cursor(10)
 
     widget._update_hover_info(bars[5], 123.45)
 
-    assert widget._hover_time_label.text() == "2025-01-01 09:05"
+    assert widget._hover_time_label.text() == "开 2025-01-01 09:04 | 收 2025-01-01 09:05"
+
+
+def test_hover_time_uses_chart_timeframe_for_open_and_close(widget: ChartWidget) -> None:
+    bars = [
+        Bar(
+            timestamp=datetime(2025, 1, 1, 9, 5),
+            open=100,
+            high=101,
+            low=99,
+            close=100.5,
+            volume=1,
+            open_timestamp=datetime(2025, 1, 1, 9, 0),
+        )
+    ]
+    widget.set_window_data(bars, cursor=0, total_count=1, global_start_index=0, timeframe="5m")
+
+    widget._update_hover_info(bars[0], 123.45)
+
+    assert widget._hover_time_label.text() == "开 2025-01-01 09:00 | 收 2025-01-01 09:05"
 
 
 def test_editable_order_id_at_scene_pos_returns_nearest_line(widget: ChartWidget) -> None:

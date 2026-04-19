@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS datasets (
 CREATE TABLE IF NOT EXISTS bars (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     dataset_id INTEGER NOT NULL,
+    open_ts TEXT NOT NULL,
+    close_ts TEXT NOT NULL,
     ts TEXT NOT NULL,
     open REAL NOT NULL,
     high REAL NOT NULL,
@@ -151,6 +153,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
     if order_columns and "reference_price_at_creation" not in order_columns:
         conn.execute("ALTER TABLE order_lines ADD COLUMN reference_price_at_creation REAL")
+    bar_columns = {row["name"] for row in conn.execute("PRAGMA table_info(bars)").fetchall()}
+    if bar_columns and "open_ts" not in bar_columns:
+        conn.execute("ALTER TABLE bars ADD COLUMN open_ts TEXT")
+    bar_columns = {row["name"] for row in conn.execute("PRAGMA table_info(bars)").fetchall()}
+    if bar_columns and "close_ts" not in bar_columns:
+        conn.execute("ALTER TABLE bars ADD COLUMN close_ts TEXT")
     drawing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(drawings)").fetchall()}
     if not drawing_columns:
         conn.execute(

@@ -1475,7 +1475,7 @@ class ChartWidget(QWidget):
         self._show_axis_price_label(price)
 
     def _update_hover_info(self, bar: Bar, price: float) -> None:
-        self._hover_time_label.setText(f"{bar.timestamp:%Y-%m-%d %H:%M}")
+        self._hover_time_label.setText(self._hover_bar_time_text(bar))
         self._hover_open_label.setText(f"开 {format_price(bar.open, self._tick_size)}")
         self._hover_high_label.setText(f"高 {format_price(bar.high, self._tick_size)}")
         self._hover_low_label.setText(f"低 {format_price(bar.low, self._tick_size)}")
@@ -1492,6 +1492,11 @@ class ChartWidget(QWidget):
         self._position_hover_card()
         self._hover_card.raise_()
         self._hover_card.show()
+
+    def _hover_bar_time_text(self, bar: Bar) -> str:
+        open_time = bar.open_timestamp or bar.close_timestamp
+        close_time = bar.close_timestamp
+        return f"开 {open_time:%Y-%m-%d %H:%M} | 收 {close_time:%Y-%m-%d %H:%M}"
 
     def _update_trade_hover_info(self, detail_lines: list[str]) -> None:
         labels = [

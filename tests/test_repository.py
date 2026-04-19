@@ -8,6 +8,7 @@ from barbybar.data.tick_size import default_tick_size_for_symbol
 from barbybar.data.timeframe import aggregate_bars, default_chart_timeframe, find_bar_index_for_timestamp, normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType, SessionStatus
+from barbybar.storage.database import connect
 from barbybar.storage.repository import Repository
 
 
@@ -161,6 +162,70 @@ def test_repository_migrates_legacy_sessions_without_last_opened_at() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_database_migration_adds_bar_time_columns_without_backfill() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "legacy-bars.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE datasets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL DEFAULT '',
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                total_bars INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE bars (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_id INTEGER NOT NULL,
+                ts TEXT NOT NULL,
+                open REAL NOT NULL,
+                high REAL NOT NULL,
+                low REAL NOT NULL,
+                close REAL NOT NULL,
+                volume REAL NOT NULL,
+                UNIQUE(dataset_id, ts)
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO datasets(display_name, symbol, timeframe, source_path, total_bars, start_time, end_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Legacy", "IF", "1m", "legacy.csv", 2, "2025-01-01T09:00:00", "2025-01-01T09:01:00"),
+        )
+        conn.executemany(
+            "INSERT INTO bars(dataset_id, ts, open, high, low, close, volume) VALUES (1, ?, ?, ?, ?, ?, ?)",
+            [
+                ("2025-01-01T09:00:00", 100.0, 101.0, 99.0, 100.5, 10.0),
+                ("2025-01-01T09:01:00", 100.5, 101.5, 100.0, 101.0, 11.0),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = connect(db_path)
+        columns = {row["name"] for row in migrated.execute("PRAGMA table_info(bars)").fetchall()}
+        missing_rows = migrated.execute(
+            "SELECT COUNT(*) FROM bars WHERE open_ts IS NULL OR close_ts IS NULL"
+        ).fetchone()[0]
+        migrated.close()
+
+        assert "open_ts" in columns
+        assert "close_ts" in columns
+        assert missing_rows == 2
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_aggregate_bars_drops_incomplete_tail() -> None:
     start = datetime(2025, 1, 1, 9, 0)
     source = []
@@ -252,10 +317,10 @@ def test_aggregate_bars_supports_2m_timeframe() -> None:
 
 def test_aggregate_bars_supports_daily_timeframe_for_day_session_products() -> None:
     source = [
-        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=102, low=99, close=101, volume=10),
-        Bar(timestamp=datetime(2025, 1, 1, 14, 59), open=101, high=103, low=100, close=102, volume=20),
-        Bar(timestamp=datetime(2025, 1, 2, 9, 0), open=103, high=105, low=102, close=104, volume=30),
-        Bar(timestamp=datetime(2025, 1, 2, 14, 59), open=104, high=106, low=103, close=105, volume=40),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=102, low=99, close=101, volume=10, open_timestamp=datetime(2025, 1, 1, 8, 59)),
+        Bar(timestamp=datetime(2025, 1, 1, 14, 59), open=101, high=103, low=100, close=102, volume=20, open_timestamp=datetime(2025, 1, 1, 14, 58)),
+        Bar(timestamp=datetime(2025, 1, 2, 9, 0), open=103, high=105, low=102, close=104, volume=30, open_timestamp=datetime(2025, 1, 2, 8, 59)),
+        Bar(timestamp=datetime(2025, 1, 2, 14, 59), open=104, high=106, low=103, close=105, volume=40, open_timestamp=datetime(2025, 1, 2, 14, 58)),
     ]
 
     aggregated = aggregate_bars(source, "1m", "1d")
@@ -267,17 +332,18 @@ def test_aggregate_bars_supports_daily_timeframe_for_day_session_products() -> N
     assert aggregated[0].high == 103
     assert aggregated[0].low == 99
     assert aggregated[0].volume == 30
+    assert aggregated[0].open_timestamp == datetime(2025, 1, 1, 8, 59)
     assert aggregated[1].timestamp == datetime(2025, 1, 2, 14, 59)
 
 
 def test_aggregate_bars_supports_daily_timeframe_for_night_session_products() -> None:
     source = [
-        Bar(timestamp=datetime(2025, 1, 1, 21, 0), open=100, high=102, low=99, close=101, volume=10),
-        Bar(timestamp=datetime(2025, 1, 2, 9, 0), open=101, high=104, low=100, close=103, volume=20),
-        Bar(timestamp=datetime(2025, 1, 2, 14, 59), open=103, high=105, low=102, close=104, volume=30),
-        Bar(timestamp=datetime(2025, 1, 2, 21, 0), open=104, high=106, low=103, close=105, volume=40),
-        Bar(timestamp=datetime(2025, 1, 3, 9, 0), open=105, high=107, low=104, close=106, volume=50),
-        Bar(timestamp=datetime(2025, 1, 3, 14, 59), open=106, high=108, low=105, close=107, volume=60),
+        Bar(timestamp=datetime(2025, 1, 1, 21, 0), open=100, high=102, low=99, close=101, volume=10, open_timestamp=datetime(2025, 1, 1, 20, 59)),
+        Bar(timestamp=datetime(2025, 1, 2, 9, 0), open=101, high=104, low=100, close=103, volume=20, open_timestamp=datetime(2025, 1, 2, 8, 59)),
+        Bar(timestamp=datetime(2025, 1, 2, 14, 59), open=103, high=105, low=102, close=104, volume=30, open_timestamp=datetime(2025, 1, 2, 14, 58)),
+        Bar(timestamp=datetime(2025, 1, 2, 21, 0), open=104, high=106, low=103, close=105, volume=40, open_timestamp=datetime(2025, 1, 2, 20, 59)),
+        Bar(timestamp=datetime(2025, 1, 3, 9, 0), open=105, high=107, low=104, close=106, volume=50, open_timestamp=datetime(2025, 1, 3, 8, 59)),
+        Bar(timestamp=datetime(2025, 1, 3, 14, 59), open=106, high=108, low=105, close=107, volume=60, open_timestamp=datetime(2025, 1, 3, 14, 58)),
     ]
 
     aggregated = aggregate_bars(source, "1m", "1d")
@@ -289,6 +355,7 @@ def test_aggregate_bars_supports_daily_timeframe_for_night_session_products() ->
     assert aggregated[0].high == 105
     assert aggregated[0].low == 99
     assert aggregated[0].volume == 60
+    assert aggregated[0].open_timestamp == datetime(2025, 1, 1, 20, 59)
     assert aggregated[1].timestamp == datetime(2025, 1, 3, 14, 59)
 
 
