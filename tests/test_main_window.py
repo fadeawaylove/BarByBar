@@ -898,6 +898,7 @@ def test_update_ui_from_engine_syncs_trade_markers(window: MainWindow) -> None:
 
 def test_step_forward_refits_y_axis_after_manual_vertical_drag(window: MainWindow) -> None:
     _seed_engine(window)
+    window.save_session = lambda *, trigger="manual": None
     window.chart_widget.set_window_data(
         window.engine.bars,
         window.engine.session.current_index,
@@ -1853,20 +1854,48 @@ def test_busy_overlay_show_and_hide(window: MainWindow) -> None:
     assert QApplication.overrideCursor() is None
 
 
-def test_navigation_schedules_auto_save(window: MainWindow) -> None:
+def test_navigation_saves_session_immediately(window: MainWindow, monkeypatch) -> None:
     _seed_engine(window)
+    calls: list[str] = []
+
+    def fake_save_session(*, trigger: str = "manual") -> None:
+        calls.append(trigger)
+        window._session_dirty = False
+        window._auto_save_timer.stop()
+
+    monkeypatch.setattr(window, "save_session", fake_save_session)
 
     window.step_forward()
 
-    assert window._session_dirty is True
-    assert window._auto_save_timer.isActive()
+    assert calls == ["step_forward"]
+    assert window._session_dirty is False
+    assert window._auto_save_timer.isActive() is False
     window._auto_save_timer.stop()
     window._session_dirty = False
+
+
+def test_jump_to_visible_bar_saves_session_immediately(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    calls: list[str] = []
+
+    def fake_save_session(*, trigger: str = "manual") -> None:
+        calls.append(trigger)
+        window._session_dirty = False
+        window._auto_save_timer.stop()
+
+    monkeypatch.setattr(window, "save_session", fake_save_session)
+
+    window.jump_to_bar(window.engine.window_start_index + 1)
+
+    assert calls == ["jump_to_bar"]
+    assert window._session_dirty is False
+    assert window._auto_save_timer.isActive() is False
 
 
 def test_step_forward_keeps_zoom_when_forward_window_extends(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_engine(window)
     assert window.engine is not None
+    monkeypatch.setattr(window, "save_session", lambda *, trigger="manual": None)
 
     extended_bars = [
         Bar(
@@ -1911,6 +1940,7 @@ def test_step_forward_keeps_zoom_when_forward_window_extends(window: MainWindow,
 def test_space_shortcut_steps_forward_when_focus_allows(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_engine(window)
     start_index = window.engine.session.current_index
+    monkeypatch.setattr(window, "save_session", lambda *, trigger="manual": None)
 
     monkeypatch.setattr(QApplication, "focusWidget", staticmethod(lambda: window.chart_widget))
     window._handle_step_forward_shortcut()
@@ -1959,6 +1989,7 @@ def test_jump_to_bar_passes_flatten_toggle_state_to_engine(window: MainWindow, m
         captured["flatten_at_session_end"] = flatten_at_session_end
 
     monkeypatch.setattr(window.engine, "jump_to", fake_jump_to)
+    monkeypatch.setattr(window, "save_session", lambda *, trigger="manual": None)
     window.flatten_at_session_end_toggle_button.setChecked(False)
 
     window.jump_to_bar(30)

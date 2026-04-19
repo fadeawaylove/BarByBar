@@ -2174,7 +2174,7 @@ class MainWindow(QMainWindow):
         if not self.engine.step_forward(flatten_at_session_end=self._flatten_at_session_end_enabled()):
             return
         self._update_ui_from_engine()
-        self._schedule_auto_save("step_forward")
+        self.save_session(trigger="step_forward")
 
     def step_back(self) -> None:
         if not self.engine:
@@ -2182,7 +2182,7 @@ class MainWindow(QMainWindow):
         self._ensure_window_for_backward()
         self.engine.step_back()
         self._update_ui_from_engine()
-        self._schedule_auto_save("step_back")
+        self.save_session(trigger="step_back")
 
     def jump_to_bar(self, index: int) -> None:
         if not self.engine:
@@ -2202,7 +2202,7 @@ class MainWindow(QMainWindow):
             return
         self.engine.jump_to(index, flatten_at_session_end=self._flatten_at_session_end_enabled())
         self._update_ui_from_engine()
-        self._schedule_auto_save("jump_to_bar")
+        self.save_session(trigger="jump_to_bar")
 
     def record_action(self, action_type: ActionType) -> None:
         if not self.engine:
