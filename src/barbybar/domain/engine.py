@@ -503,17 +503,22 @@ class ReviewEngine:
         stop_line = self._select_triggered_protective_line(OrderLineType.STOP_LOSS, index, bar)
         take_line = self._select_triggered_protective_line(OrderLineType.TAKE_PROFIT, index, bar)
         hit_line: OrderLine | None = None
+        fill_price: float | None = None
         if position.direction == "long":
-            if stop_line and self._bar_contains_order_price(bar, stop_line.price):
+            if stop_line:
                 hit_line = stop_line
-            elif take_line and self._bar_contains_order_price(bar, take_line.price):
+            elif take_line:
                 hit_line = take_line
         else:
-            if stop_line and self._bar_contains_order_price(bar, stop_line.price):
+            if stop_line:
                 hit_line = stop_line
-            elif take_line and self._bar_contains_order_price(bar, take_line.price):
+            elif take_line:
                 hit_line = take_line
         if hit_line is None:
+            self._update_drawdown(bar.close)
+            return False
+        fill_price = self._resolve_order_fill_price(hit_line, index, bar)
+        if fill_price is None:
             self._update_drawdown(bar.close)
             return False
         self._trigger_line(hit_line, index, bar.timestamp)
@@ -521,7 +526,7 @@ class ReviewEngine:
             action_type=ActionType.CLOSE,
             bar_index=index,
             timestamp=bar.timestamp,
-            price=hit_line.price,
+            price=fill_price,
             quantity=position.quantity,
             note=f"Auto close by {hit_line.order_type.value}",
             extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
@@ -530,7 +535,7 @@ class ReviewEngine:
         self._apply_action(auto_action)
         self.actions.append(auto_action)
         self._remove_protective_lines()
-        self._update_drawdown(hit_line.price)
+        self._update_drawdown(fill_price)
         return True
 
     def _apply_entry_order_lines(self, index: int, bar: Bar) -> bool:
@@ -543,10 +548,14 @@ class ReviewEngine:
             return False
         hit_line: OrderLine | None = None
         for line in entry_lines:
-            if self._bar_contains_order_price(bar, line.price):
+            if self._resolve_order_fill_price(line, index, bar) is not None:
                 hit_line = line
                 break
         if hit_line is None:
+            self._update_drawdown(bar.close)
+            return False
+        fill_price = self._resolve_order_fill_price(hit_line, index, bar)
+        if fill_price is None:
             self._update_drawdown(bar.close)
             return False
         self._trigger_line(hit_line, index, bar.timestamp)
@@ -555,7 +564,7 @@ class ReviewEngine:
             action_type=action_type,
             bar_index=index,
             timestamp=bar.timestamp,
-            price=hit_line.price,
+            price=fill_price,
             quantity=hit_line.quantity,
             note=f"Auto entry by {hit_line.order_type.value}",
             extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
@@ -564,7 +573,7 @@ class ReviewEngine:
         self._apply_action(auto_action)
         self.actions.append(auto_action)
         self._cancel_entry_lines()
-        self._update_drawdown(hit_line.price)
+        self._update_drawdown(fill_price)
         return True
 
     def _apply_flattening_order_lines(self, index: int, bar: Bar) -> bool:
@@ -580,10 +589,14 @@ class ReviewEngine:
             return False
         hit_line: OrderLine | None = None
         for line in flattening_lines:
-            if self._bar_contains_order_price(bar, line.price):
+            if self._resolve_order_fill_price(line, index, bar) is not None:
                 hit_line = line
                 break
         if hit_line is None:
+            self._update_drawdown(bar.close)
+            return False
+        fill_price = self._resolve_order_fill_price(hit_line, index, bar)
+        if fill_price is None:
             self._update_drawdown(bar.close)
             return False
         self._trigger_line(hit_line, index, bar.timestamp)
@@ -593,7 +606,7 @@ class ReviewEngine:
             action_type=ActionType.CLOSE,
             bar_index=index,
             timestamp=bar.timestamp,
-            price=hit_line.price,
+            price=fill_price,
             quantity=quantity,
             note=f"Auto close by {hit_line.order_type.value}",
             extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
@@ -606,7 +619,7 @@ class ReviewEngine:
                 action_type=ActionType.OPEN_SHORT if direction == "long" else ActionType.OPEN_LONG,
                 bar_index=index,
                 timestamp=bar.timestamp,
-                price=hit_line.price,
+                price=fill_price,
                 quantity=quantity,
                 note="Auto reverse by reverse line",
                 extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
@@ -615,7 +628,7 @@ class ReviewEngine:
             self._apply_action(reverse_action)
             self.actions.append(reverse_action)
         self._cancel_flattening_lines()
-        self._update_drawdown(hit_line.price)
+        self._update_drawdown(fill_price)
         return True
 
     def _update_drawdown(self, mark_price: float) -> None:
@@ -860,14 +873,14 @@ class ReviewEngine:
             return None
         if position.direction == "long":
             if order_type is OrderLineType.STOP_LOSS:
-                hit_lines = [line for line in candidates if self._bar_contains_order_price(bar, line.price)]
+                hit_lines = [line for line in candidates if self._resolve_order_fill_price(line, index, bar) is not None]
                 return max(hit_lines, key=lambda line: line.price, default=None)
-            hit_lines = [line for line in candidates if self._bar_contains_order_price(bar, line.price)]
+            hit_lines = [line for line in candidates if self._resolve_order_fill_price(line, index, bar) is not None]
             return min(hit_lines, key=lambda line: line.price, default=None)
         if order_type is OrderLineType.STOP_LOSS:
-            hit_lines = [line for line in candidates if self._bar_contains_order_price(bar, line.price)]
+            hit_lines = [line for line in candidates if self._resolve_order_fill_price(line, index, bar) is not None]
             return min(hit_lines, key=lambda line: line.price, default=None)
-        hit_lines = [line for line in candidates if self._bar_contains_order_price(bar, line.price)]
+        hit_lines = [line for line in candidates if self._resolve_order_fill_price(line, index, bar) is not None]
         return max(hit_lines, key=lambda line: line.price, default=None)
 
     def _bar_contains_order_price(self, bar: Bar, order_price: float) -> bool:
@@ -876,6 +889,22 @@ class ReviewEngine:
         high = snap_price(max(float(bar.low), float(bar.high)), tick_size)
         price = snap_price(float(order_price), tick_size)
         return low <= price <= high
+
+    def _resolve_order_fill_price(self, line: OrderLine, index: int, bar: Bar) -> float | None:
+        tick_size = max(float(self.session.tick_size), 0.0001)
+        raw_order_price = float(line.price)
+        if self._bar_contains_order_price(bar, raw_order_price):
+            return raw_order_price
+        if index <= 0:
+            return None
+        order_price = snap_price(raw_order_price, tick_size)
+        previous_close = snap_price(float(self.bars[index - 1].close), tick_size)
+        current_open = snap_price(float(bar.open), tick_size)
+        lower = min(previous_close, current_open)
+        upper = max(previous_close, current_open)
+        if lower <= order_price <= upper and previous_close != current_open:
+            return float(bar.open)
+        return None
 
     def _cancel_line(self, line: OrderLine) -> None:
         line.status = OrderStatus.CANCELLED

@@ -140,7 +140,7 @@ def test_nearest_long_stop_loss_triggers_first_when_multiple_lines_are_hit() -> 
     assert engine.trades[-1].exit_price == 99
 
 
-def test_long_stop_loss_gap_down_does_not_trigger_when_bar_range_excludes_price() -> None:
+def test_long_stop_loss_gap_down_triggers_at_open_price() -> None:
     bars = [
         Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
         Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=97, high=98, low=95, close=96, volume=1),
@@ -152,11 +152,11 @@ def test_long_stop_loss_gap_down_does_not_trigger_when_bar_range_excludes_price(
 
     engine.step_forward()
 
-    assert engine.session.position.is_open is True
-    assert all(action.action_type is not ActionType.CLOSE for action in engine.actions)
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].exit_price == 97
 
 
-def test_long_take_profit_gap_up_does_not_trigger_when_bar_range_excludes_price() -> None:
+def test_long_take_profit_gap_up_triggers_at_open_price() -> None:
     bars = [
         Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
         Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=105, high=106, low=104, close=105, volume=1),
@@ -168,11 +168,11 @@ def test_long_take_profit_gap_up_does_not_trigger_when_bar_range_excludes_price(
 
     engine.step_forward()
 
-    assert engine.session.position.is_open is True
-    assert all(action.action_type is not ActionType.CLOSE for action in engine.actions)
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].exit_price == 105
 
 
-def test_short_stop_loss_gap_up_does_not_trigger_when_bar_range_excludes_price() -> None:
+def test_short_stop_loss_gap_up_triggers_at_open_price() -> None:
     bars = [
         Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
         Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=105, high=106, low=104, close=105, volume=1),
@@ -184,11 +184,11 @@ def test_short_stop_loss_gap_up_does_not_trigger_when_bar_range_excludes_price()
 
     engine.step_forward()
 
-    assert engine.session.position.is_open is True
-    assert all(action.action_type is not ActionType.CLOSE for action in engine.actions)
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].exit_price == 105
 
 
-def test_short_take_profit_gap_down_does_not_trigger_when_bar_range_excludes_price() -> None:
+def test_short_take_profit_gap_down_triggers_at_open_price() -> None:
     bars = [
         Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
         Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=95, high=96, low=94, close=95, volume=1),
@@ -200,8 +200,8 @@ def test_short_take_profit_gap_down_does_not_trigger_when_bar_range_excludes_pri
 
     engine.step_forward()
 
-    assert engine.session.position.is_open is True
-    assert all(action.action_type is not ActionType.CLOSE for action in engine.actions)
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].exit_price == 95
 
 
 def test_long_stop_loss_triggers_when_display_range_contains_price() -> None:
