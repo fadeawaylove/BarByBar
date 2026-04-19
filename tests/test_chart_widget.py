@@ -729,8 +729,9 @@ def test_trade_actions_render_marker_items(widget: ChartWidget) -> None:
     assert widget._trade_markers[0].size == pytest.approx(widget._scaled_trade_triangle_size())
     assert widget._trade_markers[1].role == "exit"
     assert widget._trade_markers[1].outcome == "win"
-    assert widget._trade_markers[1].symbol == "o"
-    assert widget._trade_markers[1].brush == TRADE_EXIT_MARKER_COLOR
+    assert widget._trade_markers[1].symbol == "t"
+    assert widget._trade_markers[1].brush == TRADE_ENTRY_SHORT_COLOR
+    assert widget._trade_markers[1].size == pytest.approx(widget._scaled_trade_triangle_size())
     assert widget._trade_links[0].direction == "long"
     assert widget._trade_links[0].outcome == "win"
 
@@ -801,8 +802,9 @@ def test_short_trade_link_uses_loss_color(widget: ChartWidget) -> None:
     assert widget._trade_markers[0].brush == TRADE_ENTRY_SHORT_COLOR
     assert widget._trade_markers[0].size == pytest.approx(widget._scaled_trade_triangle_size())
     assert widget._trade_markers[1].outcome == "loss"
-    assert widget._trade_markers[1].symbol == "o"
-    assert widget._trade_markers[1].brush == TRADE_EXIT_MARKER_COLOR
+    assert widget._trade_markers[1].symbol == "t1"
+    assert widget._trade_markers[1].brush == TRADE_ENTRY_LONG_COLOR
+    assert widget._trade_markers[1].size == pytest.approx(widget._scaled_trade_triangle_size())
     assert widget._trade_links[0].direction == "short"
     assert widget._trade_links[0].outcome == "loss"
 
@@ -827,8 +829,8 @@ def test_flat_trade_exit_marker_and_link_use_neutral_color(widget: ChartWidget) 
     )
 
     assert widget._trade_markers[1].outcome == "flat"
-    assert widget._trade_markers[1].symbol == "o"
-    assert widget._trade_markers[1].brush == TRADE_EXIT_MARKER_COLOR
+    assert widget._trade_markers[1].symbol == "t"
+    assert widget._trade_markers[1].brush == TRADE_ENTRY_SHORT_COLOR
     assert widget._trade_links[0].outcome == "flat"
     assert widget._trade_links[0].pnl == 0.0
 

@@ -3163,8 +3163,11 @@ class ChartWidget(QWidget):
             return "t1" if direction == "long" else "t", self._trade_direction_color(direction), self._scaled_trade_triangle_size()
         if role == "add":
             return "t1" if direction == "long" else "t", self._trade_direction_color(direction), self._scaled_trade_triangle_size()
-        if role == "reduce":
-            return "o", TRADE_EXIT_MARKER_COLOR, 8.0
+        if role in {"reduce", "exit"}:
+            exit_symbol = "t" if direction == "long" else "t1"
+            exit_color = TRADE_ENTRY_SHORT_COLOR if direction == "long" else TRADE_ENTRY_LONG_COLOR
+            exit_size = 8.0 if role == "reduce" else self._scaled_trade_triangle_size()
+            return exit_symbol, exit_color, exit_size
         return "o", TRADE_EXIT_MARKER_COLOR, 9.0
 
     def _scaled_trade_triangle_size(self) -> float:
