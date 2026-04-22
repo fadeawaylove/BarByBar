@@ -63,6 +63,7 @@ from barbybar.domain.models import (
     normalize_drawing_style,
 )
 from barbybar.logging_config import log_dir
+from barbybar.logging_config import register_fatal_error_handler, unregister_fatal_error_handler
 from barbybar.paths import default_drawing_templates_path, default_ui_settings_path, default_updates_dir
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import ChartWidget, DEFAULT_RIGHT_PADDING
@@ -1301,6 +1302,7 @@ class MainWindow(QMainWindow):
 
         self._load_ui_settings()
         self._build_ui()
+        register_fatal_error_handler(self.show_fatal_error)
         self._load_global_drawing_templates()
         self._autoload_recent_session()
 
@@ -2651,6 +2653,9 @@ class MainWindow(QMainWindow):
         )
         dialog.exec()
 
+    def show_fatal_error(self, title: str, heading: str, summary: str = "", detail: str = "") -> None:
+        self._show_error(title, heading, summary or heading, detail)
+
     def _confirm_dialog(
         self,
         title: str,
@@ -2944,6 +2949,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._flush_pending_auto_save("close_event")
         self.hide_busy_overlay()
+        unregister_fatal_error_handler(self.show_fatal_error)
         if self._trade_history_dialog is not None:
             self._trade_history_dialog.close()
         if self._active_batch_import_thread and self._active_batch_import_thread.isRunning():

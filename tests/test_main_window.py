@@ -218,6 +218,16 @@ def test_main_window_exposes_log_viewer_button(window: MainWindow) -> None:
     assert window.log_viewer_button.text() == "查看日志"
 
 
+def test_show_fatal_error_reuses_error_dialog(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[str, str, str, str]] = []
+
+    monkeypatch.setattr(window, "_show_error", lambda title, heading, summary="", detail="": captured.append((title, heading, summary, detail)))
+
+    window.show_fatal_error("程序异常", "程序出现异常", "请重试", "ValueError: boom")
+
+    assert captured == [("程序异常", "程序出现异常", "请重试", "ValueError: boom")]
+
+
 def test_main_window_uses_manager_buttons_instead_of_left_lists(window: MainWindow) -> None:
     button_texts = {button.text() for button in window.findChildren(QPushButton)}
 
