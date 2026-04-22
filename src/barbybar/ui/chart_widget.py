@@ -1123,6 +1123,7 @@ class ChartWidget(QWidget):
 
     def _order_line_drag_preview_model(self, price: float) -> OrderLine | None:
         target_id = self._protective_drag_line_id
+        average_line = next((item for item in self._order_lines if item.order_type is OrderLineType.AVERAGE_PRICE), None)
         if target_id is not None:
             line = next((item for item in self._order_lines if item.id == target_id), None)
             if line is not None:
@@ -1145,6 +1146,19 @@ class ChartWidget(QWidget):
         target_type = self._protective_drag_order_type
         if target_type is None:
             return None
+        if self._protective_drag_from_average:
+            reference_price = average_line.price if average_line is not None else None
+            if not self._bars:
+                return None
+            return OrderLine(
+                order_type=target_type,
+                price=price,
+                quantity=average_line.quantity if average_line is not None else 1,
+                created_bar_index=self._cursor,
+                active_from_bar_index=self._cursor + 1,
+                created_at=self._bars[-1].timestamp,
+                reference_price_at_creation=reference_price,
+            )
         source = next((item for item in self._order_lines if item.order_type is target_type), None)
         if source is not None:
             return OrderLine(
@@ -1163,7 +1177,6 @@ class ChartWidget(QWidget):
                 triggered_at=source.triggered_at,
                 note=source.note,
             )
-        average_line = next((item for item in self._order_lines if item.order_type is OrderLineType.AVERAGE_PRICE), None)
         reference_price = average_line.price if average_line is not None else None
         if not self._bars:
             return None

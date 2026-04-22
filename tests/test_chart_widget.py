@@ -3412,6 +3412,45 @@ def test_hovered_transient_stop_loss_line_drag_emits_protective_upsert(widget: C
     assert widget._drag_order_label.isVisible() is False
 
 
+def test_average_price_drag_preview_uses_full_position_quantity_even_with_existing_protective_line(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.set_tick_size(0.2)
+    widget.set_position_direction("long")
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.AVERAGE_PRICE,
+                price=100.0,
+                quantity=3,
+                created_bar_index=0,
+                active_from_bar_index=0,
+                created_at=datetime(2025, 1, 1, 9, 0),
+            ),
+            OrderLine(
+                order_type=OrderLineType.STOP_LOSS,
+                price=98.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=1,
+                created_at=datetime(2025, 1, 1, 9, 0),
+            ),
+        ]
+    )
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 101.0))
+    widget._handle_mouse_moved((start,))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+
+    assert widget._drag_order_label.isVisible() is True
+    assert widget._drag_order_label.toPlainText() == "止盈 3手 101.0 (+1.0)"
+
+
 def test_hovered_transient_entry_line_drag_does_not_emit_duplicate_create(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
