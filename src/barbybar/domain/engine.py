@@ -893,10 +893,8 @@ class ReviewEngine:
     def _resolve_order_fill_price(self, line: OrderLine, index: int, bar: Bar) -> float | None:
         tick_size = max(float(self.session.tick_size), 0.0001)
         raw_order_price = float(line.price)
-        if self._bar_contains_order_price(bar, raw_order_price):
-            return raw_order_price
         if index <= 0:
-            return None
+            return raw_order_price if self._bar_contains_order_price(bar, raw_order_price) else None
         order_price = snap_price(raw_order_price, tick_size)
         previous_close = snap_price(float(self.bars[index - 1].close), tick_size)
         current_open = snap_price(float(bar.open), tick_size)
@@ -904,6 +902,8 @@ class ReviewEngine:
         upper = max(previous_close, current_open)
         if lower <= order_price <= upper and previous_close != current_open:
             return float(bar.open)
+        if self._bar_contains_order_price(bar, raw_order_price):
+            return raw_order_price
         return None
 
     def _cancel_line(self, line: OrderLine) -> None:

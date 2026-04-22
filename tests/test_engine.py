@@ -156,6 +156,22 @@ def test_long_stop_loss_gap_down_triggers_at_open_price() -> None:
     assert engine.trades[-1].exit_price == 97
 
 
+def test_long_stop_loss_prefers_gap_open_over_intrabar_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=97, high=101, low=95, close=100, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].exit_price == 97
+
+
 def test_long_take_profit_gap_up_triggers_at_open_price() -> None:
     bars = [
         Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
@@ -170,6 +186,22 @@ def test_long_take_profit_gap_up_triggers_at_open_price() -> None:
 
     assert engine.session.position.is_open is False
     assert engine.trades[-1].exit_price == 105
+
+
+def test_entry_order_line_prefers_gap_open_over_intrabar_price() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=105, high=106, low=101, close=104, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.place_order_line(OrderLineType.ENTRY_LONG, price=102, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.direction == "long"
+    assert engine.actions[-1].action_type is ActionType.OPEN_LONG
+    assert engine.actions[-1].price == 105
 
 
 def test_short_stop_loss_gap_up_triggers_at_open_price() -> None:
