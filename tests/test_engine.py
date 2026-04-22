@@ -538,6 +538,25 @@ def test_session_end_flatten_can_be_disabled() -> None:
 
     assert moved is True
     assert engine.session.current_index == 1
+
+
+def test_entry_order_gap_fill_uses_window_local_previous_bar() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=105, high=106, low=104, close=105, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=1, current_index=1)
+    engine = ReviewEngine(session, bars[1:], window_start_index=1, total_count=3)
+    engine.place_order_line(OrderLineType.ENTRY_LONG, price=102, quantity=1)
+
+    moved = engine.step_forward()
+
+    assert moved is True
+    assert engine.session.current_index == 2
+    assert engine.session.position.direction == "long"
+    assert engine.actions[-1].action_type is ActionType.OPEN_LONG
+    assert engine.actions[-1].price == 105
     assert engine.session.position.is_open is True
 
 

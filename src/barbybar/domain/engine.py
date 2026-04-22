@@ -911,11 +911,18 @@ class ReviewEngine:
         if index <= 0:
             return raw_order_price if self._bar_contains_order_price(bar, raw_order_price) else None
         order_price = snap_price(raw_order_price, tick_size)
-        previous_close = snap_price(float(self.bars[index - 1].close), tick_size)
+        previous_local_index = index - self.window_start_index - 1
+        if previous_local_index < 0 or previous_local_index >= len(self.bars):
+            previous_close = None
+        else:
+            previous_close = snap_price(float(self.bars[previous_local_index].close), tick_size)
         current_open = snap_price(float(bar.open), tick_size)
-        lower = min(previous_close, current_open)
-        upper = max(previous_close, current_open)
-        if lower <= order_price <= upper and previous_close != current_open:
+        if previous_close is not None:
+            lower = min(previous_close, current_open)
+            upper = max(previous_close, current_open)
+        else:
+            lower = upper = current_open
+        if previous_close is not None and lower <= order_price <= upper and previous_close != current_open:
             return float(bar.open)
         if self._bar_contains_order_price(bar, raw_order_price):
             return raw_order_price
