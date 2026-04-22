@@ -62,6 +62,7 @@ from barbybar.domain.models import (
     WindowBars,
     normalize_drawing_style,
 )
+from barbybar.logging_config import log_dir
 from barbybar.paths import default_drawing_templates_path, default_ui_settings_path, default_updates_dir
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import ChartWidget, DEFAULT_RIGHT_PADDING
@@ -1165,6 +1166,81 @@ class TradeHistoryDialog(QDialog):
         self.refresh_items()
 
 
+class LogViewerDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None, logs_path: Path | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("日志查看")
+        self.resize(980, 620)
+        self._logs_path = Path(logs_path) if logs_path else log_dir()
+        self._current_text = ""
+        self._auto_scroll_enabled = True
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        toolbar.addWidget(QLabel("日志文件"))
+        self.log_file_combo = QComboBox()
+        self.log_file_combo.addItems(["app.log", "debug.log", "error.log"])
+        self.log_file_combo.currentTextChanged.connect(self._load_selected_log)
+        toolbar.addWidget(self.log_file_combo, 1)
+        self.refresh_log_button = QPushButton("刷新")
+        self.refresh_log_button.clicked.connect(self._load_selected_log)
+        toolbar.addWidget(self.refresh_log_button)
+        layout.addLayout(toolbar)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        layout.addWidget(self.log_text, 1)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #64748b; font-size: 12px;")
+        layout.addWidget(self.status_label)
+
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(1000)
+        self._refresh_timer.timeout.connect(self._load_selected_log)
+
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.valueChanged.connect(self._track_auto_scroll)
+
+        self._load_selected_log()
+        self._refresh_timer.start()
+
+    def closeEvent(self, event) -> None:  # noqa: ANN001
+        self._refresh_timer.stop()
+        super().closeEvent(event)
+
+    def _selected_log_path(self) -> Path:
+        return self._logs_path / self.log_file_combo.currentText()
+
+    def _track_auto_scroll(self) -> None:
+        scrollbar = self.log_text.verticalScrollBar()
+        self._auto_scroll_enabled = scrollbar.value() >= max(0, scrollbar.maximum() - 4)
+
+    def _load_selected_log(self) -> None:
+        path = self._selected_log_path()
+        if not path.exists():
+            text = f"日志文件不存在：{path}"
+        else:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                text = f"读取日志失败：{exc}"
+        modified = text != self._current_text
+        self._current_text = text
+        if modified:
+            self.log_text.setPlainText(text)
+            if self._auto_scroll_enabled:
+                cursor = self.log_text.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                self.log_text.setTextCursor(cursor)
+        self.status_label.setText(str(path))
+
+
 class MainWindow(QMainWindow):
     _DRAWING_TOOL_ICON_SIZE = QSize(26, 20)
     _DRAWING_TOOL_BUTTON_SIZE = QSize(48, 36)
@@ -1181,6 +1257,7 @@ class MainWindow(QMainWindow):
         self.hide_drawings_toggle_button: QPushButton | None = None
         self.flatten_at_session_end_toggle_button: QPushButton | None = None
         self.check_update_button: QPushButton | None = None
+        self.log_viewer_button: QPushButton | None = None
         self._busy_overlay: BusyOverlay | None = None
         self._busy_cursor_active = False
         self._active_loader_thread: QThread | None = None
@@ -1209,6 +1286,7 @@ class MainWindow(QMainWindow):
         self._selected_trade_number: int | None = None
         self._selected_trade_view: str = "entry"
         self._trade_history_dialog: TradeHistoryDialog | None = None
+        self._log_viewer_dialog: LogViewerDialog | None = None
         self._drawing_style_presets: dict[DrawingToolType, dict[str, object]] = {}
         self._drawing_template_buttons: dict[int, QPushButton] = {}
         self._drawing_templates: dict[int, DrawingTemplate] = {}
@@ -1238,6 +1316,8 @@ class MainWindow(QMainWindow):
         self.session_button.clicked.connect(self.open_session_library)
         self.check_update_button = QPushButton("检查更新")
         self.check_update_button.clicked.connect(self._start_update_check)
+        self.log_viewer_button = QPushButton("查看日志")
+        self.log_viewer_button.clicked.connect(self.open_log_viewer)
 
         self.splitter = QSplitter()
         self.splitter.addWidget(self._build_center_panel())
@@ -1265,6 +1345,12 @@ class MainWindow(QMainWindow):
 
     def _handle_step_forward_shortcut(self) -> None:
         if self._focused_widget_blocks_step_forward_shortcut():
+            focused_widget = QApplication.focusWidget()
+            logger.bind(
+                component="step_forward",
+                trigger="shortcut",
+                focused_widget=type(focused_widget).__name__ if focused_widget is not None else "",
+            ).info("event=step_forward_blocked_by_focus")
             return
         self.step_forward()
 
@@ -1363,6 +1449,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.dataset_button)
         controls.addWidget(self.session_button)
         controls.addWidget(self.check_update_button)
+        controls.addWidget(self.log_viewer_button)
         self.prev_button = QPushButton("上一步")
         self.prev_button.clicked.connect(self.step_back)
         controls.addWidget(self.prev_button)
@@ -1808,6 +1895,14 @@ class MainWindow(QMainWindow):
         self._trade_history_dialog.raise_()
         self._trade_history_dialog.activateWindow()
 
+    def open_log_viewer(self) -> None:
+        if self._log_viewer_dialog is None:
+            self._log_viewer_dialog = LogViewerDialog(self)
+            self._log_viewer_dialog.finished.connect(self._handle_log_viewer_closed)
+        self._log_viewer_dialog.show()
+        self._log_viewer_dialog.raise_()
+        self._log_viewer_dialog.activateWindow()
+
     def open_session_by_id(self, session_id: int) -> None:
         self._load_session(session_id)
 
@@ -1815,6 +1910,11 @@ class MainWindow(QMainWindow):
         if self._trade_history_dialog is not None:
             self._trade_history_dialog.deleteLater()
             self._trade_history_dialog = None
+
+    def _handle_log_viewer_closed(self) -> None:
+        if self._log_viewer_dialog is not None:
+            self._log_viewer_dialog.deleteLater()
+            self._log_viewer_dialog = None
 
     def delete_dataset_by_id(self, dataset_id: int) -> None:
         active_uses_dataset = False
@@ -2169,12 +2269,41 @@ class MainWindow(QMainWindow):
 
     def step_forward(self) -> None:
         if not self.engine:
+            logger.bind(component="step_forward", trigger="button", session_id=self.current_session_id).warning(
+                "event=step_forward_ignored_no_engine"
+            )
             return
+        logger.bind(
+            component="step_forward",
+            trigger="button",
+            session_id=self.current_session_id,
+            current_index=self.engine.session.current_index,
+            total_count=self.engine.total_count,
+            window_end_index=self.engine.window_end_index,
+            forward_buffer=self.engine.forward_buffer,
+        ).debug("event=step_forward_requested")
         self._ensure_window_for_forward()
         if not self.engine.step_forward(flatten_at_session_end=self._flatten_at_session_end_enabled()):
+            logger.bind(
+                component="step_forward",
+                trigger="button",
+                session_id=self.current_session_id,
+                current_index=self.engine.session.current_index,
+                total_count=self.engine.total_count,
+                window_end_index=self.engine.window_end_index,
+                can_step_forward=self.engine.can_step_forward(),
+                forward_buffer=self.engine.forward_buffer,
+            ).warning("event=step_forward_noop")
             return
         self._update_ui_from_engine()
         self.save_session(trigger="step_forward")
+        logger.bind(
+            component="step_forward",
+            trigger="button",
+            session_id=self.current_session_id,
+            current_index=self.engine.session.current_index,
+            total_count=self.engine.total_count,
+        ).debug("event=step_forward_applied")
 
     def step_back(self) -> None:
         if not self.engine:
@@ -2849,12 +2978,29 @@ class MainWindow(QMainWindow):
             ).error("event=wrong_ui_thread")
 
     def _ensure_window_for_forward(self) -> None:
-        if (
-            not self.engine
-            or not self.current_session_id
-            or not self.engine.can_step_forward()
-            or self.engine.forward_buffer > WINDOW_BUFFER_THRESHOLD
-        ):
+        if not self.engine:
+            logger.bind(component="chart_window", reason="no_engine").debug("event=skip_extend_forward_window")
+            return
+        if not self.current_session_id:
+            logger.bind(component="chart_window", reason="no_session_id").debug("event=skip_extend_forward_window")
+            return
+        if not self.engine.can_step_forward():
+            logger.bind(
+                component="chart_window",
+                session_id=self.current_session_id,
+                reason="terminal_bar",
+                current_index=self.engine.session.current_index,
+                total_count=self.engine.total_count,
+            ).info("event=skip_extend_forward_window")
+            return
+        if self.engine.forward_buffer > WINDOW_BUFFER_THRESHOLD:
+            logger.bind(
+                component="chart_window",
+                session_id=self.current_session_id,
+                reason="buffer_sufficient",
+                current_index=self.engine.session.current_index,
+                buffer=self.engine.forward_buffer,
+            ).debug("event=skip_extend_forward_window")
             return
         logger.bind(
             component="chart_window",

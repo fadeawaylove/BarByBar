@@ -22,6 +22,7 @@ from barbybar.ui.main_window import (
     DataSetManagerDialog,
     DrawingPropertiesDialog,
     DrawingTemplateDialog,
+    LogViewerDialog,
     MainWindow,
     SessionLibraryDialog,
     UpdateActionDialog,
@@ -212,6 +213,11 @@ def test_main_window_exposes_check_update_button(window: MainWindow) -> None:
     assert window.check_update_button.text() == "检查更新"
 
 
+def test_main_window_exposes_log_viewer_button(window: MainWindow) -> None:
+    assert window.log_viewer_button is not None
+    assert window.log_viewer_button.text() == "查看日志"
+
+
 def test_main_window_uses_manager_buttons_instead_of_left_lists(window: MainWindow) -> None:
     button_texts = {button.text() for button in window.findChildren(QPushButton)}
 
@@ -346,7 +352,37 @@ def test_dataset_session_and_update_buttons_are_placed_before_prev_button(window
     prev_index = next(index for index in range(controls.count()) if controls.itemAt(index).widget() is window.prev_button)
     leading_widgets = [controls.itemAt(index).widget() for index in range(prev_index)]
 
-    assert leading_widgets == [window.dataset_button, window.session_button, window.check_update_button]
+    assert leading_widgets == [window.dataset_button, window.session_button, window.check_update_button, window.log_viewer_button]
+
+
+def test_open_log_viewer_reuses_dialog_instance(window: MainWindow) -> None:
+    window.open_log_viewer()
+
+    assert window._log_viewer_dialog is not None
+    first_dialog = window._log_viewer_dialog
+    assert first_dialog.isVisible() is True
+
+    window.open_log_viewer()
+
+    assert window._log_viewer_dialog is first_dialog
+
+
+def test_log_viewer_dialog_reads_selected_log_file(app: QApplication, tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "app.log").write_text("app line", encoding="utf-8")
+    (logs_dir / "debug.log").write_text("debug line", encoding="utf-8")
+    (logs_dir / "error.log").write_text("error line", encoding="utf-8")
+
+    dialog = LogViewerDialog(logs_path=logs_dir)
+    try:
+        assert "app line" in dialog.log_text.toPlainText()
+        dialog.log_file_combo.setCurrentText("debug.log")
+        app.processEvents()
+        assert "debug line" in dialog.log_text.toPlainText()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
 
 
 def test_main_window_loads_bar_count_toggle_from_global_ui_settings(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:

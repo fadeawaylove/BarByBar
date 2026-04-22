@@ -24,11 +24,15 @@ def test_setup_logging_creates_log_files() -> None:
     try:
         setup_logging(log_path)
         logger.info("hello loguru")
+        logger.debug("debug only")
         logger.complete()
 
         assert (log_path / "app.log").exists()
+        assert (log_path / "debug.log").exists()
         assert (log_path / "error.log").exists()
         assert "hello loguru" in (log_path / "app.log").read_text(encoding="utf-8")
+        assert "debug only" not in (log_path / "app.log").read_text(encoding="utf-8")
+        assert "debug only" in (log_path / "debug.log").read_text(encoding="utf-8")
     finally:
         shutil.rmtree(case_dir, ignore_errors=True)
 

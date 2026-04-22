@@ -59,6 +59,18 @@ def setup_logging(base_log_dir: str | Path | None = None):
         )
     logger.add(
         target_dir / "app.log",
+        level="INFO",
+        format=FILE_FORMAT,
+        rotation=LOG_ROTATION,
+        retention=LOG_RETENTION,
+        compression=LOG_COMPRESSION,
+        enqueue=False,
+        backtrace=True,
+        diagnose=False,
+        encoding="utf-8",
+    )
+    logger.add(
+        target_dir / "debug.log",
         level="DEBUG",
         format=FILE_FORMAT,
         rotation=LOG_ROTATION,
@@ -68,6 +80,7 @@ def setup_logging(base_log_dir: str | Path | None = None):
         backtrace=True,
         diagnose=False,
         encoding="utf-8",
+        filter=lambda record: record["level"].no < 20,
     )
     logger.add(
         target_dir / "error.log",

@@ -4,6 +4,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import time, timedelta
 
+from loguru import logger
+
 from barbybar.data.tick_size import snap_price
 from barbybar.domain.models import (
     ActionType,
@@ -133,8 +135,21 @@ class ReviewEngine:
 
     def step_forward(self, *, flatten_at_session_end: bool = False) -> bool:
         if not self.can_step_forward():
+            logger.bind(
+                component="engine_step_forward",
+                session_id=self.session.id,
+                current_index=self.session.current_index,
+                total_count=self.total_count,
+            ).info("event=step_forward_at_terminal_bar")
             return self._flatten_terminal_position_if_needed(flatten_at_session_end)
         if self.session.current_index >= self.window_end_index:
+            logger.bind(
+                component="engine_step_forward",
+                session_id=self.session.id,
+                current_index=self.session.current_index,
+                window_end_index=self.window_end_index,
+                total_count=self.total_count,
+            ).warning("event=step_forward_blocked_by_window_end")
             return False
         self._save_snapshot()
         if flatten_at_session_end and self._is_last_bar_of_session(self.current_bar, self.bars[self.local_current_index + 1]):
