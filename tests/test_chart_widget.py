@@ -819,6 +819,35 @@ def test_short_trade_link_uses_loss_color(widget: ChartWidget) -> None:
     assert base_link.opts["pen"].style() == Qt.PenStyle.SolidLine
 
 
+def _rendered_trade_scatter_items(widget: ChartWidget) -> list:
+    return [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_trade_marker", False) and item.__class__.__name__ == "ScatterPlotItem"
+    ]
+
+
+def test_trade_marker_rendered_with_translucent_colors(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
+        ]
+    )
+    widget._apply_viewport()
+
+    scatter_items = _rendered_trade_scatter_items(widget)
+
+    assert len(scatter_items) == 2
+    for item in scatter_items:
+        assert item.opts["brush"].color().alphaF() == pytest.approx(0.45, abs=0.01)
+        assert item.opts["pen"].color().alphaF() == pytest.approx(0.45, abs=0.01)
+    assert scatter_items[0].opts["brush"].color().name() == TRADE_ENTRY_LONG_COLOR
+    assert scatter_items[1].opts["brush"].color().name() == TRADE_ENTRY_SHORT_COLOR
+
+
 def test_flat_trade_exit_marker_and_link_use_neutral_color(widget: ChartWidget) -> None:
     widget.set_full_data(_bars())
     widget.set_cursor(20)
@@ -863,6 +892,18 @@ def test_trade_link_highlight_preserves_original_color(widget: ChartWidget, app:
 
     assert highlighted_link_items
     assert all(item.opts["pen"].color().name() == TRADE_LINK_WIN_COLOR for item in highlighted_link_items)
+
+
+def test_trade_marker_focus_color_uses_higher_alpha_but_stays_translucent(widget: ChartWidget) -> None:
+    normal = widget._trade_marker_qcolor(TRADE_ENTRY_LONG_COLOR, focused=False)
+    focused = widget._trade_marker_qcolor(TRADE_ENTRY_LONG_COLOR, focused=True)
+
+    assert normal.name() == TRADE_ENTRY_LONG_COLOR
+    assert focused.name() == TRADE_ENTRY_LONG_COLOR
+    assert normal.alphaF() == pytest.approx(0.45, abs=0.01)
+    assert focused.alphaF() == pytest.approx(0.65, abs=0.01)
+    assert focused.alphaF() > normal.alphaF()
+    assert focused.alphaF() < 1.0
 
 
 def test_multiple_trade_actions_same_bar_are_staggered(widget: ChartWidget) -> None:

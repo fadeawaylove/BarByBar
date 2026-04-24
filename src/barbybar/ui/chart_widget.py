@@ -42,6 +42,8 @@ TRADE_LINK_FLAT_COLOR = "#5f6b7a"
 TRADE_ENTRY_LONG_COLOR = "#d84a4a"
 TRADE_ENTRY_SHORT_COLOR = "#1f8b24"
 TRADE_EXIT_MARKER_COLOR = "#fff3bf"
+TRADE_MARKER_OPACITY = 0.45
+TRADE_MARKER_FOCUSED_OPACITY = 0.65
 Y_AXIS_DRAG_GUTTER_WIDTH_PX = 48.0
 DEFAULT_RIGHT_PADDING = 3.0
 DRAWING_SNAP_DISTANCE_PX = 50.0
@@ -1044,15 +1046,19 @@ class ChartWidget(QWidget):
         if self._trade_markers_visible:
             for marker in self._trade_markers:
                 is_focused = marker.trade_number is not None and marker.trade_number == self._focused_trade_number
+                marker_color = self._trade_marker_qcolor(marker.brush, focused=is_focused)
                 item = pg.ScatterPlotItem(
                     [marker.x],
                     [marker.y],
                     symbol=marker.symbol,
                     size=marker.size + (3.0 if is_focused else 0.0),
-                    brush=pg.mkBrush(marker.brush),
-                    pen=pg.mkPen(marker.brush, width=2 if is_focused else 1),
+                    brush=pg.mkBrush(marker_color),
+                    pen=pg.mkPen(marker_color, width=2 if is_focused else 1),
                 )
                 item._barbybar_trade_marker = True
+                item._barbybar_trade_marker_role = marker.role
+                item._barbybar_trade_marker_direction = marker.direction
+                item._barbybar_trade_marker_trade_number = marker.trade_number
                 item.setZValue(16 if is_focused else 14)
                 self.price_plot.addItem(item)
         if self._focused_trade_points is not None:
@@ -3201,6 +3207,12 @@ class ChartWidget(QWidget):
     @staticmethod
     def _trade_direction_color(direction: str) -> str:
         return TRADE_ENTRY_LONG_COLOR if direction == "long" else TRADE_ENTRY_SHORT_COLOR
+
+    @staticmethod
+    def _trade_marker_qcolor(color: str, *, focused: bool = False) -> QColor:
+        marker_color = QColor(color)
+        marker_color.setAlphaF(TRADE_MARKER_FOCUSED_OPACITY if focused else TRADE_MARKER_OPACITY)
+        return marker_color
 
     @staticmethod
     def _trade_outcome_from_pnl(pnl: float) -> str:
