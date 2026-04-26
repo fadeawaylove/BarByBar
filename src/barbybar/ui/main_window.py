@@ -505,6 +505,25 @@ class UpdateActionDialog(QDialog):
         card_layout.addLayout(footer_layout)
         root_layout.addWidget(card)
         self.resize(620, 408 if has_detail else 210)
+        self._refresh_dialog_styles()
+
+    def _refresh_dialog_styles(self) -> None:
+        widgets: list[QWidget] = [
+            self,
+            self.eyebrow_label,
+            self.heading_label,
+            self.summary_label,
+            self.detail_label,
+            self.detail_text,
+            self.accept_button,
+        ]
+        if self.cancel_button is not None:
+            widgets.append(self.cancel_button)
+        for widget in widgets:
+            style = widget.style()
+            style.unpolish(widget)
+            style.polish(widget)
+            widget.update()
 
 
 class InlineErrorDialog(QDialog):
