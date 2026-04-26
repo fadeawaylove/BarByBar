@@ -328,7 +328,8 @@ def test_right_panel_uses_compact_trade_layout(window: MainWindow) -> None:
     assert window.splitter.widget(1).width() == 288
     assert window.splitter.widget(1).minimumWidth() == 288
     assert window.splitter.widget(1).maximumWidth() == 288
-    assert window.stats_label.text().startswith("方向 ")
+    assert window.stats_label.text().startswith("方向 空仓")
+    assert "已实现盈亏" in window.stats_label.text()
     assert "\n" in window.stats_label.text()
 
 
@@ -373,9 +374,10 @@ def test_right_panel_display_section_collects_low_priority_chart_toggles(window:
 
 def test_training_stats_default_to_brief_two_line_summary(window: MainWindow) -> None:
     assert window.training_stats_headline.text() == "总交易 0 · 胜率 --"
-    assert window.training_stats_label.text() == "PnL 0.00 · Expectancy --"
+    assert window.training_stats_label.text() == "总盈亏 0.00 · 期望值 --"
     assert window.training_stats_label.text().count("\n") == 0
     assert window.training_stats_meta.isHidden() is True
+    assert window.training_stats_meta.text() == ""
 
 
 def test_right_panel_is_fixed_and_splitter_handle_is_disabled(window: MainWindow) -> None:
@@ -2547,10 +2549,16 @@ def test_update_ui_populates_training_stats_and_trade_history(window: MainWindow
     window._update_ui_from_engine()
 
     assert window.training_stats_headline.text() == "总交易 1 · 胜率 100%"
-    assert "Expectancy" in window.training_stats_label.text()
-    assert "PnL 3.00" in window.training_stats_label.text()
+    assert "期望值" in window.training_stats_label.text()
+    assert "总盈亏 3.00" in window.training_stats_label.text()
     assert "盈亏比" in window.training_stats_label.text()
-    assert window.training_stats_label.text().count("\n") == 1
+    assert "盈利因子" in window.training_stats_label.text()
+    assert "均持仓" in window.training_stats_label.text()
+    assert window.training_stats_label.text().count("\n") == 2
+    assert window.training_stats_meta.isHidden() is False
+    assert "多 1 / 空 0" in window.training_stats_meta.text()
+    assert "手动" in window.training_stats_meta.text()
+    assert "止损覆盖" in window.training_stats_meta.text()
     assert window.open_trade_history_button.isEnabled() is True
 
     window.open_trade_history_dialog()

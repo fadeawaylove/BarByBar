@@ -2321,7 +2321,7 @@ class MainWindow(QMainWindow):
         position_layout.setSpacing(4)
         position_title = QLabel("仓位")
         position_title.setProperty("role", "sidebarCardTitle")
-        self.stats_label = QLabel("方向 flat\n仓位 0 · 均价 0\n已实现PnL 0.00")
+        self.stats_label = QLabel("方向 空仓\n仓位 0 · 均价 0\n已实现盈亏 0.00")
         self.stats_label.setWordWrap(True)
         self.stats_label.setObjectName("positionReadout")
         self.stats_label.setProperty("role", "positionReadout")
@@ -2341,13 +2341,15 @@ class MainWindow(QMainWindow):
         self.training_stats_headline.setProperty("role", "statsHeadline")
         self.training_stats_meta = QLabel("")
         self.training_stats_meta.setProperty("role", "statsMeta")
+        self.training_stats_meta.setWordWrap(True)
         self.training_stats_meta.hide()
-        self.training_stats_label = QLabel("PnL 0.00 · Expectancy --")
+        self.training_stats_label = QLabel("总盈亏 0.00 · 期望值 --")
         self.training_stats_label.setWordWrap(True)
         self.training_stats_label.setObjectName("trainingStatsReadout")
         self.training_stats_label.setProperty("role", "trainingStats")
         stats_layout.addWidget(stats_title)
         stats_layout.addWidget(self.training_stats_headline)
+        stats_layout.addWidget(self.training_stats_meta)
         stats_layout.addWidget(self.training_stats_label)
         layout.addWidget(stats_box)
 
@@ -2405,7 +2407,7 @@ class MainWindow(QMainWindow):
         return panel
 
     def import_csv(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "选择 CSV", str(Path.cwd()), "CSV Files (*.csv)")
+        path, _ = QFileDialog.getOpenFileName(self, "选择 CSV", str(Path.cwd()), "CSV 文件 (*.csv)")
         if not path:
             return
         display_name = Path(path).name
@@ -2736,9 +2738,11 @@ class MainWindow(QMainWindow):
         self.jump_spin.setMaximum(0)
         self.jump_spin.setValue(0)
         self.jump_spin.blockSignals(False)
-        self.stats_label.setText("方向 flat\n仓位 0 · 均价 0\n已实现PnL 0.00")
+        self.stats_label.setText("方向 空仓\n仓位 0 · 均价 0\n已实现盈亏 0.00")
         self.training_stats_headline.setText("总交易 0 · 胜率 --")
-        self.training_stats_label.setText("PnL 0.00 · Expectancy --")
+        self.training_stats_meta.clear()
+        self.training_stats_meta.hide()
+        self.training_stats_label.setText("总盈亏 0.00 · 期望值 --")
         self.open_trade_history_button.setEnabled(False)
         if self._trade_history_dialog is not None:
             self._trade_history_dialog.refresh_items()
@@ -2978,16 +2982,27 @@ class MainWindow(QMainWindow):
     def _update_training_stats(self) -> None:
         if not self.engine:
             self.training_stats_headline.setText("总交易 0 · 胜率 --")
-            self.training_stats_label.setText("PnL 0.00 · Expectancy --")
+            self.training_stats_meta.clear()
+            self.training_stats_meta.hide()
+            self.training_stats_label.setText("总盈亏 0.00 · 期望值 --")
             return
         stats = self.engine.session.stats
+        stop_rate = f"{stats.trades_with_stop_rate:.0%}"
+        meta_text = (
+                f"多 {stats.long_trades} / 空 {stats.short_trades} · "
+                f"手动 {stats.manual_trades} / 计划 {stats.planned_trades} · "
+                f"止损覆盖 {stop_rate}"
+        )
         self.training_stats_headline.setText(
             f"总交易 {stats.total_trades} · 胜率 {stats.win_rate:.0%}"
         )
+        self.training_stats_meta.setText(meta_text)
+        self.training_stats_meta.setVisible(True)
         self.training_stats_label.setText(
             (
-                f"PnL {stats.total_pnl:.2f} · Expectancy {stats.expectancy:.2f}\n"
-                f"盈亏比 {stats.payoff_ratio:.2f} · 回撤 {stats.max_drawdown:.2f}"
+                f"总盈亏 {stats.total_pnl:.2f} · 期望值 {stats.expectancy:.2f} · 均笔 {stats.average_pnl:.2f}\n"
+                f"盈亏比 {stats.payoff_ratio:.2f} · 盈利因子 {stats.profit_factor:.2f} · 回撤 {stats.max_drawdown:.2f}\n"
+                f"均持仓 {stats.avg_holding_bars:.1f} 根 · 连胜 {stats.max_win_streak} / 连亏 {stats.max_loss_streak}"
             )
         )
 
