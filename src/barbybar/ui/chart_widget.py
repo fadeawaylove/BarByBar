@@ -16,8 +16,13 @@ from barbybar.data.timeframe import DAY_TIMEFRAME, normalize_timeframe, timefram
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, normalize_drawing_style
 from barbybar.ui.theme import AppTheme
 
-UP_CANDLE_COLOR = "#000000"
-DOWN_CANDLE_COLOR = "#000000"
+DEFAULT_CANDLE_UP_BODY_COLOR = "#ffffff"
+DEFAULT_CANDLE_UP_WICK_COLOR = "#000000"
+DEFAULT_CANDLE_DOWN_BODY_COLOR = "#000000"
+DEFAULT_CANDLE_DOWN_WICK_COLOR = "#000000"
+DEFAULT_CHART_BACKGROUND_COLOR = AppTheme.canvas
+UP_CANDLE_COLOR = DEFAULT_CANDLE_UP_WICK_COLOR
+DOWN_CANDLE_COLOR = DEFAULT_CANDLE_DOWN_WICK_COLOR
 CANDLE_WICK_WIDTH = 2
 CANDLE_BODY_BORDER_WIDTH = 2
 CANDLE_BODY_HALF_WIDTH = 0.35
@@ -151,8 +156,20 @@ class CandlestickItem(pg.GraphicsObject):
         self._bars: list[Bar] = []
         self._cursor = -1
         self._global_start_index = 0
+        self._up_body_color = DEFAULT_CANDLE_UP_BODY_COLOR
+        self._up_wick_color = DEFAULT_CANDLE_UP_WICK_COLOR
+        self._down_body_color = DEFAULT_CANDLE_DOWN_BODY_COLOR
+        self._down_wick_color = DEFAULT_CANDLE_DOWN_WICK_COLOR
         self._picture = QPicture()
         self._bounding_rect = pg.QtCore.QRectF()
+
+    def set_colors(self, up_body: str, up_wick: str, down_body: str, down_wick: str) -> None:
+        colors = (up_body, up_wick, down_body, down_wick)
+        if colors == (self._up_body_color, self._up_wick_color, self._down_body_color, self._down_wick_color):
+            return
+        self._up_body_color, self._up_wick_color, self._down_body_color, self._down_wick_color = colors
+        self._rebuild_picture()
+        self.update()
 
     def set_data(self, bars: list[Bar], cursor: int, global_start_index: int = 0) -> None:
         self.prepareGeometryChange()
@@ -173,10 +190,11 @@ class CandlestickItem(pg.GraphicsObject):
             bar = self._bars[index]
             x = self._global_start_index + index
             bullish = bar.close >= bar.open
-            candle_color = UP_CANDLE_COLOR if bullish else DOWN_CANDLE_COLOR
-            wick_pen = pg.mkPen(candle_color, width=CANDLE_WICK_WIDTH)
-            body_pen = pg.mkPen(candle_color, width=CANDLE_BODY_BORDER_WIDTH)
-            body_brush = pg.mkBrush(QColor("white") if bullish else QColor("#000000"))
+            wick_color = self._up_wick_color if bullish else self._down_wick_color
+            body_color = self._up_body_color if bullish else self._down_body_color
+            wick_pen = pg.mkPen(wick_color, width=CANDLE_WICK_WIDTH)
+            body_pen = pg.mkPen(wick_color, width=CANDLE_BODY_BORDER_WIDTH)
+            body_brush = pg.mkBrush(QColor(body_color))
             painter.setPen(wick_pen)
             painter.drawLine(pg.QtCore.QPointF(x, bar.low), pg.QtCore.QPointF(x, bar.high))
             painter.setPen(body_pen)
@@ -371,6 +389,11 @@ class ChartWidget(QWidget):
         self._trade_links_visible = True
         self._trade_marker_opacity = TRADE_MARKER_OPACITY
         self._focused_trade_marker_opacity = TRADE_MARKER_FOCUSED_OPACITY
+        self._candle_up_body_color = DEFAULT_CANDLE_UP_BODY_COLOR
+        self._candle_up_wick_color = DEFAULT_CANDLE_UP_WICK_COLOR
+        self._candle_down_body_color = DEFAULT_CANDLE_DOWN_BODY_COLOR
+        self._candle_down_wick_color = DEFAULT_CANDLE_DOWN_WICK_COLOR
+        self._chart_background_color = DEFAULT_CHART_BACKGROUND_COLOR
         self._bar_count_labels_visible = False
         self._drawings_hidden = False
         self._focused_trade_number: int | None = None
@@ -418,7 +441,7 @@ class ChartWidget(QWidget):
         layout.setSpacing(0)
 
         self.graphics = pg.GraphicsLayoutWidget()
-        self.graphics.setBackground(AppTheme.canvas)
+        self.graphics.setBackground(self._chart_background_color)
         self.view_box = CandleViewBox(self)
         self.price_plot = self.graphics.addPlot(row=0, col=0, viewBox=self.view_box)
         self.price_plot.showGrid(x=False, y=False, alpha=0.0)
@@ -555,6 +578,17 @@ class ChartWidget(QWidget):
 
     def set_draw_mode(self, enabled: bool) -> None:
         self.set_active_drawing_tool(DrawingToolType.TREND_LINE if enabled else None)
+
+    def set_candle_colors(self, up_body: str, up_wick: str, down_body: str, down_wick: str) -> None:
+        self._candle_up_body_color = up_body
+        self._candle_up_wick_color = up_wick
+        self._candle_down_body_color = down_body
+        self._candle_down_wick_color = down_wick
+        self._candles.set_colors(up_body, up_wick, down_body, down_wick)
+
+    def set_chart_background_color(self, color: str) -> None:
+        self._chart_background_color = color
+        self.graphics.setBackground(color)
 
     def set_active_drawing_tool(self, tool: DrawingToolType | None) -> None:
         self._log_interaction("set_active_drawing_tool_start", requested_tool=tool.value if tool else None)

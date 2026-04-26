@@ -62,14 +62,14 @@ class AppTheme:
     control_height_sm = 28
     control_height_md = 32
     control_height_lg = 36
-    toolbar_strip_height = 60
-    toolbar_button_height = 34
-    toolbar_icon_button_size = 30
-    toolbar_vertical_margin = 5
+    toolbar_strip_height = 34
+    toolbar_button_height = 30
+    toolbar_icon_button_size = 28
+    toolbar_vertical_margin = 3
     toolbar_button_radius = 6
-    status_strip_height = 50
-    status_button_height = 30
-    flat_group_gap = 10
+    status_strip_height = 32
+    status_button_height = 26
+    flat_group_gap = 8
     sidebar_compact_width = 288
     sidebar_width = sidebar_compact_width
     chart_axis = "#b3ab9d"
@@ -290,7 +290,7 @@ QPushButton[role='toolbar'] {{
     border-radius: {AppTheme.toolbar_button_radius}px;
     color: {AppTheme.text_muted};
     font-weight: 700;
-    padding: 1px 10px;
+    padding: 0px 8px;
     min-height: {AppTheme.toolbar_button_height}px;
 }}
 QPushButton[role='toolbar']:hover {{
@@ -298,22 +298,28 @@ QPushButton[role='toolbar']:hover {{
     border-color: {rgba(AppTheme.border, 180)};
     color: {AppTheme.text};
 }}
+QPushButton[role='toolbar']:checked {{
+    background: {AppTheme.primary_soft};
+    border-color: {AppTheme.primary};
+    color: #153e91;
+    font-weight: 800;
+}}
 QPushButton[role='timeframe'] {{
     background: transparent;
-    border: 1px solid {rgba(AppTheme.border, 180)};
+    border: 1px solid transparent;
     border-radius: {AppTheme.toolbar_button_radius}px;
     color: {AppTheme.text_muted};
-    padding: 1px 9px;
+    padding: 0px 8px;
     min-height: {AppTheme.toolbar_button_height}px;
 }}
 QPushButton[role='timeframe']:hover {{
     background: {rgba(AppTheme.surface_elevated, 218)};
-    border-color: {AppTheme.border_strong};
+    border-color: transparent;
     color: {AppTheme.text};
 }}
 QPushButton[role='timeframe']:checked {{
     background: {AppTheme.primary_tint};
-    border-color: {AppTheme.primary};
+    border-color: transparent;
     color: {AppTheme.primary};
     font-weight: 800;
 }}
@@ -328,6 +334,15 @@ QPushButton[role='primary']:hover {{
     background: {AppTheme.primary_hover};
     border-color: {AppTheme.primary_hover};
 }}
+QPushButton[role='primary'][tone='plain'] {{
+    background: transparent;
+    border-color: transparent;
+    color: {AppTheme.primary};
+}}
+QPushButton[role='primary'][tone='plain']:hover {{
+    background: {rgba(AppTheme.primary_tint, 220)};
+    border-color: transparent;
+}}
 QPushButton[role='secondary'] {{
     background: {AppTheme.primary_tint};
     border-color: {AppTheme.border};
@@ -338,12 +353,12 @@ QPushButton[role='utility'],
 QPushButton[role='quiet'] {{
     background: {rgba(AppTheme.surface_elevated, 196)};
     color: {AppTheme.text_muted};
-    border-color: {rgba(AppTheme.border, 170)};
+    border-color: transparent;
 }}
 QPushButton[role='utility']:hover,
 QPushButton[role='quiet']:hover {{
     color: {AppTheme.text};
-    border-color: {AppTheme.border_strong};
+    border-color: transparent;
 }}
 QPushButton[role='danger'] {{
     background: {AppTheme.danger};
@@ -462,6 +477,13 @@ QSplitter::handle {{
 QStatusBar {{
     background: {AppTheme.bg};
     color: {AppTheme.text_muted};
+    border: 0;
+    padding: 0px 2px;
+}}
+QStatusBar::item {{
+    border: 0;
+    padding: 0px;
+    margin: 0px;
 }}
 QProgressBar {{
     background: {AppTheme.surface_muted};

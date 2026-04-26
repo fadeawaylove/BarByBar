@@ -319,6 +319,21 @@ def test_chart_background_grid_is_disabled(widget: ChartWidget) -> None:
     assert widget.price_plot.ctrl.yGridCheck.isChecked() is False
 
 
+def test_chart_widget_accepts_custom_candle_and_background_colors(widget: ChartWidget) -> None:
+    widget.set_candle_colors("#ff0000", "#00ff00", "#0000ff", "#112233")
+    widget.set_chart_background_color("#445566")
+
+    assert widget._candle_up_body_color == "#ff0000"
+    assert widget._candle_up_wick_color == "#00ff00"
+    assert widget._candle_down_body_color == "#0000ff"
+    assert widget._candle_down_wick_color == "#112233"
+    assert widget._candles._up_body_color == "#ff0000"
+    assert widget._candles._up_wick_color == "#00ff00"
+    assert widget._candles._down_body_color == "#0000ff"
+    assert widget._candles._down_wick_color == "#112233"
+    assert widget.graphics.backgroundBrush().color().name().lower() == "#445566"
+
+
 def test_chart_shows_right_price_axis_and_hides_left(widget: ChartWidget) -> None:
     assert widget.price_plot.getAxis("right").isVisible() is True
     assert widget.price_plot.getAxis("left").isVisible() is False

@@ -6,6 +6,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
+from uuid import uuid4
 
 from loguru import logger
 from PySide6.QtCore import QObject, QPointF, QRectF, QSize, QThread, QTimer, Qt, QUrl, Signal, Slot
@@ -69,7 +70,17 @@ from barbybar.logging_config import log_dir
 from barbybar.logging_config import register_fatal_error_handler, unregister_fatal_error_handler
 from barbybar.paths import default_drawing_templates_path, default_ui_settings_path, default_updates_dir
 from barbybar.storage.repository import Repository
-from barbybar.ui.chart_widget import ChartWidget, DEFAULT_RIGHT_PADDING, TRADE_MARKER_FOCUSED_OPACITY, TRADE_MARKER_OPACITY
+from barbybar.ui.chart_widget import (
+    ChartWidget,
+    DEFAULT_CANDLE_DOWN_BODY_COLOR,
+    DEFAULT_CANDLE_DOWN_WICK_COLOR,
+    DEFAULT_CANDLE_UP_BODY_COLOR,
+    DEFAULT_CANDLE_UP_WICK_COLOR,
+    DEFAULT_CHART_BACKGROUND_COLOR,
+    DEFAULT_RIGHT_PADDING,
+    TRADE_MARKER_FOCUSED_OPACITY,
+    TRADE_MARKER_OPACITY,
+)
 from barbybar.ui.theme import (
     AppTheme,
     app_stylesheet,
@@ -93,12 +104,26 @@ EXTEND_WINDOW_BEFORE = 150
 EXTEND_WINDOW_AFTER = 150
 WINDOW_BUFFER_THRESHOLD = 20
 AUTO_SAVE_DELAY_MS = 800
-MAX_DRAWING_TEMPLATE_SLOTS = 6
+MAX_DRAWING_TEMPLATE_SHORTCUTS = 8
+CANDLE_COLOR_SETTING_KEYS = (
+    "candle_up_body_color",
+    "candle_up_wick_color",
+    "candle_down_body_color",
+    "candle_down_wick_color",
+    "chart_background_color",
+)
 
 
 def configure_spinbox(spinbox: QAbstractSpinBox) -> QAbstractSpinBox:
     spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
     return spinbox
+
+
+def normalize_color_value(value: object, default: str) -> str:
+    color = QColor(str(value)) if isinstance(value, str) else QColor()
+    if not color.isValid():
+        color = QColor(default)
+    return color.name()
 
 
 @dataclass(slots=True)
@@ -704,81 +729,167 @@ class DrawingTemplateDialog(InlineErrorDialog):
     def __init__(
         self,
         *,
-        templates_by_slot: dict[int, DrawingTemplate],
-        initial_slot: int,
         initial_note: str,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("保存常用模板")
-        self._templates_by_slot = templates_by_slot
-        self._clear_requested = False
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.slot_combo = QComboBox()
-        for slot in range(1, MAX_DRAWING_TEMPLATE_SLOTS + 1):
-            template = templates_by_slot.get(slot)
-            label = f"模板{slot}"
-            if template is not None:
-                label = f"{label} - {template.note}"
-            self.slot_combo.addItem(label, slot)
-        self.slot_combo.setCurrentIndex(max(0, self.slot_combo.findData(initial_slot)))
-        self.slot_combo.currentIndexChanged.connect(self._sync_slot_details)
-
         self.note_edit = QLineEdit(initial_note)
         self.note_edit.setPlaceholderText("备注")
 
-        self.status_label = QLabel("")
-        self.status_label.setStyleSheet(muted_status_stylesheet())
-
-        form.addRow("槽位", self.slot_combo)
         form.addRow("备注", self.note_edit)
-        form.addRow("", self.status_label)
         layout.addLayout(form)
         layout.addWidget(self.error_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.clear_button = buttons.addButton("清空槽位", QDialogButtonBox.ButtonRole.ResetRole)
-        self.clear_button.clicked.connect(self._request_clear)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self._sync_slot_details()
-
-    def template_slot(self) -> int:
-        return int(self.slot_combo.currentData())
 
     def template_note(self) -> str:
         return self.note_edit.text().strip()
 
-    def clear_requested(self) -> bool:
-        return self._clear_requested
-
-    def _request_clear(self) -> None:
-        self._clear_requested = True
-        self.accept()
-
-    def _sync_slot_details(self) -> None:
-        slot = self.template_slot()
-        template = self._templates_by_slot.get(slot)
-        has_existing = template is not None
-        self.clear_button.setEnabled(has_existing)
-        if not has_existing:
-            self.status_label.setText("该槽位当前为空")
-            return
-        if not self.note_edit.text().strip():
-            self.note_edit.setText(template.note)
-        self.status_label.setText(f"将覆盖现有模板：{template.note}")
-
     def accept(self) -> None:
-        if not self._clear_requested and not self.template_note():
+        if not self.template_note():
             self._set_error("备注不能为空")
             self.note_edit.setFocus()
             return
         self._set_error()
         super().accept()
+
+
+class DrawingTemplateManagerDialog(QDialog):
+    def __init__(self, owner: MainWindow, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.owner = owner
+        self.setWindowTitle("模板库")
+        self.resize(520, 420)
+        self.setStyleSheet(dialog_stylesheet())
+
+        layout = QVBoxLayout(self)
+        self.template_filter = QLineEdit()
+        self.template_filter.setPlaceholderText("按备注或工具筛选")
+        self.template_filter.textChanged.connect(self._refresh_templates)
+        layout.addWidget(self.template_filter)
+
+        self.template_list = QListWidget()
+        self.template_list.itemDoubleClicked.connect(lambda _: self._use_selected_template())
+        layout.addWidget(self.template_list, 1)
+
+        actions = QHBoxLayout()
+        self.use_button = QPushButton("使用")
+        self.rename_button = QPushButton("重命名")
+        self.delete_button = QPushButton("删除")
+        self.move_up_button = QPushButton("上移")
+        self.move_down_button = QPushButton("下移")
+        for button in [self.use_button, self.rename_button, self.delete_button, self.move_up_button, self.move_down_button]:
+            button.setProperty("role", "toolbar")
+            actions.addWidget(button)
+        self.use_button.clicked.connect(self._use_selected_template)
+        self.rename_button.clicked.connect(self._rename_selected_template)
+        self.delete_button.clicked.connect(self._delete_selected_template)
+        self.move_up_button.clicked.connect(lambda: self._move_selected_template(-1))
+        self.move_down_button.clicked.connect(lambda: self._move_selected_template(1))
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        self._refresh_templates()
+
+    def _tool_text(self, template: DrawingTemplate) -> str:
+        return self.owner._drawing_tool_label(template.tool_type)
+
+    def _sorted_templates(self) -> list[DrawingTemplate]:
+        return self.owner._templates_in_order()
+
+    def _refresh_templates(self) -> None:
+        selected_id = self._selected_template_id()
+        self.template_list.clear()
+        filter_text = self.template_filter.text().strip().lower()
+        for template in self._sorted_templates():
+            haystack = f"{template.note} {template.tool_type.value} {self._tool_text(template)}".lower()
+            if filter_text and filter_text not in haystack:
+                continue
+            item = QListWidgetItem(f"{template.note} | {self._tool_text(template)}")
+            item.setData(32, template.id)
+            self.template_list.addItem(item)
+            if selected_id == template.id:
+                self.template_list.setCurrentItem(item)
+        if self.template_list.currentItem() is None and self.template_list.count() > 0:
+            self.template_list.setCurrentRow(0)
+
+    def _selected_template_id(self) -> str | None:
+        item = self.template_list.currentItem()
+        if item is None:
+            return None
+        return str(item.data(32))
+
+    def _use_selected_template(self) -> None:
+        template_id = self._selected_template_id()
+        if template_id is None:
+            self.owner._show_notice("提示", "请先选择一个模板", "需要先在模板库中选中一个模板，才能使用。")
+            return
+        self.owner._activate_drawing_template(template_id)
+        self.accept()
+
+    def _rename_selected_template(self) -> None:
+        template_id = self._selected_template_id()
+        if template_id is None:
+            self.owner._show_notice("提示", "请先选择一个模板", "需要先在模板库中选中一个模板，才能重命名。")
+            return
+        template = self.owner._drawing_templates.get(template_id)
+        if template is None:
+            return
+        text, ok = QInputDialog.getText(self, "重命名模板", "备注", text=template.note)
+        note = text.strip()
+        if not ok:
+            return
+        if not note:
+            self.owner._show_error("重命名失败", "模板备注不能为空")
+            return
+        template.note = note
+        self.owner._save_global_drawing_templates()
+        self.owner._refresh_drawing_template_buttons()
+        self._refresh_templates()
+
+    def _delete_selected_template(self) -> None:
+        template_id = self._selected_template_id()
+        if template_id is None:
+            self.owner._show_notice("提示", "请先选择一个模板", "需要先在模板库中选中一个模板，才能删除。")
+            return
+        template = self.owner._drawing_templates.get(template_id)
+        if template is None:
+            return
+        if not self.owner._confirm_dialog(
+            "删除模板",
+            f"删除 {template.note}？",
+            "删除后不会影响已经画在图上的线条。",
+            accept_text="删除模板",
+            cancel_text="取消",
+            accept_role="danger",
+        ):
+            return
+        self.owner._delete_drawing_template(template_id)
+        self._refresh_templates()
+
+    def _move_selected_template(self, direction: int) -> None:
+        template_id = self._selected_template_id()
+        if template_id is None:
+            return
+        templates = self._sorted_templates()
+        index = next((idx for idx, template in enumerate(templates) if template.id == template_id), -1)
+        target = index + direction
+        if index < 0 or target < 0 or target >= len(templates):
+            return
+        templates[index], templates[target] = templates[target], templates[index]
+        for order, template in enumerate(templates, start=1):
+            template.order = order
+        self.owner._save_global_drawing_templates()
+        self.owner._refresh_drawing_template_buttons()
+        self._refresh_templates()
 
 
 class DataSetManagerDialog(QDialog):
@@ -1285,6 +1396,25 @@ class SettingsDialog(QDialog):
         interaction_layout.addRow("Hover 时间", hover_time_label)
         layout.addWidget(interaction_group)
 
+        candle_group = QGroupBox("K线配色")
+        candle_layout = QFormLayout(candle_group)
+        candle_layout.setContentsMargins(10, 14, 10, 10)
+        candle_layout.setSpacing(8)
+        self.candle_up_body_button = self._build_color_button("candle_up_body_color")
+        self.candle_up_wick_button = self._build_color_button("candle_up_wick_color")
+        self.candle_down_body_button = self._build_color_button("candle_down_body_color")
+        self.candle_down_wick_button = self._build_color_button("candle_down_wick_color")
+        self.chart_background_button = self._build_color_button("chart_background_color")
+        candle_layout.addRow("上涨实体", self.candle_up_body_button)
+        candle_layout.addRow("上涨影线/边框", self.candle_up_wick_button)
+        candle_layout.addRow("下跌实体", self.candle_down_body_button)
+        candle_layout.addRow("下跌影线/边框", self.candle_down_wick_button)
+        candle_layout.addRow("图表背景", self.chart_background_button)
+        self.reset_candle_colors_button = QPushButton("恢复默认配色")
+        self.reset_candle_colors_button.clicked.connect(self.owner._reset_chart_color_settings)
+        candle_layout.addRow("", self.reset_candle_colors_button)
+        layout.addWidget(candle_group)
+
         marker_group = QGroupBox("交易标记透明度")
         marker_layout = QFormLayout(marker_group)
         marker_layout.setContentsMargins(10, 14, 10, 10)
@@ -1382,6 +1512,23 @@ class SettingsDialog(QDialog):
         slider.valueChanged.connect(lambda value, label=value_label: label.setText(f"{value}%"))
         return slider, value_label
 
+    def _build_color_button(self, setting_key: str) -> QPushButton:
+        button = QPushButton()
+        button.clicked.connect(lambda _checked=False, key=setting_key: self._pick_chart_color(key))
+        return button
+
+    def _pick_chart_color(self, setting_key: str) -> None:
+        current = self.owner._chart_color_settings()[setting_key]
+        color = QColorDialog.getColor(QColor(current), self)
+        if not color.isValid():
+            return
+        self.owner._handle_chart_color_changed(setting_key, color.name())
+
+    @staticmethod
+    def _apply_color_button(button: QPushButton, color: str) -> None:
+        button.setText(color)
+        button.setStyleSheet(color_chip_button_stylesheet(color))
+
     @staticmethod
     def _slider_with_value(slider: QSlider, value_label: QLabel) -> QWidget:
         container = QWidget()
@@ -1422,6 +1569,16 @@ class SettingsDialog(QDialog):
             slider.blockSignals(False)
         self.trade_marker_alpha_value.setText(f"{self.trade_marker_alpha_slider.value()}%")
         self.focused_trade_marker_alpha_value.setText(f"{self.focused_trade_marker_alpha_slider.value()}%")
+        color_settings = self.owner._chart_color_settings()
+        color_buttons = {
+            "candle_up_body_color": self.candle_up_body_button,
+            "candle_up_wick_color": self.candle_up_wick_button,
+            "candle_down_body_color": self.candle_down_body_button,
+            "candle_down_wick_color": self.candle_down_wick_button,
+            "chart_background_color": self.chart_background_button,
+        }
+        for key, button in color_buttons.items():
+            self._apply_color_button(button, color_settings[key])
 
 
 class MainWindow(QMainWindow):
@@ -1472,6 +1629,7 @@ class MainWindow(QMainWindow):
         self._trade_links_visible = self._trade_links_default_visible()
         self._trade_marker_alpha = self._trade_marker_alpha_default()
         self._focused_trade_marker_alpha = self._focused_trade_marker_alpha_default()
+        self._chart_colors = self._chart_color_settings()
         self._trade_review_items: list[TradeReviewItem] = []
         self._selected_trade_number: int | None = None
         self._selected_trade_view: str = "entry"
@@ -1480,12 +1638,17 @@ class MainWindow(QMainWindow):
         self._settings_dialog: SettingsDialog | None = None
         self._drawing_style_presets: dict[DrawingToolType, dict[str, object]] = {}
         self._drawing_template_buttons: dict[int, QPushButton] = {}
-        self._drawing_templates: dict[int, DrawingTemplate] = {}
-        self._active_drawing_template_slot: int | None = None
+        self._drawing_templates: dict[str, DrawingTemplate] = {}
+        self._active_drawing_template_id: str | None = None
+        self.template_library_button: QPushButton | None = None
         self._drawing_templates_path = default_drawing_templates_path()
         self._timeframe_toolbar_group: QWidget | None = None
         self._template_toolbar_group: QWidget | None = None
         self._drawing_toolbar_group: QWidget | None = None
+        self._transient_message_timer = QTimer(self)
+        self._transient_message_timer.setSingleShot(True)
+        self._transient_message_timer.timeout.connect(self._restore_progress_label)
+        self._transient_message_active = False
         self.step_forward_shortcut: QShortcut | None = None
 
         self._build_ui()
@@ -1498,8 +1661,8 @@ class MainWindow(QMainWindow):
         container.setObjectName("appRoot")
         self.setStyleSheet(app_stylesheet())
         container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(10, 10, 10, 10)
-        container_layout.setSpacing(10)
+        container_layout.setContentsMargins(10, 0, 10, 10)
+        container_layout.setSpacing(0)
 
         self.dataset_button = QPushButton("数据集")
         self.dataset_button.setProperty("role", "toolbar")
@@ -1536,7 +1699,13 @@ class MainWindow(QMainWindow):
         container_layout.addWidget(self.splitter, 1)
 
         self.setCentralWidget(container)
-        self.setStatusBar(QStatusBar())
+        status_bar = QStatusBar()
+        status_bar.setSizeGripEnabled(False)
+        status_bar.setContentsMargins(0, 0, 0, 0)
+        status_bar.setMinimumHeight(0)
+        status_bar.setMaximumHeight(0)
+        status_bar.hide()
+        self.setStatusBar(status_bar)
         self._busy_overlay = BusyOverlay(container)
         self._busy_overlay.setGeometry(container.rect())
         self.step_forward_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
@@ -1559,15 +1728,15 @@ class MainWindow(QMainWindow):
         bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         bar.setMinimumHeight(AppTheme.toolbar_strip_height)
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(10, AppTheme.toolbar_vertical_margin, 10, AppTheme.toolbar_vertical_margin)
+        layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(AppTheme.flat_group_gap)
 
         timeframe_toolbar = QHBoxLayout()
-        timeframe_toolbar.setSpacing(4)
+        timeframe_toolbar.setSpacing(3)
         template_toolbar = QHBoxLayout()
-        template_toolbar.setSpacing(4)
+        template_toolbar.setSpacing(3)
         drawing_toolbar = QHBoxLayout()
-        drawing_toolbar.setSpacing(4)
+        drawing_toolbar.setSpacing(3)
         self.timeframe_button_group = QButtonGroup(self)
         self.timeframe_button_group.setExclusive(True)
         timeframe_labels = {"5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m", "1d": "日线"}
@@ -1580,17 +1749,22 @@ class MainWindow(QMainWindow):
             self.timeframe_button_group.addButton(button)
             self.timeframe_buttons[timeframe] = button
             timeframe_toolbar.addWidget(button)
-        for slot in range(1, MAX_DRAWING_TEMPLATE_SLOTS + 1):
-            button = QPushButton(f"模板{slot}")
+        for index in range(1, MAX_DRAWING_TEMPLATE_SHORTCUTS + 1):
+            button = QPushButton(f"模板{index}")
             button.setCheckable(True)
             button.setEnabled(False)
-            button.setToolTip(f"模板{slot}")
+            button.setToolTip(f"模板{index}")
             button.setProperty("role", "toolbar")
-            button.setMinimumWidth(68)
+            button.setMinimumWidth(62)
             button.setMinimumHeight(AppTheme.toolbar_button_height)
-            button.clicked.connect(lambda _, template_slot=slot: self._activate_drawing_template(template_slot))
-            self._drawing_template_buttons[slot] = button
+            button.clicked.connect(lambda _, shortcut_index=index: self._activate_drawing_template_shortcut(shortcut_index))
+            self._drawing_template_buttons[index] = button
             template_toolbar.addWidget(button)
+        self.template_library_button = QPushButton("模板库")
+        self.template_library_button.setProperty("role", "toolbar")
+        self.template_library_button.setMinimumHeight(AppTheme.toolbar_button_height)
+        self.template_library_button.clicked.connect(self.open_drawing_template_manager)
+        template_toolbar.addWidget(self.template_library_button)
         for label, tool in [
             ("线段", DrawingToolType.TREND_LINE),
             ("箭头线", DrawingToolType.RAY),
@@ -1620,8 +1794,6 @@ class MainWindow(QMainWindow):
         workspace_tools_layout = QHBoxLayout(workspace_tools)
         workspace_tools_layout.setContentsMargins(0, 0, 0, 0)
         workspace_tools_layout.setSpacing(AppTheme.flat_group_gap)
-        workspace_tools_layout.addWidget(self.dataset_button, 0)
-        workspace_tools_layout.addWidget(self.session_button, 0)
         workspace_tools_layout.addWidget(self._timeframe_toolbar_group, 0)
         workspace_tools_layout.addWidget(self._template_toolbar_group, 0)
         workspace_tools_layout.addWidget(self._drawing_toolbar_group, 0)
@@ -1633,6 +1805,8 @@ class MainWindow(QMainWindow):
         workspace_actions_layout = QHBoxLayout(workspace_actions)
         workspace_actions_layout.setContentsMargins(0, 0, 0, 0)
         workspace_actions_layout.setSpacing(4)
+        workspace_actions_layout.addWidget(self.dataset_button)
+        workspace_actions_layout.addWidget(self.session_button)
         workspace_actions_layout.addWidget(self.settings_button)
         workspace_actions_layout.addWidget(self.log_viewer_button)
         workspace_actions_layout.addWidget(self.check_update_button)
@@ -1690,6 +1864,7 @@ class MainWindow(QMainWindow):
         self.chart_widget.set_trade_markers_visible(self._trade_markers_visible)
         self.chart_widget.set_trade_links_visible(self._trade_links_visible)
         self.chart_widget.set_trade_marker_opacity(self._trade_marker_alpha, self._focused_trade_marker_alpha)
+        self._apply_chart_color_settings()
         self.chart_widget.drawingsChanged.connect(self._handle_chart_drawings_changed)
         self.chart_widget.drawingToolChanged.connect(self._sync_drawing_tool_buttons)
         self.chart_widget.drawingPropertiesRequested.connect(self._handle_drawing_properties_requested)
@@ -1708,14 +1883,14 @@ class MainWindow(QMainWindow):
         controls_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         controls_bar.setMinimumHeight(AppTheme.status_strip_height)
         controls = QHBoxLayout(controls_bar)
-        controls.setContentsMargins(10, 8, 10, 8)
-        controls.setSpacing(10)
+        controls.setContentsMargins(8, 0, 8, 0)
+        controls.setSpacing(8)
 
         status_group = QWidget()
         status_group.setObjectName("replayStatusGroup")
         status_layout = QHBoxLayout(status_group)
         status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(6)
+        status_layout.setSpacing(4)
         self.progress_label = QLabel("未开始")
         self.progress_label.setProperty("role", "statusReadout")
         self.progress_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -1726,7 +1901,7 @@ class MainWindow(QMainWindow):
         primary_actions.setObjectName("replayPrimaryActions")
         primary_layout = QHBoxLayout(primary_actions)
         primary_layout.setContentsMargins(0, 0, 0, 0)
-        primary_layout.setSpacing(6)
+        primary_layout.setSpacing(4)
         primary_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.prev_button = QPushButton("上一步")
         self.prev_button.setProperty("role", "quiet")
@@ -1736,8 +1911,9 @@ class MainWindow(QMainWindow):
 
         self.next_button = QPushButton("下一根")
         self.next_button.setProperty("role", "primary")
+        self.next_button.setProperty("tone", "plain")
         self.next_button.setMinimumHeight(AppTheme.status_button_height)
-        self.next_button.setMinimumWidth(82)
+        self.next_button.setMinimumWidth(72)
         self.next_button.clicked.connect(self.step_forward)
         primary_layout.addWidget(self.next_button)
 
@@ -1752,19 +1928,19 @@ class MainWindow(QMainWindow):
         utility_actions.setObjectName("replayUtilityActions")
         utility_layout = QHBoxLayout(utility_actions)
         utility_layout.setContentsMargins(0, 0, 0, 0)
-        utility_layout.setSpacing(6)
+        utility_layout.setSpacing(4)
         utility_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         self.jump_spin = configure_spinbox(QSpinBox())
         self.jump_spin.setMinimum(0)
         self.jump_spin.setMinimumHeight(AppTheme.status_button_height)
-        self.jump_spin.setFixedWidth(78)
+        self.jump_spin.setFixedWidth(70)
         self.jump_spin.valueChanged.connect(self.jump_to_bar)
         jump_label = QLabel("跳转")
         jump_label.setProperty("role", "muted")
         utility_layout.addWidget(jump_label, alignment=Qt.AlignmentFlag.AlignVCenter)
         utility_layout.addWidget(self.jump_spin, alignment=Qt.AlignmentFlag.AlignVCenter)
-        utility_layout.addSpacing(4)
+        utility_layout.addSpacing(2)
 
         self.reset_view_button = QPushButton("重置视图")
         self.reset_view_button.setProperty("role", "quiet")
@@ -1859,6 +2035,49 @@ class MainWindow(QMainWindow):
         if isinstance(stored, (int, float)):
             return min(1.0, max(0.2, float(stored)))
         return TRADE_MARKER_FOCUSED_OPACITY
+
+    @staticmethod
+    def _default_chart_color_settings() -> dict[str, str]:
+        return {
+            "candle_up_body_color": DEFAULT_CANDLE_UP_BODY_COLOR,
+            "candle_up_wick_color": DEFAULT_CANDLE_UP_WICK_COLOR,
+            "candle_down_body_color": DEFAULT_CANDLE_DOWN_BODY_COLOR,
+            "candle_down_wick_color": DEFAULT_CANDLE_DOWN_WICK_COLOR,
+            "chart_background_color": DEFAULT_CHART_BACKGROUND_COLOR,
+        }
+
+    def _chart_color_settings(self) -> dict[str, str]:
+        defaults = self._default_chart_color_settings()
+        return {
+            key: normalize_color_value(self._ui_settings.get(key), default)
+            for key, default in defaults.items()
+        }
+
+    def _apply_chart_color_settings(self) -> None:
+        self._chart_colors = self._chart_color_settings()
+        self.chart_widget.set_candle_colors(
+            self._chart_colors["candle_up_body_color"],
+            self._chart_colors["candle_up_wick_color"],
+            self._chart_colors["candle_down_body_color"],
+            self._chart_colors["candle_down_wick_color"],
+        )
+        self.chart_widget.set_chart_background_color(self._chart_colors["chart_background_color"])
+
+    def _handle_chart_color_changed(self, setting_key: str, color: str) -> None:
+        if setting_key not in CANDLE_COLOR_SETTING_KEYS:
+            return
+        defaults = self._default_chart_color_settings()
+        self._ui_settings[setting_key] = normalize_color_value(color, defaults[setting_key])
+        self._apply_chart_color_settings()
+        self._save_ui_settings()
+        self._sync_settings_dialog()
+
+    def _reset_chart_color_settings(self) -> None:
+        for key, value in self._default_chart_color_settings().items():
+            self._ui_settings[key] = value
+        self._apply_chart_color_settings()
+        self._save_ui_settings()
+        self._sync_settings_dialog()
 
     def _handle_bar_count_toggle_changed(self, checked: bool) -> None:
         if self.bar_count_toggle_button is not None and self.bar_count_toggle_button.isChecked() != bool(checked):
@@ -2300,7 +2519,7 @@ class MainWindow(QMainWindow):
             samples = "、".join(payload.failed_files[:3])
             suffix = "" if len(payload.failed_files) <= 3 else f" 等 {len(payload.failed_files)} 个文件"
             parts.append(f"失败示例: {samples}{suffix}")
-        self.statusBar().showMessage(
+        self._show_transient_message(
             f"批量导入完成：成功 {len(payload.imported)}，跳过 {len(payload.skipped_duplicates)}，失败 {len(payload.failed_files)}",
             5000,
         )
@@ -2367,7 +2586,7 @@ class MainWindow(QMainWindow):
             raise
         log.info("event=import_success dataset_id={} timeframe={}", dataset.id, dataset.timeframe)
         if interactive:
-            self.statusBar().showMessage(f"已导入 {dataset.display_name}", 5000)
+            self._show_transient_message(f"已导入 {dataset.display_name}", 5000)
         return dataset
 
     def create_session_for_dataset(self, dataset_id: int) -> None:
@@ -2380,7 +2599,7 @@ class MainWindow(QMainWindow):
             start_index=start_index,
         )
         self.current_dataset = dataset
-        self.statusBar().showMessage("正在创建并加载复盘会话", 4000)
+        self._show_transient_message("正在创建并加载复盘会话", 4000)
         self._start_session_load(
             session.id or 0,
             title="正在创建复盘...",
@@ -2393,6 +2612,10 @@ class MainWindow(QMainWindow):
 
     def open_session_library(self) -> None:
         dialog = SessionLibraryDialog(self.repo, self, self)
+        dialog.exec()
+
+    def open_drawing_template_manager(self) -> None:
+        dialog = DrawingTemplateManagerDialog(self, self)
         dialog.exec()
 
     def open_trade_history_dialog(self) -> None:
@@ -2457,7 +2680,7 @@ class MainWindow(QMainWindow):
         self.repo.delete_dataset(dataset_id)
         if self.current_dataset and self.current_dataset.id == dataset_id:
             self.current_dataset = None
-        self.statusBar().showMessage("数据集已删除", 3000)
+        self._show_transient_message("数据集已删除", 3000)
         if active_uses_dataset:
             self._clear_current_session()
             self._autoload_recent_session()
@@ -2465,7 +2688,7 @@ class MainWindow(QMainWindow):
     def delete_session_by_id(self, session_id: int) -> None:
         deleting_current = self.current_session_id == session_id
         self.repo.delete_session(session_id)
-        self.statusBar().showMessage("案例已删除", 3000)
+        self._show_transient_message("案例已删除", 3000)
         if deleting_current:
             self._clear_current_session()
             self._autoload_recent_session()
@@ -2474,7 +2697,7 @@ class MainWindow(QMainWindow):
         sessions = self.repo.list_recently_opened_sessions()
         if not sessions:
             self._clear_current_session()
-            self.statusBar().showMessage("请先导入文件夹或打开数据集/案例库", 5000)
+            self._show_transient_message("请先导入文件夹或打开数据集/案例库", 5000)
             return
         session_id = sessions[0].id
         if session_id is None:
@@ -2523,6 +2746,24 @@ class MainWindow(QMainWindow):
         self.price_spin.setValue(0.0)
         self.price_spin.blockSignals(False)
         self._sync_draw_order_controls()
+        self._restore_progress_label()
+
+    def _default_progress_text(self) -> str:
+        if not self.engine:
+            return "未开始"
+        current = self.engine.session.current_index
+        total = self.engine.total_count
+        bar = self.engine.current_bar
+        return f"{current + 1}/{total} | {bar.timestamp:%Y-%m-%d %H:%M}"
+
+    def _restore_progress_label(self) -> None:
+        self._transient_message_active = False
+        self.progress_label.setText(self._default_progress_text())
+
+    def _show_transient_message(self, message: str, duration_ms: int = 2500) -> None:
+        self._transient_message_active = True
+        self.progress_label.setText(message)
+        self._transient_message_timer.start(max(0, duration_ms))
 
     def _apply_drawing_style_presets(self) -> None:
         self.chart_widget.clear_drawing_style_presets()
@@ -2540,73 +2781,105 @@ class MainWindow(QMainWindow):
             payload = {}
         raw_templates = payload.get("templates", payload)
         if isinstance(raw_templates, dict):
-            items = raw_templates.items()
+            items = [
+                {
+                    "id": value.get("id") or f"legacy-{key}",
+                    "order": value.get("order", value.get("slot", key)),
+                    "last_used_at": value.get("last_used_at", ""),
+                    "tool_type": value["tool_type"],
+                    "note": value.get("note", ""),
+                    "style": value.get("style", {}),
+                }
+                for key, value in raw_templates.items()
+                if isinstance(value, dict)
+            ]
+        elif isinstance(raw_templates, list):
+            items = [value for value in raw_templates if isinstance(value, dict)]
         else:
             items = []
-        for key, value in items:
+        for index, value in enumerate(items, start=1):
             try:
-                template = DrawingTemplate.from_dict(
-                    {
-                        "slot": int(key),
-                        "tool_type": value["tool_type"],
-                        "note": value.get("note", ""),
-                        "style": value.get("style", {}),
-                    }
-                )
+                template = DrawingTemplate.from_dict(value)
             except Exception:  # noqa: BLE001
                 continue
-            self._drawing_templates[template.slot] = template
+            if not template.id:
+                template.id = uuid4().hex
+            if template.order <= 0:
+                template.order = index
+            self._drawing_templates[template.id] = template
         self._refresh_drawing_template_buttons()
 
     def _save_global_drawing_templates(self) -> None:
         payload = {
-            "templates": {
-                str(slot): template.to_dict()
-                for slot, template in sorted(self._drawing_templates.items())
-            }
+            "version": 2,
+            "templates": [template.to_dict() for template in self._templates_in_order()],
         }
         self._drawing_templates_path.parent.mkdir(parents=True, exist_ok=True)
         self._drawing_templates_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _templates_in_order(self) -> list[DrawingTemplate]:
+        return sorted(self._drawing_templates.values(), key=lambda template: (template.order, template.note.lower(), template.id))
+
     def _refresh_drawing_template_buttons(self) -> None:
-        for slot, button in self._drawing_template_buttons.items():
-            template = self._drawing_templates.get(slot)
+        ordered_templates = self._templates_in_order()[:MAX_DRAWING_TEMPLATE_SHORTCUTS]
+        for index, button in self._drawing_template_buttons.items():
+            template = ordered_templates[index - 1] if index <= len(ordered_templates) else None
             if template is None:
-                button.setText(f"模板{slot}")
-                button.setToolTip(f"模板{slot}")
+                button.setText(f"模板{index}")
+                button.setToolTip(f"模板{index}")
+                button.setProperty("template_id", "")
                 button.blockSignals(True)
                 button.setChecked(False)
                 button.blockSignals(False)
                 button.setEnabled(False)
-                if self._active_drawing_template_slot == slot:
-                    self._active_drawing_template_slot = None
                 continue
-            button.setText(template.note or f"模板{slot}")
-            button.setToolTip(f"{self._drawing_tool_label(template.tool_type)} | {template.note or f'Template {slot}'}")
+            button.setText(template.note or f"模板{index}")
+            button.setToolTip(f"{self._drawing_tool_label(template.tool_type)} | {template.note or 'Template'}")
+            button.setProperty("template_id", template.id)
             button.setEnabled(True)
+        if self._active_drawing_template_id and self._active_drawing_template_id not in self._drawing_templates:
+            self._active_drawing_template_id = None
         self._sync_drawing_template_buttons()
 
     def _sync_drawing_template_buttons(self) -> None:
-        for slot, button in self._drawing_template_buttons.items():
+        for button in self._drawing_template_buttons.values():
+            template_id = str(button.property("template_id") or "")
             button.blockSignals(True)
-            button.setChecked(slot == self._active_drawing_template_slot)
+            button.setChecked(bool(self._active_drawing_template_id and template_id == self._active_drawing_template_id))
             button.blockSignals(False)
 
-    def _suggest_drawing_template_slot(self) -> int:
-        for slot in range(1, MAX_DRAWING_TEMPLATE_SLOTS + 1):
-            if slot not in self._drawing_templates:
-                return slot
-        return 1
+    def _next_drawing_template_order(self) -> int:
+        return max((template.order for template in self._drawing_templates.values()), default=0) + 1
 
-    def _activate_drawing_template(self, slot: int) -> None:
-        template = self._drawing_templates.get(slot)
+    def _activate_drawing_template_shortcut(self, shortcut_index: int) -> None:
+        button = self._drawing_template_buttons.get(shortcut_index)
+        if button is None:
+            return
+        template_id = str(button.property("template_id") or "")
+        if template_id:
+            self._activate_drawing_template(template_id)
+
+    def _activate_drawing_template(self, template_id: str) -> None:
+        template = self._drawing_templates.get(template_id)
         if template is None:
             return
         self.cancel_draw_order_preview()
-        self._active_drawing_template_slot = slot
+        self._active_drawing_template_id = template_id
         self._sync_drawing_template_buttons()
         self.chart_widget.set_drawing_style_preset(template.tool_type, dict(template.style))
         self.chart_widget.set_active_drawing_tool(template.tool_type)
+
+    def _delete_drawing_template(self, template_id: str) -> None:
+        if template_id not in self._drawing_templates:
+            return
+        del self._drawing_templates[template_id]
+        if self._active_drawing_template_id == template_id:
+            self._active_drawing_template_id = None
+        for order, template in enumerate(self._templates_in_order(), start=1):
+            template.order = order
+        self._save_global_drawing_templates()
+        self._refresh_drawing_template_buttons()
+        self._show_transient_message("模板已删除", 2500)
 
     def _load_drawing_style_presets(self, payload: dict[str, dict[str, object]] | None) -> None:
         self._drawing_style_presets = {}
@@ -2648,7 +2921,8 @@ class MainWindow(QMainWindow):
         self.chart_widget.set_trade_markers_visible(self._trade_markers_visible)
         self.chart_widget.set_trade_links_visible(self._trade_links_visible)
         self._trade_review_items = self.engine.trade_review_items()
-        self.progress_label.setText(f"{current + 1}/{total} | {bar.timestamp:%Y-%m-%d %H:%M}")
+        if not self._transient_message_active:
+            self.progress_label.setText(f"{current + 1}/{total} | {bar.timestamp:%Y-%m-%d %H:%M}")
         self.jump_spin.blockSignals(True)
         self.jump_spin.setValue(current)
         self.jump_spin.blockSignals(False)
@@ -2920,7 +3194,7 @@ class MainWindow(QMainWindow):
             return
         self.chart_widget.set_active_drawing_tool(None)
         self.chart_widget.set_trade_line_mode(order_type.value)
-        self.statusBar().showMessage(f"请在图上点击价格创建{self._order_type_label(order_type)}", 3000)
+        self._show_transient_message(f"请在图上点击价格创建{self._order_type_label(order_type)}", 3000)
 
     def cancel_entry_order_lines(self) -> None:
         if not self.engine:
@@ -2970,7 +3244,7 @@ class MainWindow(QMainWindow):
             current_index=saved.current_index,
             trigger=trigger,
         ).info("event=save_session")
-        self.statusBar().showMessage("会话已保存", 2500)
+        self._show_transient_message("会话已保存", 2500)
 
     def complete_session(self) -> None:
         if not self.engine:
@@ -3677,7 +3951,7 @@ class MainWindow(QMainWindow):
             interaction_mode=self.chart_widget.interaction_mode.value,
             preview_order_type=self.chart_widget.preview_order_type or "",
         ).debug("event=toggle_draw_order_preview_applied")
-        self.statusBar().showMessage(f"移动鼠标选择价格，再点击图表创建{self._order_type_label(order_type)}；Esc 或再次点击按钮取消", 3000)
+        self._show_transient_message(f"移动鼠标选择价格，再点击图表创建{self._order_type_label(order_type)}；Esc 或再次点击按钮取消", 3000)
 
     def cancel_draw_order_preview(self) -> None:
         self.chart_widget.cancel_order_preview()
@@ -3705,7 +3979,7 @@ class MainWindow(QMainWindow):
         ).debug("event=toggle_drawing_tool")
         if checked:
             self.cancel_draw_order_preview()
-            self._active_drawing_template_slot = None
+            self._active_drawing_template_id = None
             self._sync_drawing_template_buttons()
             self.chart_widget.set_active_drawing_tool(tool)
             logger.bind(
@@ -3715,7 +3989,7 @@ class MainWindow(QMainWindow):
                 active_drawing_tool=self.chart_widget.active_drawing_tool.value if self.chart_widget.active_drawing_tool else "",
                 button_checked=self._drawing_tool_buttons[tool].isChecked(),
             ).debug("event=toggle_drawing_tool_applied")
-            self.statusBar().showMessage(f"已切换到{self._drawing_tool_label(tool)}，完成一笔后自动回到 hover，Esc 可取消", 3000)
+            self._show_transient_message(f"已切换到{self._drawing_tool_label(tool)}，完成一笔后自动回到 hover，Esc 可取消", 3000)
             return
         if self.chart_widget.active_drawing_tool is tool:
             self.chart_widget.set_active_drawing_tool(None)
@@ -3723,11 +3997,11 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _sync_drawing_tool_buttons(self, active_tool: object) -> None:
         if active_tool is None:
-            self._active_drawing_template_slot = None
+            self._active_drawing_template_id = None
         self._sync_drawing_template_buttons()
         for tool, button in self._drawing_tool_buttons.items():
             button.blockSignals(True)
-            button.setChecked(self._active_drawing_template_slot is None and tool == active_tool)
+            button.setChecked(self._active_drawing_template_id is None and tool == active_tool)
             button.blockSignals(False)
         self._sync_chart_interaction_controls()
 
@@ -3934,35 +4208,27 @@ class MainWindow(QMainWindow):
         if drawing.tool_type is DrawingToolType.TEXT:
             style["text"] = ""
         dialog = DrawingTemplateDialog(
-            templates_by_slot=dict(self._drawing_templates),
-            initial_slot=self._suggest_drawing_template_slot(),
             initial_note=self._drawing_tool_label(drawing.tool_type),
             parent=self,
         )
         result = dialog.exec()
         if result != QDialog.DialogCode.Accepted:
             return
-        slot = dialog.template_slot()
-        if dialog.clear_requested():
-            if slot in self._drawing_templates:
-                del self._drawing_templates[slot]
-                self._save_global_drawing_templates()
-                self._refresh_drawing_template_buttons()
-                self.statusBar().showMessage("模板已清空", 2500)
-            return
         note = dialog.template_note()
         if not note:
             self._show_error("保存失败", "模板备注不能为空")
             return
-        self._drawing_templates[slot] = DrawingTemplate(
-            slot=slot,
+        template_id = uuid4().hex
+        self._drawing_templates[template_id] = DrawingTemplate(
             tool_type=drawing.tool_type,
             note=note,
             style=style,
+            id=template_id,
+            order=self._next_drawing_template_order(),
         )
         self._save_global_drawing_templates()
         self._refresh_drawing_template_buttons()
-        self.statusBar().showMessage("模板已保存", 2500)
+        self._show_transient_message("模板已保存", 2500)
 
     @staticmethod
     def _order_type_label(order_type: OrderLineType) -> str:

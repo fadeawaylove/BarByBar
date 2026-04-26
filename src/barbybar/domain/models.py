@@ -265,14 +265,18 @@ class ChartDrawing:
 
 @dataclass(slots=True)
 class DrawingTemplate:
-    slot: int
     tool_type: DrawingToolType
     note: str
     style: dict[str, Any] = field(default_factory=dict)
+    id: str = ""
+    order: int = 0
+    last_used_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
-            "slot": int(self.slot),
+            "id": self.id,
+            "order": int(self.order),
+            "last_used_at": self.last_used_at,
             "tool_type": self.tool_type.value,
             "note": self.note,
             "style": normalize_drawing_style(self.tool_type, dict(self.style)),
@@ -287,11 +291,15 @@ class DrawingTemplate:
         style = normalize_drawing_style(tool_type, dict(payload.get("style", {})))
         if tool_type is DrawingToolType.TEXT:
             style["text"] = ""
+        fallback_id = str(payload.get("slot", "")).strip()
+        template_id = str(payload.get("id") or (f"legacy-{fallback_id}" if fallback_id else "")).strip()
         return cls(
-            slot=max(1, min(6, int(payload["slot"]))),
             tool_type=tool_type,
             note=str(payload.get("note", "")).strip(),
             style=style,
+            id=template_id,
+            order=int(payload.get("order", payload.get("slot", 0))),
+            last_used_at=str(payload.get("last_used_at", "") or ""),
         )
 
 

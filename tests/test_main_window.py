@@ -22,6 +22,7 @@ from barbybar.ui.main_window import (
     DataSetManagerDialog,
     DrawingPropertiesDialog,
     DrawingTemplateDialog,
+    DrawingTemplateManagerDialog,
     LogViewerDialog,
     MainWindow,
     SessionLibraryDialog,
@@ -161,17 +162,22 @@ def test_main_window_exposes_flatten_at_session_end_toggle_button(window: MainWi
     assert window.flatten_at_session_end_toggle_button.isChecked() is True
 
 
-def test_main_window_exposes_six_drawing_template_buttons(window: MainWindow) -> None:
-    assert set(window._drawing_template_buttons) == {1, 2, 3, 4, 5, 6}
-    assert [window._drawing_template_buttons[index].text() for index in range(1, 7)] == [
+def test_main_window_exposes_eight_drawing_template_slots_and_library_entry(window: MainWindow) -> None:
+    assert set(window._drawing_template_buttons) == {1, 2, 3, 4, 5, 6, 7, 8}
+    assert [window._drawing_template_buttons[index].text() for index in range(1, 9)] == [
         "模板1",
         "模板2",
         "模板3",
         "模板4",
         "模板5",
         "模板6",
+        "模板7",
+        "模板8",
     ]
-    assert all(window._drawing_template_buttons[index].isEnabled() is False for index in range(1, 7))
+    assert all(window._drawing_template_buttons[index].isEnabled() is False for index in range(1, 9))
+    assert all(window._drawing_template_buttons[index].isChecked() is False for index in range(1, 9))
+    assert window.template_library_button is not None
+    assert window.template_library_button.text() == "模板库"
 
 
 def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None:
@@ -186,9 +192,9 @@ def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None
     for button in window._drawing_tool_buttons.values():
         assert button.icon().isNull() is False
         assert button.text() == ""
-        assert button.width() == 30
-        assert 30 <= button.height() <= 32
-        assert button.minimumHeight() >= 30 or button.height() >= 30
+        assert button.width() == 28
+        assert 28 <= button.height() <= 30
+        assert button.minimumHeight() >= 28 or button.height() >= 28
 
 
 def test_drawing_toolbar_places_arrow_line_immediately_after_trend_line(window: MainWindow) -> None:
@@ -429,12 +435,10 @@ def test_toolbar_separates_timeframes_from_drawing_buttons(window: MainWindow) -
     workspace_tools = top_bar.findChild(QWidget, "workspaceTools")
     assert toolbar.itemAt(0).widget() is workspace_tools
     tool_layout = workspace_tools.layout()
-    assert tool_layout.itemAt(0).widget() is window.dataset_button
-    assert tool_layout.itemAt(1).widget() is window.session_button
-    assert tool_layout.itemAt(2).widget() is window._timeframe_toolbar_group
-    assert tool_layout.itemAt(3).widget() is window._template_toolbar_group
-    assert tool_layout.itemAt(4).widget() is window._drawing_toolbar_group
-    assert tool_layout.itemAt(5).spacerItem() is not None
+    assert tool_layout.itemAt(0).widget() is window._timeframe_toolbar_group
+    assert tool_layout.itemAt(1).widget() is window._template_toolbar_group
+    assert tool_layout.itemAt(2).widget() is window._drawing_toolbar_group
+    assert tool_layout.itemAt(3).spacerItem() is not None
 
 
 def test_toolbar_uses_distinct_group_widgets_for_timeframe_template_and_drawing(window: MainWindow) -> None:
@@ -470,6 +474,7 @@ def test_replay_control_bar_uses_three_part_layout(window: MainWindow) -> None:
     assert primary_group.layout().itemAt(0).widget() is window.prev_button
     assert primary_group.layout().itemAt(1).widget() is window.next_button
     assert window.next_button.property("role") == "primary"
+    assert window.next_button.property("tone") == "plain"
     assert controls_bar.parentWidget() is center_panel
 
 
@@ -504,8 +509,10 @@ def test_app_navigation_buttons_are_placed_in_top_bar(window: MainWindow) -> Non
     assert controls.itemAt(1).widget().objectName() == "workspaceActions"
     workspace_tools = top_bar.findChild(QWidget, "workspaceTools")
     workspace_actions = top_bar.findChild(QWidget, "workspaceActions")
-    assert window.dataset_button in workspace_tools.findChildren(QPushButton)
-    assert window.session_button in workspace_tools.findChildren(QPushButton)
+    assert window.dataset_button not in workspace_tools.findChildren(QPushButton)
+    assert window.session_button not in workspace_tools.findChildren(QPushButton)
+    assert window.dataset_button in workspace_actions.findChildren(QPushButton)
+    assert window.session_button in workspace_actions.findChildren(QPushButton)
     assert window.settings_button in workspace_actions.findChildren(QPushButton)
     assert window.log_viewer_button in workspace_actions.findChildren(QPushButton)
     assert window.check_update_button in workspace_actions.findChildren(QPushButton)
@@ -579,8 +586,8 @@ def test_top_bar_and_bottom_bar_use_terminal_strip_heights(window: MainWindow) -
     top_bar = window.centralWidget().findChild(QWidget, "topNavBar")
     bottom_bar = window.centralWidget().findChild(QWidget, "replayControlBar")
 
-    assert top_bar.height() >= 60
-    assert bottom_bar.height() >= 50
+    assert top_bar.height() >= 34
+    assert bottom_bar.height() >= 32
 
 
 def test_top_bar_height_has_safe_vertical_budget_for_buttons(window: MainWindow) -> None:
@@ -594,6 +601,10 @@ def test_top_bar_height_has_safe_vertical_budget_for_buttons(window: MainWindow)
     )
 
     assert top_bar.height() >= tallest_button + margins.top() + margins.bottom()
+    assert margins.left() == 10
+    assert margins.top() == 0
+    assert margins.right() == 10
+    assert margins.bottom() == 0
 
 
 def test_top_toolbar_text_buttons_share_toolbar_role_and_height(window: MainWindow) -> None:
@@ -608,22 +619,64 @@ def test_top_toolbar_text_buttons_share_toolbar_role_and_height(window: MainWind
 
     for button in toolbar_buttons:
         assert button.property("role") == "toolbar"
-        assert button.minimumHeight() >= 34 or button.height() >= 34
+        assert button.minimumHeight() >= 30 or button.height() >= 30
+
+
+def test_toolbar_buttons_define_checked_feedback_in_stylesheet(window: MainWindow) -> None:
+    stylesheet = window.styleSheet()
+
+    assert "QPushButton[role='toolbar']:checked" in stylesheet
+
+
+def test_timeframe_and_quiet_buttons_do_not_draw_outer_borders(window: MainWindow) -> None:
+    stylesheet = window.styleSheet()
+
+    assert "QPushButton[role='timeframe'] {" in stylesheet
+    assert "QPushButton[role='quiet'] {" in stylesheet
+    assert "border: 1px solid transparent;" in stylesheet
 
 
 def test_top_toolbar_visual_families_share_aligned_vertical_sizes(window: MainWindow) -> None:
-    assert all(button.minimumHeight() >= 34 or button.height() >= 34 for button in window.timeframe_buttons.values())
-    assert all(button.minimumHeight() >= 34 or button.height() >= 34 for button in window._drawing_template_buttons.values())
-    assert all(button.minimumHeight() >= 34 or button.height() >= 34 for button in [window.dataset_button, window.session_button, window.settings_button, window.log_viewer_button, window.check_update_button])
-    assert all(button.width() == 30 for button in window._drawing_tool_buttons.values())
+    assert all(button.minimumHeight() >= 30 or button.height() >= 30 for button in window.timeframe_buttons.values())
+    assert all(button.minimumHeight() >= 30 or button.height() >= 30 for button in window._drawing_template_buttons.values())
+    assert all(button.minimumHeight() >= 30 or button.height() >= 30 for button in [window.dataset_button, window.session_button, window.settings_button, window.log_viewer_button, window.check_update_button])
+    assert all(button.width() == 28 for button in window._drawing_tool_buttons.values())
 
 
 def test_bottom_bar_controls_share_safe_minimum_heights(window: MainWindow) -> None:
-    assert window.prev_button.minimumHeight() >= 30 or window.prev_button.height() >= 30
-    assert window.next_button.minimumHeight() >= 30 or window.next_button.height() >= 30
-    assert window.jump_spin.minimumHeight() >= 30 or window.jump_spin.height() >= 30
-    assert window.reset_view_button.minimumHeight() >= 30 or window.reset_view_button.height() >= 30
-    assert window.clear_lines_button.minimumHeight() >= 30 or window.clear_lines_button.height() >= 30
+    assert window.prev_button.minimumHeight() >= 26 or window.prev_button.height() >= 26
+    assert window.next_button.minimumHeight() >= 26 or window.next_button.height() >= 26
+    assert window.jump_spin.minimumHeight() >= 26 or window.jump_spin.height() >= 26
+    assert window.reset_view_button.minimumHeight() >= 26 or window.reset_view_button.height() >= 26
+    assert window.clear_lines_button.minimumHeight() >= 26 or window.clear_lines_button.height() >= 26
+
+
+def test_bottom_bar_removes_vertical_padding_but_keeps_horizontal_gutter(window: MainWindow) -> None:
+    bottom_bar = window.centralWidget().findChild(QWidget, "replayControlBar")
+    margins = bottom_bar.layout().contentsMargins()
+
+    assert margins.left() == 8
+    assert margins.top() == 0
+    assert margins.right() == 8
+    assert margins.bottom() == 0
+
+
+def test_status_bar_is_hidden_when_transient_messages_move_to_progress_label(window: MainWindow) -> None:
+    status_bar = window.statusBar()
+
+    assert status_bar.isSizeGripEnabled() is False
+    assert status_bar.minimumHeight() == 0
+    assert status_bar.maximumHeight() == 0
+    assert status_bar.isVisible() is False
+
+
+def test_transient_message_reuses_progress_label(window: MainWindow) -> None:
+    window._show_transient_message("会话已保存", 2500)
+
+    assert window.progress_label.text() == "会话已保存"
+    assert window._transient_message_active is True
+    window._transient_message_timer.stop()
+    window._restore_progress_label()
 
 
 def test_open_log_viewer_reuses_dialog_instance(window: MainWindow) -> None:
@@ -664,6 +717,12 @@ def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWi
         assert dialog.default_draw_order_quantity_spin.value() == window.draw_quantity_spin.value()
         assert dialog.trade_marker_alpha_slider.value() == 45
         assert dialog.focused_trade_marker_alpha_slider.value() == 65
+        assert dialog.candle_up_body_button.text() == "#ffffff"
+        assert dialog.candle_up_wick_button.text() == "#000000"
+        assert dialog.candle_down_body_button.text() == "#000000"
+        assert dialog.candle_down_wick_button.text() == "#000000"
+        assert dialog.chart_background_button.text() == "#f7f4ef"
+        assert dialog.reset_candle_colors_button.text() == "恢复默认配色"
         assert dialog.default_order_quantity_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
         assert dialog.default_draw_order_quantity_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
         label_texts = {label.text() for label in dialog.findChildren(QLabel)}
@@ -739,6 +798,46 @@ def test_settings_dialog_updates_trade_marker_alpha_and_persists(window: MainWin
     assert window.chart_widget._focused_trade_marker_opacity == pytest.approx(0.75)
     assert saved["trade_marker_alpha"] == pytest.approx(0.55)
     assert saved["focused_trade_marker_alpha"] == pytest.approx(0.75)
+
+
+def test_settings_dialog_updates_chart_colors_and_persists(window: MainWindow) -> None:
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+
+    window._handle_chart_color_changed("candle_up_body_color", "#ff0000")
+    window._handle_chart_color_changed("candle_up_wick_color", "#00ff00")
+    window._handle_chart_color_changed("candle_down_body_color", "#0000ff")
+    window._handle_chart_color_changed("candle_down_wick_color", "#112233")
+    window._handle_chart_color_changed("chart_background_color", "#445566")
+
+    saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
+    assert saved["candle_up_body_color"] == "#ff0000"
+    assert saved["candle_up_wick_color"] == "#00ff00"
+    assert saved["candle_down_body_color"] == "#0000ff"
+    assert saved["candle_down_wick_color"] == "#112233"
+    assert saved["chart_background_color"] == "#445566"
+    assert window.chart_widget._candle_up_body_color == "#ff0000"
+    assert window.chart_widget._candle_up_wick_color == "#00ff00"
+    assert window.chart_widget._candle_down_body_color == "#0000ff"
+    assert window.chart_widget._candle_down_wick_color == "#112233"
+    assert window.chart_widget._chart_background_color == "#445566"
+    assert window.chart_widget._candles._up_body_color == "#ff0000"
+    assert dialog.candle_up_body_button.text() == "#ff0000"
+    assert dialog.chart_background_button.text() == "#445566"
+
+
+def test_settings_dialog_resets_chart_colors_to_defaults(window: MainWindow) -> None:
+    window._handle_chart_color_changed("candle_up_body_color", "#ff0000")
+    window._handle_chart_color_changed("chart_background_color", "#445566")
+
+    window._reset_chart_color_settings()
+
+    saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
+    assert saved["candle_up_body_color"] == "#ffffff"
+    assert saved["chart_background_color"] == "#f7f4ef"
+    assert window.chart_widget._candle_up_body_color == "#ffffff"
+    assert window.chart_widget._chart_background_color == "#f7f4ef"
 
 
 def test_settings_dialog_log_button_reuses_log_viewer(window: MainWindow) -> None:
@@ -895,6 +994,59 @@ def test_main_window_loads_trade_marker_alpha_from_global_ui_settings(app: QAppl
         app.processEvents()
 
 
+def test_main_window_loads_chart_colors_from_global_ui_settings(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_ui_settings_path().write_text(
+        json.dumps(
+            {
+                "candle_up_body_color": "#ff0000",
+                "candle_up_wick_color": "#00ff00",
+                "candle_down_body_color": "#0000ff",
+                "candle_down_wick_color": "#112233",
+                "chart_background_color": "#445566",
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.chart_widget._candle_up_body_color == "#ff0000"
+        assert main_window.chart_widget._candle_up_wick_color == "#00ff00"
+        assert main_window.chart_widget._candle_down_body_color == "#0000ff"
+        assert main_window.chart_widget._candle_down_wick_color == "#112233"
+        assert main_window.chart_widget._chart_background_color == "#445566"
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_falls_back_to_default_chart_colors_when_settings_are_invalid(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_ui_settings_path().write_text(
+        '{"candle_up_body_color": "not-a-color", "chart_background_color": "also-bad"}',
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.chart_widget._candle_up_body_color == "#ffffff"
+        assert main_window.chart_widget._chart_background_color == "#f7f4ef"
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
 def test_main_window_defaults_bar_count_toggle_to_enabled_when_ui_settings_missing(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
     temp_root = Path("C:/code/BarByBar/.pytest-temp")
     temp_root.mkdir(exist_ok=True)
@@ -1012,9 +1164,14 @@ def test_toggling_hide_drawings_button_persists_global_ui_setting(app: QApplicat
 
 
 def test_top_area_does_not_keep_empty_top_bar_spacing(window: MainWindow) -> None:
+    root_layout = window.centralWidget().layout()
     center_panel = window.splitter.widget(0)
     layout = center_panel.layout()
 
+    assert root_layout.contentsMargins().top() == 0
+    assert root_layout.contentsMargins().left() == 10
+    assert root_layout.contentsMargins().right() == 10
+    assert root_layout.spacing() == 0
     assert layout.contentsMargins().top() == 0
     assert layout.spacing() == 6
 
@@ -1025,7 +1182,7 @@ def test_toolbar_group_margins_are_compact(window: MainWindow) -> None:
         margins = group.layout().contentsMargins()
         assert margins.top() == 0
         assert margins.bottom() == 0
-        assert margins.right() == 10
+        assert margins.right() == 8
 
 
 def test_set_timeframe_choices_supports_1d(window: MainWindow) -> None:
@@ -1221,10 +1378,11 @@ def test_main_window_loads_global_drawing_templates_from_store(app: QApplication
     repo = Repository(case_dir / "barbybar.db")
     main_window = MainWindow(repo)
     try:
-        button = main_window._drawing_template_buttons[2]
+        button = main_window._drawing_template_buttons[1]
         assert button.isEnabled() is True
         assert button.text() == "阻力区"
         assert "矩形" in button.toolTip()
+        assert "legacy-2" in main_window._drawing_templates
     finally:
         main_window.close()
         main_window.deleteLater()
@@ -1241,6 +1399,7 @@ def test_main_window_ignores_invalid_global_drawing_template_store(app: QApplica
     repo = Repository(case_dir / "barbybar.db")
     main_window = MainWindow(repo)
     try:
+        assert main_window._drawing_templates == {}
         assert all(button.isEnabled() is False for button in main_window._drawing_template_buttons.values())
     finally:
         main_window.close()
@@ -1249,11 +1408,13 @@ def test_main_window_ignores_invalid_global_drawing_template_store(app: QApplica
 
 
 def test_clicking_drawing_template_button_activates_tool_and_style(window: MainWindow) -> None:
-    window._drawing_templates[1] = DrawingTemplate(
-        slot=1,
+    template_id = "template-1"
+    window._drawing_templates[template_id] = DrawingTemplate(
         tool_type=DrawingToolType.RECTANGLE,
         note="阻力区",
         style={"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35},
+        id=template_id,
+        order=1,
     )
     window._refresh_drawing_template_buttons()
 
@@ -1272,9 +1433,7 @@ def test_saving_drawing_template_updates_buttons_and_store(window: MainWindow, m
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(DrawingTemplateDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
-    monkeypatch.setattr(DrawingTemplateDialog, "template_slot", lambda self: 2)
     monkeypatch.setattr(DrawingTemplateDialog, "template_note", lambda self: "阻力区")
-    monkeypatch.setattr(DrawingTemplateDialog, "clear_requested", lambda self: False)
 
     original_save = window._save_global_drawing_templates
 
@@ -1292,7 +1451,10 @@ def test_saving_drawing_template_updates_buttons_and_store(window: MainWindow, m
 
     window._handle_drawing_template_save_requested(drawing, 0)
 
-    assert window._drawing_template_buttons[2].text() == "阻力区"
+    assert window._drawing_template_buttons[1].text() == "阻力区"
+    stored = json.loads(str(captured["content"]))
+    assert stored["version"] == 2
+    assert isinstance(stored["templates"], list)
     assert '"tool_type": "rectangle"' in str(captured["content"])
     assert '"note": "阻力区"' in str(captured["content"])
 
@@ -1302,11 +1464,13 @@ def test_template_drawing_auto_exits_after_completion(window: MainWindow, app: Q
     window.chart_widget.resize(900, 600)
     window.chart_widget.show()
     window._update_ui_from_engine()
-    window._drawing_templates[1] = DrawingTemplate(
-        slot=1,
+    template_id = "template-1"
+    window._drawing_templates[template_id] = DrawingTemplate(
         tool_type=DrawingToolType.RECTANGLE,
         note="阻力区",
         style={"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35},
+        id=template_id,
+        order=1,
     )
     window._refresh_drawing_template_buttons()
     window._drawing_template_buttons[1].click()
@@ -1325,11 +1489,13 @@ def test_template_drawing_auto_exits_after_completion(window: MainWindow, app: Q
 
 
 def test_clicking_normal_drawing_tool_clears_template_button_state(window: MainWindow) -> None:
-    window._drawing_templates[1] = DrawingTemplate(
-        slot=1,
+    template_id = "template-1"
+    window._drawing_templates[template_id] = DrawingTemplate(
         tool_type=DrawingToolType.RECTANGLE,
         note="阻力区",
         style={"color": "#3366ff", "width": 3, "fill_color": "#3366ff", "fill_opacity": 0.35},
+        id=template_id,
+        order=1,
     )
     window._refresh_drawing_template_buttons()
 
@@ -1342,11 +1508,13 @@ def test_clicking_normal_drawing_tool_clears_template_button_state(window: MainW
 
 
 def test_text_template_button_reuses_style_without_reusing_content(window: MainWindow) -> None:
-    window._drawing_templates[1] = DrawingTemplate(
-        slot=1,
+    template_id = "template-1"
+    window._drawing_templates[template_id] = DrawingTemplate(
         tool_type=DrawingToolType.TEXT,
         note="标注",
         style={"text": "", "font_size": 18, "text_color": "#3366ff", "color": "#3366ff"},
+        id=template_id,
+        order=1,
     )
     window._refresh_drawing_template_buttons()
 
@@ -1356,6 +1524,112 @@ def test_text_template_button_reuses_style_without_reusing_content(window: MainW
     assert preset["font_size"] == 18
     assert preset["text_color"] == "#3366ff"
     assert preset["text"] == ""
+
+
+def test_more_than_eight_templates_are_available_in_manager_but_only_eight_shortcuts(window: MainWindow) -> None:
+    for index in range(1, 11):
+        template_id = f"template-{index}"
+        window._drawing_templates[template_id] = DrawingTemplate(
+            tool_type=DrawingToolType.RECTANGLE,
+            note=f"模板{index}",
+            style={"color": "#3366ff", "width": 1},
+            id=template_id,
+            order=index,
+        )
+    window._refresh_drawing_template_buttons()
+
+    assert len(window._drawing_templates) == 10
+    assert [button.text() for button in window._drawing_template_buttons.values()] == [
+        "模板1",
+        "模板2",
+        "模板3",
+        "模板4",
+        "模板5",
+        "模板6",
+        "模板7",
+        "模板8",
+    ]
+
+    dialog = DrawingTemplateManagerDialog(window, window)
+    try:
+        assert dialog.template_list.count() == 10
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_template_manager_activates_selected_template(window: MainWindow) -> None:
+    template_id = "template-1"
+    window._drawing_templates[template_id] = DrawingTemplate(
+        tool_type=DrawingToolType.HORIZONTAL_LINE,
+        note="支撑线",
+        style={"color": "#22aa66", "width": 2},
+        id=template_id,
+        order=1,
+    )
+    window._refresh_drawing_template_buttons()
+    dialog = DrawingTemplateManagerDialog(window, window)
+    try:
+        dialog.template_list.setCurrentRow(0)
+        dialog._use_selected_template()
+
+        assert window.chart_widget.active_drawing_tool is DrawingToolType.HORIZONTAL_LINE
+        assert window.chart_widget.drawing_style_preset(DrawingToolType.HORIZONTAL_LINE)["color"] == "#22aa66"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_clicking_template_does_not_reorder_fixed_shortcuts(window: MainWindow) -> None:
+    for index, note in enumerate(["第一", "第二", "第三"], start=1):
+        template_id = f"template-{index}"
+        window._drawing_templates[template_id] = DrawingTemplate(
+            tool_type=DrawingToolType.RECTANGLE,
+            note=note,
+            style={"color": "#3366ff", "width": index},
+            id=template_id,
+            order=index,
+        )
+    window._refresh_drawing_template_buttons()
+
+    before = [button.text() for button in window._drawing_template_buttons.values()]
+    window._drawing_template_buttons[3].click()
+    after = [button.text() for button in window._drawing_template_buttons.values()]
+
+    assert before == after
+
+
+def test_template_manager_renames_deletes_and_reorders_templates(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    for index, note in enumerate(["第一", "第二"], start=1):
+        template_id = f"template-{index}"
+        window._drawing_templates[template_id] = DrawingTemplate(
+            tool_type=DrawingToolType.RECTANGLE,
+            note=note,
+            style={"color": "#3366ff", "width": index},
+            id=template_id,
+            order=index,
+        )
+    window._refresh_drawing_template_buttons()
+    monkeypatch.setattr("barbybar.ui.main_window.QInputDialog.getText", lambda *args, **kwargs: ("改名", True))
+    monkeypatch.setattr(window, "_confirm_dialog", lambda *args, **kwargs: True)
+
+    dialog = DrawingTemplateManagerDialog(window, window)
+    try:
+        dialog.template_list.setCurrentRow(0)
+        dialog._rename_selected_template()
+        assert window._drawing_templates["template-1"].note == "改名"
+
+        dialog.template_list.setCurrentRow(1)
+        dialog._move_selected_template(-1)
+        assert window._drawing_templates["template-2"].order == 1
+
+        dialog.template_list.setCurrentRow(0)
+        selected_id = str(dialog.template_list.currentItem().data(32))
+        dialog._delete_selected_template()
+        assert selected_id not in window._drawing_templates
+    finally:
+        dialog.close()
+        dialog.deleteLater()
 
 
 def test_draw_order_controls_sync_position_state(window: MainWindow) -> None:
@@ -2136,7 +2410,7 @@ def test_column_mapping_dialog_shows_inline_error_for_missing_fields() -> None:
 
 
 def test_drawing_template_dialog_shows_inline_error_when_note_is_empty() -> None:
-    dialog = DrawingTemplateDialog(templates_by_slot={}, initial_slot=1, initial_note="")
+    dialog = DrawingTemplateDialog(initial_note="")
     try:
         dialog.note_edit.setText("")
         dialog.accept()
