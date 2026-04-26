@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QGraphicsPathItem, QLabel, Q
 from barbybar.data.tick_size import format_price
 from barbybar.data.timeframe import DAY_TIMEFRAME, normalize_timeframe, timeframe_to_minutes
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, normalize_drawing_style
+from barbybar.ui.theme import AppTheme
 
 UP_CANDLE_COLOR = "#000000"
 DOWN_CANDLE_COLOR = "#000000"
@@ -21,27 +22,27 @@ CANDLE_WICK_WIDTH = 2
 CANDLE_BODY_BORDER_WIDTH = 2
 CANDLE_BODY_HALF_WIDTH = 0.35
 BAR_SLOT_HALF_WIDTH = 0.5
-SESSION_MARKER_COLOR = "#d6dde6"
+SESSION_MARKER_COLOR = AppTheme.chart_marker
 SESSION_OPEN_TIMES = (time(9, 0), time(21, 0))
-SESSION_LABEL_COLOR = "#a7b1bf"
-SESSION_END_ARROW_COLOR = "#7f8a99"
-BAR_COUNT_LABEL_COLOR = "#b7bfca"
-EMA_LINE_COLOR = "#d84a4a"
-ENTRY_LONG_LINE_COLOR = "#2979ff"
-ENTRY_SHORT_LINE_COLOR = "#ff9f1c"
-STOP_LOSS_LINE_COLOR = "#1f8b24"
-TAKE_PROFIT_LINE_COLOR = "#d84a4a"
-AVERAGE_PRICE_LINE_COLOR = "#5f6b7a"
+SESSION_LABEL_COLOR = AppTheme.chart_label
+SESSION_END_ARROW_COLOR = AppTheme.chart_session_end
+BAR_COUNT_LABEL_COLOR = AppTheme.chart_label_soft
+EMA_LINE_COLOR = AppTheme.chart_take_profit
+ENTRY_LONG_LINE_COLOR = AppTheme.chart_entry_long
+ENTRY_SHORT_LINE_COLOR = AppTheme.chart_entry_short
+STOP_LOSS_LINE_COLOR = AppTheme.chart_stop_loss
+TAKE_PROFIT_LINE_COLOR = AppTheme.chart_take_profit
+AVERAGE_PRICE_LINE_COLOR = AppTheme.chart_average
 DRAWING_HIT_DISTANCE_PX = 10.0
 DRAWING_ANCHOR_HIT_DISTANCE_PX = 12.0
 TRADE_MARKER_HIT_DISTANCE_PX = 12.0
 ORDER_LINE_HIT_DISTANCE_PX = 16.0
-TRADE_LINK_WIN_COLOR = "#d84a4a"
-TRADE_LINK_LOSS_COLOR = "#1f8b24"
-TRADE_LINK_FLAT_COLOR = "#5f6b7a"
-TRADE_ENTRY_LONG_COLOR = "#d84a4a"
-TRADE_ENTRY_SHORT_COLOR = "#1f8b24"
-TRADE_EXIT_MARKER_COLOR = "#fff3bf"
+TRADE_LINK_WIN_COLOR = AppTheme.chart_trade_win
+TRADE_LINK_LOSS_COLOR = AppTheme.chart_trade_loss
+TRADE_LINK_FLAT_COLOR = AppTheme.chart_trade_flat
+TRADE_ENTRY_LONG_COLOR = AppTheme.chart_trade_win
+TRADE_ENTRY_SHORT_COLOR = AppTheme.chart_trade_loss
+TRADE_EXIT_MARKER_COLOR = AppTheme.chart_trade_exit
 TRADE_MARKER_OPACITY = 0.45
 TRADE_MARKER_FOCUSED_OPACITY = 0.65
 Y_AXIS_DRAG_GUTTER_WIDTH_PX = 48.0
@@ -368,6 +369,8 @@ class ChartWidget(QWidget):
         self._trade_markers: list[TradeMarker] = []
         self._trade_markers_visible = True
         self._trade_links_visible = True
+        self._trade_marker_opacity = TRADE_MARKER_OPACITY
+        self._focused_trade_marker_opacity = TRADE_MARKER_FOCUSED_OPACITY
         self._bar_count_labels_visible = False
         self._drawings_hidden = False
         self._focused_trade_number: int | None = None
@@ -415,15 +418,19 @@ class ChartWidget(QWidget):
         layout.setSpacing(0)
 
         self.graphics = pg.GraphicsLayoutWidget()
-        self.graphics.setBackground("w")
+        self.graphics.setBackground(AppTheme.canvas)
         self.view_box = CandleViewBox(self)
         self.price_plot = self.graphics.addPlot(row=0, col=0, viewBox=self.view_box)
         self.price_plot.showGrid(x=False, y=False, alpha=0.0)
         self.price_plot.setMenuEnabled(False)
         self.price_plot.hideAxis("left")
         self.price_plot.showAxis("right")
-        self.price_plot.setLabel("right", "Price")
-        self.price_plot.setLabel("bottom", "Bar")
+        self.price_plot.setLabel("right", "")
+        self.price_plot.setLabel("bottom", "")
+        self.price_plot.getAxis("right").setPen(pg.mkPen(AppTheme.border))
+        self.price_plot.getAxis("right").setTextPen(pg.mkPen(AppTheme.text_faint))
+        self.price_plot.getAxis("bottom").setPen(pg.mkPen(AppTheme.border))
+        self.price_plot.getAxis("bottom").setTextPen(pg.mkPen(AppTheme.text_faint))
         self.price_plot.getAxis("bottom").setStyle(showValues=False)
         self.price_plot.hideButtons()
         self.view_box.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=False)
@@ -439,30 +446,30 @@ class ChartWidget(QWidget):
         self.price_plot.addItem(self._candles)
         self.price_plot.addItem(self._ema_curve)
 
-        self._v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#9aa1ab", width=1, style=Qt.PenStyle.DashLine))
-        self._h_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen("#9aa1ab", width=1, style=Qt.PenStyle.DashLine))
+        self._v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(AppTheme.chart_axis, width=1, style=Qt.PenStyle.DashLine))
+        self._h_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(AppTheme.chart_axis, width=1, style=Qt.PenStyle.DashLine))
         self.price_plot.addItem(self._v_line)
         self.price_plot.addItem(self._h_line)
         self._preview_line = pg.InfiniteLine(
             angle=0,
             movable=False,
-            pen=pg.mkPen("#5f6b7a", width=1, style=Qt.PenStyle.DashLine),
+            pen=pg.mkPen(AppTheme.chart_preview, width=1, style=Qt.PenStyle.DashLine),
         )
         self._preview_line.setZValue(19)
         self.price_plot.addItem(self._preview_line)
         self._preview_line.isHidden = lambda item=self._preview_line: not item.isVisible()
-        self._drag_order_label = pg.TextItem("", color="#2c2c2c", fill=pg.mkBrush(255, 243, 191, 245), anchor=(1, 0.5))
+        self._drag_order_label = pg.TextItem("", color=AppTheme.text, fill=pg.mkBrush(252, 251, 247, 246), anchor=(1, 0.5))
         self._drag_order_label.setZValue(22)
         self.price_plot.addItem(self._drag_order_label)
-        self._temporary_measure_line = pg.PlotCurveItem([], [], pen=pg.mkPen("#2563eb", width=2, style=Qt.PenStyle.DashLine))
+        self._temporary_measure_line = pg.PlotCurveItem([], [], pen=pg.mkPen(AppTheme.chart_measure, width=2, style=Qt.PenStyle.DashLine))
         self._temporary_measure_line.setZValue(21)
         self._temporary_measure_line._barbybar_temp_measure = True
         self.price_plot.addItem(self._temporary_measure_line)
-        self._temporary_measure_handles = pg.ScatterPlotItem([], [], symbol="o", size=7, brush=pg.mkBrush("#ffffff"), pen=pg.mkPen("#2563eb", width=2))
+        self._temporary_measure_handles = pg.ScatterPlotItem([], [], symbol="o", size=7, brush=pg.mkBrush(AppTheme.surface_elevated), pen=pg.mkPen(AppTheme.chart_measure, width=2))
         self._temporary_measure_handles.setZValue(22)
         self._temporary_measure_handles._barbybar_temp_measure = True
         self.price_plot.addItem(self._temporary_measure_handles)
-        self._temporary_measure_label = pg.TextItem("", color="#1e293b", fill=pg.mkBrush(255, 255, 255, 240), anchor=(0, 1))
+        self._temporary_measure_label = pg.TextItem("", color=AppTheme.text, fill=pg.mkBrush(252, 251, 247, 242), anchor=(0, 1))
         self._temporary_measure_label.setZValue(23)
         self._temporary_measure_label._barbybar_temp_measure = True
         self.price_plot.addItem(self._temporary_measure_label)
@@ -710,6 +717,11 @@ class ChartWidget(QWidget):
 
     def set_trade_links_visible(self, visible: bool) -> None:
         self._trade_links_visible = bool(visible)
+        self._rebuild_trade_marker_items()
+
+    def set_trade_marker_opacity(self, opacity: float, focused_opacity: float) -> None:
+        self._trade_marker_opacity = min(1.0, max(0.2, float(opacity)))
+        self._focused_trade_marker_opacity = min(1.0, max(0.2, float(focused_opacity)))
         self._rebuild_trade_marker_items()
 
     def set_bar_count_labels_visible(self, visible: bool) -> None:
@@ -1071,7 +1083,7 @@ class ChartWidget(QWidget):
                 focus_link = pg.PlotCurveItem(
                     [entry_bar_index, exit_bar_index],
                     [entry_price, exit_price],
-                    pen=pg.mkPen("#ffd166", width=3, style=Qt.PenStyle.DashLine),
+                    pen=pg.mkPen(AppTheme.chart_anchor, width=3, style=Qt.PenStyle.DashLine),
                 )
                 focus_link._barbybar_trade_marker = True
                 focus_link.setOpacity(0.95)
@@ -1083,8 +1095,8 @@ class ChartWidget(QWidget):
                         [y],
                         symbol="o",
                         size=12,
-                        brush=pg.mkBrush("#fff3bf"),
-                        pen=pg.mkPen("#ffd166", width=2),
+                        brush=pg.mkBrush(AppTheme.chart_trade_exit),
+                        pen=pg.mkPen(AppTheme.chart_anchor, width=2),
                     )
                     focus_marker._barbybar_trade_marker = True
                     focus_marker.setZValue(18)
@@ -1398,8 +1410,10 @@ class ChartWidget(QWidget):
 
     def _handle_mouse_moved(self, event) -> None:  # noqa: ANN001
         pos = event[0]
+        data_rect = self._data_scene_rect()
+        x_axis_band = float(data_rect.bottom()) < float(pos.y()) <= float(data_rect.bottom()) + 24.0
         self._mouse_in_y_axis_gutter = self._is_in_y_axis_drag_gutter(pos)
-        self._mouse_on_axis = self._is_in_axis_region(pos)
+        self._mouse_on_axis = self._is_in_axis_region(pos) or x_axis_band
         if self._is_dragging:
             self._log_interaction("mouse_move_skipped_dragging")
         else:
@@ -1437,7 +1451,7 @@ class ChartWidget(QWidget):
         ):
             self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
             return
-        if not self._plot_scene_rect().contains(pos):
+        if not self._plot_scene_rect().contains(pos) and not x_axis_band:
             self._mouse_in_y_axis_gutter = False
             self._mouse_on_axis = False
             self._hide_crosshair(preserve_axis_label=self._native_order_drag_active)
@@ -1500,12 +1514,12 @@ class ChartWidget(QWidget):
         self._hover_low_label.setText(f"低 {format_price(bar.low, self._tick_size)}")
         self._hover_close_label.setText(f"收 {format_price(bar.close, self._tick_size)}")
         self._hover_range_label.setText(f"幅 {format_price(bar.high - bar.low, self._tick_size)}")
-        neutral_style = "color: #2c2c2c; font-size: 12px;"
+        neutral_style = f"color: {AppTheme.text}; font-size: 12px; font-weight: 600;"
         self._hover_open_label.setStyleSheet(neutral_style)
-        self._hover_high_label.setStyleSheet("color: #d84a4a; font-size: 12px; font-weight: 600;")
-        self._hover_low_label.setStyleSheet("color: #1f8b24; font-size: 12px; font-weight: 600;")
+        self._hover_high_label.setStyleSheet(f"color: {AppTheme.long}; font-size: 12px; font-weight: 800;")
+        self._hover_low_label.setStyleSheet(f"color: {AppTheme.short}; font-size: 12px; font-weight: 800;")
         self._hover_close_label.setStyleSheet(neutral_style)
-        self._hover_range_label.setStyleSheet(neutral_style)
+        self._hover_range_label.setStyleSheet(f"color: {AppTheme.text_muted}; font-size: 11px; font-weight: 600;")
         self._hover_card.layout().activate()
         self._hover_card.adjustSize()
         self._position_hover_card()
@@ -1528,7 +1542,7 @@ class ChartWidget(QWidget):
         ]
         for label, text in zip(labels, detail_lines + [""] * max(0, len(labels) - len(detail_lines))):
             label.setText(text)
-            label.setStyleSheet("color: #2c2c2c; font-size: 12px;")
+            label.setStyleSheet(f"color: {AppTheme.text}; font-size: 12px; font-weight: 600;")
         self._hover_card.layout().activate()
         self._hover_card.adjustSize()
         self._position_hover_card()
@@ -1556,7 +1570,11 @@ class ChartWidget(QWidget):
     def _is_in_axis_region(self, scene_pos) -> bool:  # noqa: ANN001
         plot_rect = self._plot_scene_rect()
         data_rect = self._data_scene_rect()
-        return bool(plot_rect.contains(scene_pos) and not data_rect.contains(scene_pos))
+        if plot_rect.contains(scene_pos) and not data_rect.contains(scene_pos):
+            return True
+        x_in_plot = float(plot_rect.left()) <= float(scene_pos.x()) <= float(plot_rect.right())
+        near_x_axis = float(data_rect.bottom()) < float(scene_pos.y()) <= float(plot_rect.bottom()) + 12.0
+        return bool(x_in_plot and near_x_axis)
 
     def _is_in_y_axis_drag_gutter(self, scene_pos) -> bool:  # noqa: ANN001
         plot_rect = self._plot_scene_rect()
@@ -1654,16 +1672,16 @@ class ChartWidget(QWidget):
         self._hover_card.setObjectName("hoverCard")
         self._hover_card.setStyleSheet(
             "#hoverCard {"
-            "background: rgba(255, 255, 255, 238);"
-            "border: 1px solid #d9e0e6;"
-            "border-radius: 6px;"
+            "background: rgba(252, 251, 247, 246);"
+            f"border: 1px solid {AppTheme.border};"
+            "border-radius: 12px;"
             "}"
         )
-        self._hover_card.setFixedWidth(220)
+        self._hover_card.setFixedWidth(212)
         layout = QVBoxLayout(self._hover_card)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(11, 9, 11, 9)
+        layout.setSpacing(3)
 
         self._hover_time_label = QLabel()
         self._hover_open_label = QLabel()
@@ -1679,8 +1697,10 @@ class ChartWidget(QWidget):
             self._hover_close_label,
             self._hover_range_label,
         ]:
-            label.setStyleSheet("color: #2c2c2c; font-size: 12px;")
+            label.setStyleSheet(f"color: {AppTheme.text}; font-size: 12px; font-weight: 600;")
             layout.addWidget(label)
+        self._hover_time_label.setStyleSheet(f"color: {AppTheme.text_muted}; font-size: 11px; font-weight: 700;")
+        self._hover_range_label.setStyleSheet(f"color: {AppTheme.text_muted}; font-size: 11px; font-weight: 600;")
         self._hover_card.hide()
 
     def _position_hover_card(self) -> None:
@@ -1695,12 +1715,13 @@ class ChartWidget(QWidget):
         self._axis_price_label.setObjectName("axisPriceLabel")
         self._axis_price_label.setStyleSheet(
             "#axisPriceLabel {"
-            "background: rgba(255, 255, 255, 238);"
-            "border: 1px solid #d9e0e6;"
-            "border-radius: 4px;"
-            "padding: 2px 6px;"
-            "color: #2c2c2c;"
+            "background: rgba(252, 251, 247, 246);"
+            f"border: 1px solid {AppTheme.border};"
+            "border-radius: 8px;"
+            "padding: 3px 7px;"
+            f"color: {AppTheme.text};"
             "font-size: 12px;"
+            "font-weight: 700;"
             "}"
         )
         self._axis_price_label.hide()
@@ -2129,8 +2150,8 @@ class ChartWidget(QWidget):
                 [anchor.y],
                 symbol="o",
                 size=8 if is_active_anchor else 6,
-                brush=pg.mkBrush("#fff3bf" if is_active_anchor else "#ffffff"),
-                pen=pg.mkPen("#ffd166" if is_active_anchor else "#5f6b7a", width=2),
+                brush=pg.mkBrush(AppTheme.chart_trade_exit if is_active_anchor else AppTheme.surface_elevated),
+                pen=pg.mkPen(AppTheme.chart_anchor if is_active_anchor else AppTheme.chart_anchor_idle, width=2),
             )
             item._barbybar_line = True
             item._barbybar_drawing_id = drawing.id
@@ -2151,7 +2172,7 @@ class ChartWidget(QWidget):
         snapped_anchor = self._drawing_preview_anchor
         if abs(raw_anchor.x - snapped_anchor.x) <= 1e-6 and abs(raw_anchor.y - snapped_anchor.y) <= 1e-6:
             return
-        guide_color = QColor("#f5b700")
+        guide_color = QColor(AppTheme.chart_channel_guide)
         guide_color.setAlpha(170)
         item = pg.PlotCurveItem(
             [raw_anchor.x, snapped_anchor.x],
@@ -2218,9 +2239,9 @@ class ChartWidget(QWidget):
         if line.order_type is OrderLineType.ENTRY_SHORT:
             return pg.mkPen(ENTRY_SHORT_LINE_COLOR, width=width, style=Qt.PenStyle.DashLine), ENTRY_SHORT_LINE_COLOR, True
         if line.order_type is OrderLineType.EXIT:
-            return pg.mkPen("#5f6b7a", width=width, style=Qt.PenStyle.DashLine), "#5f6b7a", True
+            return pg.mkPen(AppTheme.chart_average, width=width, style=Qt.PenStyle.DashLine), AppTheme.chart_average, True
         if line.order_type is OrderLineType.REVERSE:
-            return pg.mkPen("#7a43b6", width=width, style=Qt.PenStyle.DashLine), "#7a43b6", True
+            return pg.mkPen(AppTheme.chart_reverse, width=width, style=Qt.PenStyle.DashLine), AppTheme.chart_reverse, True
         if line.order_type is OrderLineType.STOP_LOSS:
             return pg.mkPen(STOP_LOSS_LINE_COLOR, width=width, style=Qt.PenStyle.DashLine), STOP_LOSS_LINE_COLOR, True
         if line.order_type is OrderLineType.TAKE_PROFIT:
@@ -2968,7 +2989,7 @@ class ChartWidget(QWidget):
         if not text and not preview:
             return None
         content = text if text else "文字"
-        item = pg.TextItem(content, color=str(style.get("text_color", style.get("color", "#ff9f1c"))), anchor=(0, 0))
+        item = pg.TextItem(content, color=str(style.get("text_color", style.get("color", AppTheme.chart_entry_short))), anchor=(0, 0))
         font = item.textItem.font()
         font.setPointSize(int(style.get("font_size", 12)))
         item.textItem.setFont(font)
@@ -3004,7 +3025,7 @@ class ChartWidget(QWidget):
         return pg.mkPen(color, width=width, style=pen_style)
 
     def _drawing_color(self, style: dict[str, object], *, preview: bool, highlighted: bool = False) -> QColor:
-        color = QColor("#ffd166" if highlighted and not preview else str(style.get("color", "#ff9f1c")))
+        color = QColor(AppTheme.chart_anchor if highlighted and not preview else str(style.get("color", AppTheme.chart_entry_short)))
         if highlighted and not preview:
             color.setAlphaF(1.0)
             return color
@@ -3017,7 +3038,7 @@ class ChartWidget(QWidget):
     def _drawing_fill_item(self, drawing: ChartDrawing, style: dict[str, object], *, preview: bool) -> QGraphicsPathItem | None:
         if drawing.tool_type not in {DrawingToolType.RECTANGLE, DrawingToolType.PRICE_RANGE} or len(drawing.anchors) < 2:
             return None
-        fill_color = QColor(str(style.get("fill_color", style.get("color", "#ff9f1c"))))
+        fill_color = QColor(str(style.get("fill_color", style.get("color", AppTheme.chart_entry_short))))
         opacity = float(style.get("fill_opacity", 0.0))
         if opacity <= 0:
             return None
@@ -3208,10 +3229,9 @@ class ChartWidget(QWidget):
     def _trade_direction_color(direction: str) -> str:
         return TRADE_ENTRY_LONG_COLOR if direction == "long" else TRADE_ENTRY_SHORT_COLOR
 
-    @staticmethod
-    def _trade_marker_qcolor(color: str, *, focused: bool = False) -> QColor:
+    def _trade_marker_qcolor(self, color: str, *, focused: bool = False) -> QColor:
         marker_color = QColor(color)
-        marker_color.setAlphaF(TRADE_MARKER_FOCUSED_OPACITY if focused else TRADE_MARKER_OPACITY)
+        marker_color.setAlphaF(self._focused_trade_marker_opacity if focused else self._trade_marker_opacity)
         return marker_color
 
     @staticmethod

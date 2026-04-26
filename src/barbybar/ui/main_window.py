@@ -8,7 +8,7 @@ from pathlib import Path
 from time import perf_counter
 
 from loguru import logger
-from PySide6.QtCore import QObject, QPointF, QRectF, QSize, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QPointF, QRectF, QSize, QThread, QTimer, Qt, QUrl, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractButton,
@@ -33,14 +33,17 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QColorDialog,
+    QSizePolicy,
+    QSlider,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QColor, QCloseEvent, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut
+from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut
 
 from barbybar import __version__
 from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
@@ -66,7 +69,21 @@ from barbybar.logging_config import log_dir
 from barbybar.logging_config import register_fatal_error_handler, unregister_fatal_error_handler
 from barbybar.paths import default_drawing_templates_path, default_ui_settings_path, default_updates_dir
 from barbybar.storage.repository import Repository
-from barbybar.ui.chart_widget import ChartWidget, DEFAULT_RIGHT_PADDING
+from barbybar.ui.chart_widget import ChartWidget, DEFAULT_RIGHT_PADDING, TRADE_MARKER_FOCUSED_OPACITY, TRADE_MARKER_OPACITY
+from barbybar.ui.theme import (
+    AppTheme,
+    app_stylesheet,
+    busy_overlay_stylesheet,
+    card_stylesheet,
+    color_chip_button_stylesheet,
+    dialog_card_stylesheet,
+    dialog_stylesheet,
+    drawing_tool_button_stylesheet,
+    emphasized_status_stylesheet,
+    error_banner_stylesheet,
+    muted_status_stylesheet,
+    progress_bar_stylesheet,
+)
 from barbybar.update_service import UpdateInfo, check_for_update, download_installer
 
 REQUIRED_IMPORT_FIELDS = ["datetime", "open", "high", "low", "close", "volume"]
@@ -77,6 +94,11 @@ EXTEND_WINDOW_AFTER = 150
 WINDOW_BUFFER_THRESHOLD = 20
 AUTO_SAVE_DELAY_MS = 800
 MAX_DRAWING_TEMPLATE_SLOTS = 6
+
+
+def configure_spinbox(spinbox: QAbstractSpinBox) -> QAbstractSpinBox:
+    spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+    return spinbox
 
 
 @dataclass(slots=True)
@@ -105,51 +127,34 @@ class BusyOverlay(QWidget):
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.setObjectName("busyOverlay")
-        self.setStyleSheet(
-            "#busyOverlay { background: transparent; }"
-            "#busyCard {"
-            " background: rgba(255,255,255,252);"
-            " border: 1px solid #d8e1e8;"
-            " border-radius: 14px;"
-            "}"
-        )
+        self.setStyleSheet(busy_overlay_stylesheet())
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._filename_text = ""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 0)
+        layout.setContentsMargins(AppTheme.space_xl, AppTheme.space_xl, AppTheme.space_xl, 0)
         self.card = QWidget(self)
         self.card.setObjectName("busyCard")
         card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(18, 14, 18, 14)
+        card_layout.setContentsMargins(AppTheme.space_xl, 14, AppTheme.space_xl, 14)
         card_layout.setSpacing(6)
         self.title_label = QLabel("正在处理...")
-        self.title_label.setStyleSheet("font-size: 14px; font-weight: 700; color: #16202a;")
+        self.title_label.setStyleSheet(f"font-size: 14px; font-weight: 800; color: {AppTheme.text};")
         self.detail_label = QLabel("")
         self.detail_label.setWordWrap(True)
-        self.detail_label.setStyleSheet("font-size: 12px; color: #4f5b66;")
+        self.detail_label.setStyleSheet(f"font-size: 12px; color: {AppTheme.text_muted};")
         self.meta_label = QLabel("")
-        self.meta_label.setStyleSheet("font-size: 11px; color: #64748b;")
+        self.meta_label.setStyleSheet(f"font-size: 11px; color: {AppTheme.text_muted};")
         self.meta_label.setVisible(False)
         self.filename_label = QLabel("")
-        self.filename_label.setStyleSheet("font-size: 11px; color: #8a99a8;")
+        self.filename_label.setStyleSheet(f"font-size: 11px; color: {AppTheme.text_faint};")
         self.filename_label.setVisible(False)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(10)
-        self.progress.setStyleSheet(
-            "QProgressBar {"
-            " background: #e7edf2;"
-            " border: none;"
-            " border-radius: 5px;"
-            "}"
-            "QProgressBar::chunk {"
-            " background: #2f6f86;"
-            " border-radius: 5px;"
-            "}"
-        )
+        self.progress.setStyleSheet(progress_bar_stylesheet())
         self.progress_value_label = QLabel("")
-        self.progress_value_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #16202a;")
+        self.progress_value_label.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {AppTheme.text};")
         self.progress_value_label.setVisible(False)
         progress_row = QHBoxLayout()
         progress_row.setContentsMargins(0, 0, 0, 0)
@@ -406,59 +411,26 @@ class UpdateActionDialog(QDialog):
         self.setWindowTitle(title)
         self.setModal(True)
         self.setMinimumWidth(520)
-        self.setStyleSheet(
-            "QDialog { background: #f6f8fb; }"
-            "QWidget#updateDialogCard {"
-            " background: #ffffff;"
-            " border: 1px solid #d8e1e8;"
-            " border-radius: 16px;"
-            "}"
-            "QPushButton { min-width: 104px; padding: 8px 14px; }"
-            "QPushButton[role='primary'] {"
-            " background: #1f6f8b;"
-            " color: white;"
-            " border: none;"
-            " border-radius: 8px;"
-            " font-weight: 600;"
-            "}"
-            "QPushButton[role='secondary'] {"
-            " background: #eef3f7;"
-            " color: #334155;"
-            " border: 1px solid #d8e1e8;"
-            " border-radius: 8px;"
-            "}"
-            "QPushButton[role='danger'] {"
-            " background: #b42318;"
-            " color: white;"
-            " border: none;"
-            " border-radius: 8px;"
-            " font-weight: 600;"
-            "}"
-            "QTextEdit {"
-            " background: #f8fafc;"
-            " border: 1px solid #dbe4ec;"
-            " border-radius: 10px;"
-            " color: #334155;"
-            " padding: 6px;"
-            "}"
-        )
+        self.setStyleSheet(dialog_stylesheet())
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(16, 16, 16, 16)
         card = QWidget(self)
         card.setObjectName("updateDialogCard")
+        card.setProperty("dialogCard", True)
+        card.setStyleSheet(dialog_card_stylesheet())
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(20, 18, 20, 18)
         card_layout.setSpacing(10)
 
         eyebrow = QLabel(title)
-        eyebrow.setStyleSheet("font-size: 11px; font-weight: 600; color: #5b7083; letter-spacing: 0.4px;")
+        eyebrow.setProperty("role", "dialogEyebrow")
         self.heading_label = QLabel(heading)
         self.heading_label.setWordWrap(True)
-        self.heading_label.setStyleSheet("font-size: 18px; font-weight: 700; color: #16202a;")
+        self.heading_label.setProperty("role", "dialogHeading")
         self.summary_label = QLabel(summary)
         self.summary_label.setWordWrap(True)
-        self.summary_label.setStyleSheet("font-size: 13px; color: #425466; line-height: 1.4;")
+        self.summary_label.setProperty("role", "dialogSummary")
         self.detail_text = QTextEdit()
         self.detail_text.setReadOnly(True)
         self.detail_text.setPlainText(detail)
@@ -486,16 +458,12 @@ class UpdateActionDialog(QDialog):
 class InlineErrorDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setStyleSheet(dialog_stylesheet())
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
         self.error_label.setVisible(False)
-        self.error_label.setStyleSheet(
-            "color: #b42318;"
-            "background: #fef3f2;"
-            "border: 1px solid #f3c7c2;"
-            "border-radius: 8px;"
-            "padding: 8px 10px;"
-        )
+        self.error_label.setProperty("role", "errorBanner")
+        self.error_label.setStyleSheet(error_banner_stylesheet())
 
     def _set_error(self, message: str = "") -> None:
         self.error_label.setText(message)
@@ -575,10 +543,10 @@ class DrawingPropertiesDialog(InlineErrorDialog):
         self.color_button = QPushButton(self._selected_color)
         self.color_button.clicked.connect(self._pick_color)
         self._apply_button_color(self.color_button, self._selected_color)
-        self.width_spin = QSpinBox()
+        self.width_spin = configure_spinbox(QSpinBox())
         self.width_spin.setRange(1, 8)
         self.width_spin.setValue(int(style["width"]))
-        self.line_opacity_spin = QDoubleSpinBox()
+        self.line_opacity_spin = configure_spinbox(QDoubleSpinBox())
         self.line_opacity_spin.setRange(0.0, 1.0)
         self.line_opacity_spin.setSingleStep(0.05)
         self.line_opacity_spin.setDecimals(2)
@@ -600,7 +568,7 @@ class DrawingPropertiesDialog(InlineErrorDialog):
         self.fill_color_button = QPushButton(self._selected_fill_color)
         self.fill_color_button.clicked.connect(self._pick_fill_color)
         self._apply_button_color(self.fill_color_button, self._selected_fill_color)
-        self.fill_opacity_spin = QDoubleSpinBox()
+        self.fill_opacity_spin = configure_spinbox(QDoubleSpinBox())
         self.fill_opacity_spin.setRange(0.0, 1.0)
         self.fill_opacity_spin.setSingleStep(0.05)
         self.fill_opacity_spin.setDecimals(2)
@@ -617,7 +585,7 @@ class DrawingPropertiesDialog(InlineErrorDialog):
         self.text_edit = QTextEdit()
         self.text_edit.setPlainText(str(style["text"]))
         self.text_edit.setMinimumHeight(90)
-        self.font_size_spin = QSpinBox()
+        self.font_size_spin = configure_spinbox(QSpinBox())
         self.font_size_spin.setRange(8, 48)
         self.font_size_spin.setValue(int(style["font_size"]))
 
@@ -647,6 +615,11 @@ class DrawingPropertiesDialog(InlineErrorDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         if drawing.tool_type is DrawingToolType.TEXT:
+            QTimer.singleShot(0, self._focus_text_input)
+
+    def showEvent(self, event) -> None:  # noqa: ANN001
+        super().showEvent(event)
+        if self._drawing.tool_type is DrawingToolType.TEXT:
             QTimer.singleShot(0, self._focus_text_input)
 
     def style_payload(self) -> dict[str, object]:
@@ -724,7 +697,7 @@ class DrawingPropertiesDialog(InlineErrorDialog):
 
     @staticmethod
     def _apply_button_color(button: QPushButton, color: str) -> None:
-        button.setStyleSheet(f"background: {color}; color: #1f2933;")
+        button.setStyleSheet(color_chip_button_stylesheet(color))
 
 
 class DrawingTemplateDialog(InlineErrorDialog):
@@ -758,7 +731,7 @@ class DrawingTemplateDialog(InlineErrorDialog):
         self.note_edit.setPlaceholderText("备注")
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #64748b;")
+        self.status_label.setStyleSheet(muted_status_stylesheet())
 
         form.addRow("槽位", self.slot_combo)
         form.addRow("备注", self.note_edit)
@@ -815,6 +788,7 @@ class DataSetManagerDialog(QDialog):
         self.owner = owner
         self.setWindowTitle("数据集")
         self.resize(560, 520)
+        self.setStyleSheet(dialog_stylesheet())
         self._batch_import_active = False
 
         layout = QVBoxLayout(self)
@@ -848,17 +822,19 @@ class DataSetManagerDialog(QDialog):
         self._delete_button = delete_button
 
         self._batch_progress_panel = QWidget(self)
+        self._batch_progress_panel.setProperty("card", True)
         progress_layout = QVBoxLayout(self._batch_progress_panel)
         progress_layout.setContentsMargins(0, 0, 0, 0)
         progress_layout.setSpacing(4)
         self._batch_progress_title = QLabel("正在批量导入...")
-        self._batch_progress_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #2c2c2c;")
+        self._batch_progress_title.setStyleSheet(emphasized_status_stylesheet())
         self._batch_progress_detail = QLabel("")
         self._batch_progress_detail.setWordWrap(True)
-        self._batch_progress_detail.setStyleSheet("font-size: 12px; color: #4f5b66;")
+        self._batch_progress_detail.setStyleSheet(muted_status_stylesheet())
         self._batch_progress_bar = QProgressBar()
         self._batch_progress_bar.setRange(0, 1)
         self._batch_progress_bar.setValue(0)
+        self._batch_progress_bar.setStyleSheet(progress_bar_stylesheet())
         progress_layout.addWidget(self._batch_progress_title)
         progress_layout.addWidget(self._batch_progress_detail)
         progress_layout.addWidget(self._batch_progress_bar)
@@ -1023,6 +999,7 @@ class SessionLibraryDialog(QDialog):
         self.owner = owner
         self.setWindowTitle("案例库")
         self.resize(620, 560)
+        self.setStyleSheet(dialog_stylesheet())
 
         layout = QVBoxLayout(self)
         self.session_filter = QLineEdit()
@@ -1092,6 +1069,7 @@ class TradeHistoryDialog(QDialog):
         self.owner = owner
         self.setWindowTitle("历史交易")
         self.resize(760, 540)
+        self.setStyleSheet(dialog_stylesheet())
 
         layout = QVBoxLayout(self)
         self.trade_history_sort = QComboBox()
@@ -1172,6 +1150,7 @@ class LogViewerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("日志查看")
         self.resize(980, 620)
+        self.setStyleSheet(dialog_stylesheet())
         self._logs_path = Path(logs_path) if logs_path else log_dir()
         self._current_text = ""
         self._auto_scroll_enabled = True
@@ -1198,7 +1177,7 @@ class LogViewerDialog(QDialog):
         layout.addWidget(self.log_text, 1)
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #64748b; font-size: 12px;")
+        self.status_label.setStyleSheet(muted_status_stylesheet())
         layout.addWidget(self.status_label)
 
         self._refresh_timer = QTimer(self)
@@ -1242,6 +1221,209 @@ class LogViewerDialog(QDialog):
         self.status_label.setText(str(path))
 
 
+class SettingsDialog(QDialog):
+    def __init__(self, owner: "MainWindow", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.owner = owner
+        self.setWindowTitle("设置")
+        self.resize(780, 500)
+        self.setStyleSheet(dialog_stylesheet())
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
+
+        self.category_list = QListWidget()
+        self.category_list.setObjectName("settingsSidebar")
+        self.category_list.setFixedWidth(164)
+        for label in ["图表显示", "复盘交易", "日志与诊断"]:
+            self.category_list.addItem(label)
+        layout.addWidget(self.category_list)
+
+        self.pages = QStackedWidget()
+        self.pages.setObjectName("settingsContent")
+        self.pages.addWidget(self._build_chart_page())
+        self.pages.addWidget(self._build_replay_page())
+        self.pages.addWidget(self._build_diagnostics_page())
+        layout.addWidget(self.pages, 1)
+
+        self.category_list.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.category_list.setCurrentRow(0)
+        self.sync_from_owner()
+
+    def _build_chart_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
+
+        display_group = QGroupBox("显示内容")
+        display_layout = QVBoxLayout(display_group)
+        display_layout.setContentsMargins(10, 14, 10, 10)
+        display_layout.setSpacing(8)
+        self.bar_count_check = QCheckBox("显示K线序号")
+        self.hide_drawings_check = QCheckBox("隐藏画线")
+        self.trade_markers_check = QCheckBox("显示成交点")
+        self.trade_links_check = QCheckBox("显示交易连线")
+        self.bar_count_check.toggled.connect(self.owner._handle_bar_count_toggle_changed)
+        self.hide_drawings_check.toggled.connect(self.owner._handle_hide_drawings_toggle_changed)
+        self.trade_markers_check.toggled.connect(self.owner._handle_trade_markers_toggled)
+        self.trade_links_check.toggled.connect(self.owner._handle_trade_links_toggled)
+        display_layout.addWidget(self.bar_count_check)
+        display_layout.addWidget(self.hide_drawings_check)
+        display_layout.addWidget(self.trade_markers_check)
+        display_layout.addWidget(self.trade_links_check)
+        layout.addWidget(display_group)
+
+        interaction_group = QGroupBox("图表交互")
+        interaction_layout = QFormLayout(interaction_group)
+        interaction_layout.setContentsMargins(10, 14, 10, 10)
+        interaction_layout.setSpacing(8)
+        measure_label = QLabel("Alt + 左键拖拽")
+        hover_time_label = QLabel("悬停 K 线时显示开盘时间和收盘时间")
+        interaction_layout.addRow("临时量测", measure_label)
+        interaction_layout.addRow("Hover 时间", hover_time_label)
+        layout.addWidget(interaction_group)
+
+        marker_group = QGroupBox("交易标记透明度")
+        marker_layout = QFormLayout(marker_group)
+        marker_layout.setContentsMargins(10, 14, 10, 10)
+        marker_layout.setSpacing(8)
+        self.trade_marker_alpha_slider, self.trade_marker_alpha_value = self._build_alpha_slider()
+        self.focused_trade_marker_alpha_slider, self.focused_trade_marker_alpha_value = self._build_alpha_slider()
+        self.trade_marker_alpha_slider.valueChanged.connect(self.owner._handle_trade_marker_alpha_changed)
+        self.focused_trade_marker_alpha_slider.valueChanged.connect(self.owner._handle_focused_trade_marker_alpha_changed)
+        marker_layout.addRow("普通标记透明度", self._slider_with_value(self.trade_marker_alpha_slider, self.trade_marker_alpha_value))
+        marker_layout.addRow("聚焦标记透明度", self._slider_with_value(self.focused_trade_marker_alpha_slider, self.focused_trade_marker_alpha_value))
+        layout.addWidget(marker_group)
+        layout.addStretch(1)
+        return page
+
+    def _build_replay_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
+        defaults_group = QGroupBox("默认交易参数")
+        defaults_layout = QFormLayout(defaults_group)
+        defaults_layout.setContentsMargins(10, 14, 10, 10)
+        defaults_layout.setSpacing(8)
+        self.default_order_quantity_spin = configure_spinbox(QSpinBox())
+        self.default_order_quantity_spin.setRange(1, 9999)
+        self.default_order_quantity_spin.valueChanged.connect(self.owner._handle_default_order_quantity_changed)
+        self.default_draw_order_quantity_spin = configure_spinbox(QSpinBox())
+        self.default_draw_order_quantity_spin.setRange(1, 9999)
+        self.default_draw_order_quantity_spin.valueChanged.connect(self.owner._handle_default_draw_order_quantity_changed)
+        defaults_layout.addRow("默认下单手数", self.default_order_quantity_spin)
+        defaults_layout.addRow("默认画线下单手数", self.default_draw_order_quantity_spin)
+        layout.addWidget(defaults_group)
+
+        behavior_group = QGroupBox("复盘行为")
+        behavior_layout = QVBoxLayout(behavior_group)
+        behavior_layout.setContentsMargins(10, 14, 10, 10)
+        behavior_layout.setSpacing(8)
+        self.flatten_check = QCheckBox("不过夜")
+        self.flatten_check.toggled.connect(self.owner._handle_flatten_at_session_end_toggle_changed)
+        behavior_layout.addWidget(self.flatten_check)
+        layout.addWidget(behavior_group)
+        layout.addStretch(1)
+        return page
+
+    def _build_diagnostics_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
+        log_group = QGroupBox("日志")
+        log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(10, 14, 10, 10)
+        log_layout.setSpacing(8)
+        self.open_log_button = QPushButton("查看日志")
+        self.open_log_button.clicked.connect(self.owner.open_log_viewer)
+        self.open_log_dir_button = QPushButton("打开日志目录")
+        self.open_log_dir_button.clicked.connect(self.owner.open_log_directory)
+        self.copy_log_dir_button = QPushButton("复制日志目录路径")
+        self.copy_log_dir_button.clicked.connect(self.owner.copy_log_directory_path)
+        self.log_dir_label = QLabel(str(log_dir()))
+        self.log_dir_label.setWordWrap(True)
+        self.log_dir_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.app_log_label = QLabel(str(log_dir() / "app.log"))
+        self.debug_log_label = QLabel(str(log_dir() / "debug.log"))
+        self.error_log_label = QLabel(str(log_dir() / "error.log"))
+        for label in [self.app_log_label, self.debug_log_label, self.error_log_label]:
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        buttons.addWidget(self.open_log_button)
+        buttons.addWidget(self.open_log_dir_button)
+        buttons.addWidget(self.copy_log_dir_button)
+        buttons.addStretch(1)
+        log_layout.addLayout(buttons)
+        log_layout.addWidget(QLabel("日志目录"))
+        log_layout.addWidget(self.log_dir_label)
+        log_layout.addWidget(QLabel("app.log"))
+        log_layout.addWidget(self.app_log_label)
+        log_layout.addWidget(QLabel("debug.log"))
+        log_layout.addWidget(self.debug_log_label)
+        log_layout.addWidget(QLabel("error.log"))
+        log_layout.addWidget(self.error_log_label)
+        layout.addWidget(log_group)
+        layout.addStretch(1)
+        return page
+
+    def _build_alpha_slider(self) -> tuple[QSlider, QLabel]:
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(20, 100)
+        slider.setSingleStep(5)
+        slider.setPageStep(5)
+        value_label = QLabel("45%")
+        value_label.setFixedWidth(44)
+        slider.valueChanged.connect(lambda value, label=value_label: label.setText(f"{value}%"))
+        return slider, value_label
+
+    @staticmethod
+    def _slider_with_value(slider: QSlider, value_label: QLabel) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(slider, 1)
+        layout.addWidget(value_label)
+        return container
+
+    def sync_from_owner(self) -> None:
+        pairs = [
+            (self.bar_count_check, self.owner.bar_count_toggle_button.isChecked() if self.owner.bar_count_toggle_button else self.owner._bar_count_labels_default_visible()),
+            (self.hide_drawings_check, self.owner.hide_drawings_toggle_button.isChecked() if self.owner.hide_drawings_toggle_button else self.owner._drawings_hidden_default()),
+            (self.trade_markers_check, self.owner._trade_markers_visible),
+            (self.trade_links_check, self.owner._trade_links_visible),
+            (self.flatten_check, self.owner._flatten_at_session_end_enabled()),
+        ]
+        for checkbox, checked in pairs:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(bool(checked))
+            checkbox.blockSignals(False)
+        spin_pairs = [
+            (self.default_order_quantity_spin, self.owner.quantity_spin.value()),
+            (self.default_draw_order_quantity_spin, self.owner.draw_quantity_spin.value()),
+        ]
+        for spin, value in spin_pairs:
+            spin.blockSignals(True)
+            spin.setValue(int(value))
+            spin.blockSignals(False)
+        slider_pairs = [
+            (self.trade_marker_alpha_slider, int(round(self.owner._trade_marker_alpha * 100))),
+            (self.focused_trade_marker_alpha_slider, int(round(self.owner._focused_trade_marker_alpha * 100))),
+        ]
+        for slider, value in slider_pairs:
+            slider.blockSignals(True)
+            slider.setValue(value)
+            slider.blockSignals(False)
+        self.trade_marker_alpha_value.setText(f"{self.trade_marker_alpha_slider.value()}%")
+        self.focused_trade_marker_alpha_value.setText(f"{self.focused_trade_marker_alpha_slider.value()}%")
+
+
 class MainWindow(QMainWindow):
     _DRAWING_TOOL_ICON_SIZE = QSize(26, 20)
     _DRAWING_TOOL_BUTTON_SIZE = QSize(48, 36)
@@ -1259,6 +1441,7 @@ class MainWindow(QMainWindow):
         self.flatten_at_session_end_toggle_button: QPushButton | None = None
         self.check_update_button: QPushButton | None = None
         self.log_viewer_button: QPushButton | None = None
+        self.settings_button: QPushButton | None = None
         self._busy_overlay: BusyOverlay | None = None
         self._busy_cursor_active = False
         self._active_loader_thread: QThread | None = None
@@ -1279,28 +1462,32 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._perform_auto_save)
         self._session_dirty = False
+        self._trade_action_buttons: dict[str, QPushButton] = {}
         self._draw_order_buttons: dict[OrderLineType, QPushButton] = {}
         self._drawing_tool_buttons: dict[DrawingToolType, QPushButton] = {}
-        self._trade_markers_visible = True
-        self._trade_links_visible = True
+        self._ui_settings_path = default_ui_settings_path()
+        self._ui_settings: dict[str, object] = {}
+        self._load_ui_settings()
+        self._trade_markers_visible = self._trade_markers_default_visible()
+        self._trade_links_visible = self._trade_links_default_visible()
+        self._trade_marker_alpha = self._trade_marker_alpha_default()
+        self._focused_trade_marker_alpha = self._focused_trade_marker_alpha_default()
         self._trade_review_items: list[TradeReviewItem] = []
         self._selected_trade_number: int | None = None
         self._selected_trade_view: str = "entry"
         self._trade_history_dialog: TradeHistoryDialog | None = None
         self._log_viewer_dialog: LogViewerDialog | None = None
+        self._settings_dialog: SettingsDialog | None = None
         self._drawing_style_presets: dict[DrawingToolType, dict[str, object]] = {}
         self._drawing_template_buttons: dict[int, QPushButton] = {}
         self._drawing_templates: dict[int, DrawingTemplate] = {}
         self._active_drawing_template_slot: int | None = None
         self._drawing_templates_path = default_drawing_templates_path()
-        self._ui_settings_path = default_ui_settings_path()
-        self._ui_settings: dict[str, object] = {}
         self._timeframe_toolbar_group: QWidget | None = None
         self._template_toolbar_group: QWidget | None = None
         self._drawing_toolbar_group: QWidget | None = None
         self.step_forward_shortcut: QShortcut | None = None
 
-        self._load_ui_settings()
         self._build_ui()
         register_fatal_error_handler(self.show_fatal_error)
         self._load_global_drawing_templates()
@@ -1308,25 +1495,45 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         container = QWidget()
+        container.setObjectName("appRoot")
+        self.setStyleSheet(app_stylesheet())
         container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.setSpacing(0)
+        container_layout.setContentsMargins(10, 10, 10, 10)
+        container_layout.setSpacing(10)
 
         self.dataset_button = QPushButton("数据集")
+        self.dataset_button.setProperty("role", "toolbar")
+        self.dataset_button.setMinimumHeight(AppTheme.toolbar_button_height)
         self.dataset_button.clicked.connect(self.open_dataset_manager)
         self.session_button = QPushButton("案例库")
+        self.session_button.setProperty("role", "toolbar")
+        self.session_button.setMinimumHeight(AppTheme.toolbar_button_height)
         self.session_button.clicked.connect(self.open_session_library)
         self.check_update_button = QPushButton("检查更新")
+        self.check_update_button.setProperty("role", "toolbar")
+        self.check_update_button.setMinimumHeight(AppTheme.toolbar_button_height)
         self.check_update_button.clicked.connect(self._start_update_check)
         self.log_viewer_button = QPushButton("查看日志")
+        self.log_viewer_button.setProperty("role", "toolbar")
+        self.log_viewer_button.setMinimumHeight(AppTheme.toolbar_button_height)
         self.log_viewer_button.clicked.connect(self.open_log_viewer)
+        self.settings_button = QPushButton("设置")
+        self.settings_button.setProperty("role", "toolbar")
+        self.settings_button.setMinimumHeight(AppTheme.toolbar_button_height)
+        self.settings_button.clicked.connect(self.open_settings_dialog)
+
+        container_layout.addWidget(self._build_top_nav_bar_container())
 
         self.splitter = QSplitter()
         self.splitter.addWidget(self._build_center_panel())
         self.splitter.addWidget(self._build_right_panel())
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(0)
         self.splitter.setStretchFactor(0, 2)
-        self.splitter.setSizes([1160, 240])
-        container_layout.addWidget(self.splitter)
+        self.splitter.setSizes([1132, AppTheme.sidebar_width])
+        self.splitter.handle(1).setEnabled(False)
+        self.splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        container_layout.addWidget(self.splitter, 1)
 
         self.setCentralWidget(container)
         self.setStatusBar(QStatusBar())
@@ -1335,6 +1542,104 @@ class MainWindow(QMainWindow):
         self.step_forward_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
         self.step_forward_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
         self.step_forward_shortcut.activated.connect(self._handle_step_forward_shortcut)
+
+    def _build_top_nav_bar_container(self) -> QWidget:
+        container = QWidget()
+        container.setObjectName("topNavBarContainer")
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._build_top_nav_bar(), 1)
+        return container
+
+    def _build_top_nav_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("topNavBar")
+        bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        bar.setMinimumHeight(AppTheme.toolbar_strip_height)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, AppTheme.toolbar_vertical_margin, 10, AppTheme.toolbar_vertical_margin)
+        layout.setSpacing(AppTheme.flat_group_gap)
+
+        timeframe_toolbar = QHBoxLayout()
+        timeframe_toolbar.setSpacing(4)
+        template_toolbar = QHBoxLayout()
+        template_toolbar.setSpacing(4)
+        drawing_toolbar = QHBoxLayout()
+        drawing_toolbar.setSpacing(4)
+        self.timeframe_button_group = QButtonGroup(self)
+        self.timeframe_button_group.setExclusive(True)
+        timeframe_labels = {"5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m", "1d": "日线"}
+        for timeframe in SUPPORTED_REPLAY_TIMEFRAMES:
+            button = QPushButton(timeframe_labels.get(timeframe, timeframe))
+            button.setProperty("role", "timeframe")
+            button.setCheckable(True)
+            button.setMinimumHeight(AppTheme.toolbar_button_height)
+            button.clicked.connect(lambda _, tf=timeframe: self.change_chart_timeframe(tf))
+            self.timeframe_button_group.addButton(button)
+            self.timeframe_buttons[timeframe] = button
+            timeframe_toolbar.addWidget(button)
+        for slot in range(1, MAX_DRAWING_TEMPLATE_SLOTS + 1):
+            button = QPushButton(f"模板{slot}")
+            button.setCheckable(True)
+            button.setEnabled(False)
+            button.setToolTip(f"模板{slot}")
+            button.setProperty("role", "toolbar")
+            button.setMinimumWidth(68)
+            button.setMinimumHeight(AppTheme.toolbar_button_height)
+            button.clicked.connect(lambda _, template_slot=slot: self._activate_drawing_template(template_slot))
+            self._drawing_template_buttons[slot] = button
+            template_toolbar.addWidget(button)
+        for label, tool in [
+            ("线段", DrawingToolType.TREND_LINE),
+            ("箭头线", DrawingToolType.RAY),
+            ("斐波那契", DrawingToolType.FIB_RETRACEMENT),
+            ("水平线", DrawingToolType.HORIZONTAL_LINE),
+            ("矩形", DrawingToolType.RECTANGLE),
+            ("文字", DrawingToolType.TEXT),
+        ]:
+            button = QPushButton("")
+            button.setCheckable(True)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.setIcon(self._drawing_tool_icon(tool))
+            button.setIconSize(self._DRAWING_TOOL_ICON_SIZE)
+            button.setFixedSize(AppTheme.toolbar_icon_button_size, AppTheme.toolbar_icon_button_size)
+            button.setStyleSheet(self._drawing_tool_button_stylesheet())
+            button.clicked.connect(lambda checked, drawing_tool=tool: self._toggle_drawing_tool(drawing_tool, checked))
+            self._drawing_tool_buttons[tool] = button
+            drawing_toolbar.addWidget(button)
+        self._timeframe_toolbar_group = self._build_toolbar_group("周期", timeframe_toolbar)
+        self._template_toolbar_group = self._build_toolbar_group("常用模板", template_toolbar)
+        self._drawing_toolbar_group = self._build_toolbar_group("画线", drawing_toolbar)
+
+        workspace_tools = QWidget()
+        workspace_tools.setObjectName("workspaceTools")
+        workspace_tools.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        workspace_tools_layout = QHBoxLayout(workspace_tools)
+        workspace_tools_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_tools_layout.setSpacing(AppTheme.flat_group_gap)
+        workspace_tools_layout.addWidget(self.dataset_button, 0)
+        workspace_tools_layout.addWidget(self.session_button, 0)
+        workspace_tools_layout.addWidget(self._timeframe_toolbar_group, 0)
+        workspace_tools_layout.addWidget(self._template_toolbar_group, 0)
+        workspace_tools_layout.addWidget(self._drawing_toolbar_group, 0)
+        workspace_tools_layout.addStretch(1)
+
+        workspace_actions = QWidget()
+        workspace_actions.setObjectName("workspaceActions")
+        workspace_actions.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        workspace_actions_layout = QHBoxLayout(workspace_actions)
+        workspace_actions_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_actions_layout.setSpacing(4)
+        workspace_actions_layout.addWidget(self.settings_button)
+        workspace_actions_layout.addWidget(self.log_viewer_button)
+        workspace_actions_layout.addWidget(self.check_update_button)
+
+        layout.addWidget(workspace_tools, 1)
+        layout.addWidget(workspace_actions, 0, alignment=Qt.AlignmentFlag.AlignRight)
+        return bar
 
     def _focused_widget_blocks_step_forward_shortcut(self, widget: QWidget | None = None) -> bool:
         focused_widget = widget or QApplication.focusWidget()
@@ -1358,66 +1663,15 @@ class MainWindow(QMainWindow):
 
     def _build_center_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setStyleSheet(self._toolbar_group_stylesheet())
+        panel.setObjectName("chartWorkspace")
+        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 2, 0, 0)
-        layout.setSpacing(4)
-        chart_toolbar = QHBoxLayout()
-        chart_toolbar.setSpacing(8)
-        timeframe_toolbar = QHBoxLayout()
-        timeframe_toolbar.setSpacing(4)
-        template_toolbar = QHBoxLayout()
-        template_toolbar.setSpacing(4)
-        drawing_toolbar = QHBoxLayout()
-        drawing_toolbar.setSpacing(4)
-        self.timeframe_button_group = QButtonGroup(self)
-        self.timeframe_button_group.setExclusive(True)
-        timeframe_labels = {"5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m", "1d": "日线"}
-        for timeframe in SUPPORTED_REPLAY_TIMEFRAMES:
-            button = QPushButton(timeframe_labels.get(timeframe, timeframe))
-            button.setCheckable(True)
-            button.clicked.connect(lambda _, tf=timeframe: self.change_chart_timeframe(tf))
-            self.timeframe_button_group.addButton(button)
-            self.timeframe_buttons[timeframe] = button
-            timeframe_toolbar.addWidget(button)
-        for slot in range(1, MAX_DRAWING_TEMPLATE_SLOTS + 1):
-            button = QPushButton(f"模板{slot}")
-            button.setCheckable(True)
-            button.setEnabled(False)
-            button.setToolTip(f"模板{slot}")
-            button.setFixedWidth(88)
-            button.clicked.connect(lambda _, template_slot=slot: self._activate_drawing_template(template_slot))
-            self._drawing_template_buttons[slot] = button
-            template_toolbar.addWidget(button)
-        for label, tool in [
-            ("线段", DrawingToolType.TREND_LINE),
-            ("箭头线", DrawingToolType.RAY),
-            ("斐波那契", DrawingToolType.FIB_RETRACEMENT),
-            ("水平线", DrawingToolType.HORIZONTAL_LINE),
-            ("矩形", DrawingToolType.RECTANGLE),
-            ("文字", DrawingToolType.TEXT),
-        ]:
-            button = QPushButton("")
-            button.setCheckable(True)
-            button.setToolTip(label)
-            button.setAccessibleName(label)
-            button.setIcon(self._drawing_tool_icon(tool))
-            button.setIconSize(self._DRAWING_TOOL_ICON_SIZE)
-            button.setFixedSize(self._DRAWING_TOOL_BUTTON_SIZE)
-            button.setStyleSheet(self._drawing_tool_button_stylesheet())
-            button.clicked.connect(lambda checked, drawing_tool=tool: self._toggle_drawing_tool(drawing_tool, checked))
-            self._drawing_tool_buttons[tool] = button
-            drawing_toolbar.addWidget(button)
-        self._timeframe_toolbar_group = self._build_toolbar_group("周期", timeframe_toolbar)
-        self._template_toolbar_group = self._build_toolbar_group("常用模板", template_toolbar)
-        self._drawing_toolbar_group = self._build_toolbar_group("画线", drawing_toolbar)
-        chart_toolbar.addWidget(self._timeframe_toolbar_group)
-        chart_toolbar.addWidget(self._template_toolbar_group)
-        chart_toolbar.addStretch(1)
-        chart_toolbar.addWidget(self._drawing_toolbar_group)
-        layout.addLayout(chart_toolbar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
         self.chart_widget = ChartWidget()
+        self.chart_widget.setProperty("card", True)
+        self.chart_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.bar_count_toggle_button = QPushButton("K线序号")
         self.bar_count_toggle_button.setCheckable(True)
         if self.bar_count_toggle_button is not None:
@@ -1433,6 +1687,9 @@ class MainWindow(QMainWindow):
         self.flatten_at_session_end_toggle_button.setChecked(self._flatten_at_session_end_default_enabled())
         self.chart_widget.set_bar_count_labels_visible(self._bar_count_labels_default_visible())
         self.chart_widget.set_drawings_hidden(self._drawings_hidden_default())
+        self.chart_widget.set_trade_markers_visible(self._trade_markers_visible)
+        self.chart_widget.set_trade_links_visible(self._trade_links_visible)
+        self.chart_widget.set_trade_marker_opacity(self._trade_marker_alpha, self._focused_trade_marker_alpha)
         self.chart_widget.drawingsChanged.connect(self._handle_chart_drawings_changed)
         self.chart_widget.drawingToolChanged.connect(self._sync_drawing_tool_buttons)
         self.chart_widget.drawingPropertiesRequested.connect(self._handle_drawing_properties_requested)
@@ -1444,50 +1701,97 @@ class MainWindow(QMainWindow):
         self.chart_widget.orderPreviewConfirmed.connect(self._handle_order_preview_confirmed)
         self.chart_widget.orderLineActionRequested.connect(self._handle_order_line_action_requested)
         self._apply_drawing_style_presets()
-        layout.addWidget(self.chart_widget)
+        layout.addWidget(self.chart_widget, 1)
 
-        controls = QHBoxLayout()
-        controls.setSpacing(6)
-        controls.addWidget(self.dataset_button)
-        controls.addWidget(self.session_button)
-        controls.addWidget(self.check_update_button)
-        controls.addWidget(self.log_viewer_button)
+        controls_bar = QWidget()
+        controls_bar.setObjectName("replayControlBar")
+        controls_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        controls_bar.setMinimumHeight(AppTheme.status_strip_height)
+        controls = QHBoxLayout(controls_bar)
+        controls.setContentsMargins(10, 8, 10, 8)
+        controls.setSpacing(10)
+
+        status_group = QWidget()
+        status_group.setObjectName("replayStatusGroup")
+        status_layout = QHBoxLayout(status_group)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(6)
+        self.progress_label = QLabel("未开始")
+        self.progress_label.setProperty("role", "statusReadout")
+        self.progress_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        status_layout.addWidget(self.progress_label, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        status_layout.addStretch(1)
+
+        primary_actions = QWidget()
+        primary_actions.setObjectName("replayPrimaryActions")
+        primary_layout = QHBoxLayout(primary_actions)
+        primary_layout.setContentsMargins(0, 0, 0, 0)
+        primary_layout.setSpacing(6)
+        primary_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.prev_button = QPushButton("上一步")
+        self.prev_button.setProperty("role", "quiet")
+        self.prev_button.setMinimumHeight(AppTheme.status_button_height)
         self.prev_button.clicked.connect(self.step_back)
-        controls.addWidget(self.prev_button)
+        primary_layout.addWidget(self.prev_button)
 
         self.next_button = QPushButton("下一根")
+        self.next_button.setProperty("role", "primary")
+        self.next_button.setMinimumHeight(AppTheme.status_button_height)
+        self.next_button.setMinimumWidth(82)
         self.next_button.clicked.connect(self.step_forward)
-        controls.addWidget(self.next_button)
+        primary_layout.addWidget(self.next_button)
 
-        self.jump_spin = QSpinBox()
+        secondary_actions = QWidget()
+        secondary_actions.setObjectName("replaySecondaryActions")
+        secondary_layout = QHBoxLayout(secondary_actions)
+        secondary_layout.setContentsMargins(0, 0, 0, 0)
+        secondary_layout.setSpacing(0)
+        secondary_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        utility_actions = QWidget()
+        utility_actions.setObjectName("replayUtilityActions")
+        utility_layout = QHBoxLayout(utility_actions)
+        utility_layout.setContentsMargins(0, 0, 0, 0)
+        utility_layout.setSpacing(6)
+        utility_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self.jump_spin = configure_spinbox(QSpinBox())
         self.jump_spin.setMinimum(0)
+        self.jump_spin.setMinimumHeight(AppTheme.status_button_height)
+        self.jump_spin.setFixedWidth(78)
         self.jump_spin.valueChanged.connect(self.jump_to_bar)
-        controls.addWidget(QLabel("跳转 Bar"))
-        controls.addWidget(self.jump_spin)
+        jump_label = QLabel("跳转")
+        jump_label.setProperty("role", "muted")
+        utility_layout.addWidget(jump_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+        utility_layout.addWidget(self.jump_spin, alignment=Qt.AlignmentFlag.AlignVCenter)
+        utility_layout.addSpacing(4)
 
         self.reset_view_button = QPushButton("重置视图")
+        self.reset_view_button.setProperty("role", "quiet")
+        self.reset_view_button.setMinimumHeight(AppTheme.status_button_height)
         self.reset_view_button.clicked.connect(lambda: self.chart_widget.reset_viewport(follow_latest=True))
-        controls.addWidget(self.reset_view_button)
+        utility_layout.addWidget(self.reset_view_button, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.clear_lines_button = QPushButton("清除画线")
+        self.clear_lines_button.setProperty("role", "quiet")
+        self.clear_lines_button.setMinimumHeight(AppTheme.status_button_height)
         self.clear_lines_button.clicked.connect(self.confirm_clear_drawings)
-        controls.addWidget(self.clear_lines_button)
-        controls.addWidget(self.bar_count_toggle_button)
-        controls.addWidget(self.hide_drawings_toggle_button)
-        controls.addWidget(self.flatten_at_session_end_toggle_button)
+        utility_layout.addWidget(self.clear_lines_button, alignment=Qt.AlignmentFlag.AlignVCenter)
+        secondary_layout.addWidget(utility_actions)
 
-        controls.addStretch(1)
-        self.progress_label = QLabel("未开始")
-        controls.addWidget(self.progress_label)
-        layout.addLayout(controls)
+        controls.addWidget(status_group, 1)
+        controls.addWidget(primary_actions, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        controls.addWidget(secondary_actions, 1, alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(controls_bar)
         return panel
 
     def _build_toolbar_group(self, title: str, content_layout: QHBoxLayout) -> QWidget:
         group = QWidget()
         group.setProperty("toolbarGroup", True)
+        group.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        group.setToolTip(title)
         layout = QVBoxLayout(group)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(0, 0, AppTheme.flat_group_gap, 0)
         layout.setSpacing(0)
         layout.addLayout(content_layout)
         return group
@@ -1506,16 +1810,65 @@ class MainWindow(QMainWindow):
         self._ui_settings_path.parent.mkdir(parents=True, exist_ok=True)
         self._ui_settings_path.write_text(json.dumps(self._ui_settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _sync_settings_dialog(self) -> None:
+        if self._settings_dialog is not None:
+            self._settings_dialog.sync_from_owner()
+
     def _bar_count_labels_default_visible(self) -> bool:
         stored = self._ui_settings.get("bar_count_labels_visible")
         if isinstance(stored, bool):
             return stored
         return True
 
+    def _trade_markers_default_visible(self) -> bool:
+        stored = self._ui_settings.get("trade_markers_visible")
+        if isinstance(stored, bool):
+            return stored
+        return True
+
+    def _trade_links_default_visible(self) -> bool:
+        stored = self._ui_settings.get("trade_links_visible")
+        if isinstance(stored, bool):
+            return stored
+        return True
+
+    def _default_order_quantity(self) -> int:
+        stored = self._ui_settings.get("default_order_quantity")
+        if isinstance(stored, int):
+            return min(9999, max(1, stored))
+        if isinstance(stored, float):
+            return min(9999, max(1, int(stored)))
+        return 1
+
+    def _default_draw_order_quantity(self) -> int:
+        stored = self._ui_settings.get("default_draw_order_quantity")
+        if isinstance(stored, int):
+            return min(9999, max(1, stored))
+        if isinstance(stored, float):
+            return min(9999, max(1, int(stored)))
+        return 1
+
+    def _trade_marker_alpha_default(self) -> float:
+        stored = self._ui_settings.get("trade_marker_alpha")
+        if isinstance(stored, (int, float)):
+            return min(1.0, max(0.2, float(stored)))
+        return TRADE_MARKER_OPACITY
+
+    def _focused_trade_marker_alpha_default(self) -> float:
+        stored = self._ui_settings.get("focused_trade_marker_alpha")
+        if isinstance(stored, (int, float)):
+            return min(1.0, max(0.2, float(stored)))
+        return TRADE_MARKER_FOCUSED_OPACITY
+
     def _handle_bar_count_toggle_changed(self, checked: bool) -> None:
+        if self.bar_count_toggle_button is not None and self.bar_count_toggle_button.isChecked() != bool(checked):
+            self.bar_count_toggle_button.blockSignals(True)
+            self.bar_count_toggle_button.setChecked(bool(checked))
+            self.bar_count_toggle_button.blockSignals(False)
         self.chart_widget.set_bar_count_labels_visible(checked)
         self._ui_settings["bar_count_labels_visible"] = bool(checked)
         self._save_ui_settings()
+        self._sync_settings_dialog()
 
     def _drawings_hidden_default(self) -> bool:
         stored = self._ui_settings.get("drawings_hidden")
@@ -1524,9 +1877,14 @@ class MainWindow(QMainWindow):
         return False
 
     def _handle_hide_drawings_toggle_changed(self, checked: bool) -> None:
+        if self.hide_drawings_toggle_button is not None and self.hide_drawings_toggle_button.isChecked() != bool(checked):
+            self.hide_drawings_toggle_button.blockSignals(True)
+            self.hide_drawings_toggle_button.setChecked(bool(checked))
+            self.hide_drawings_toggle_button.blockSignals(False)
         self.chart_widget.set_drawings_hidden(checked)
         self._ui_settings["drawings_hidden"] = bool(checked)
         self._save_ui_settings()
+        self._sync_settings_dialog()
 
     def _flatten_at_session_end_default_enabled(self) -> bool:
         stored = self._ui_settings.get("flatten_at_session_end_enabled")
@@ -1540,141 +1898,290 @@ class MainWindow(QMainWindow):
         return self.flatten_at_session_end_toggle_button.isChecked()
 
     def _handle_flatten_at_session_end_toggle_changed(self, checked: bool) -> None:
+        if self.flatten_at_session_end_toggle_button is not None and self.flatten_at_session_end_toggle_button.isChecked() != bool(checked):
+            self.flatten_at_session_end_toggle_button.blockSignals(True)
+            self.flatten_at_session_end_toggle_button.setChecked(bool(checked))
+            self.flatten_at_session_end_toggle_button.blockSignals(False)
         self._ui_settings["flatten_at_session_end_enabled"] = bool(checked)
         self._save_ui_settings()
+        self._sync_settings_dialog()
+
+    def _handle_default_order_quantity_changed(self, value: int) -> None:
+        value = min(9999, max(1, int(value)))
+        if self.quantity_spin.value() != value:
+            self.quantity_spin.blockSignals(True)
+            self.quantity_spin.setValue(value)
+            self.quantity_spin.blockSignals(False)
+        self._ui_settings["default_order_quantity"] = value
+        self._save_ui_settings()
+        self._sync_settings_dialog()
+
+    def _handle_default_draw_order_quantity_changed(self, value: int) -> None:
+        value = min(9999, max(1, int(value)))
+        if self.draw_quantity_spin.value() != value:
+            self.draw_quantity_spin.blockSignals(True)
+            self.draw_quantity_spin.setValue(value)
+            self.draw_quantity_spin.blockSignals(False)
+        self._ui_settings["default_draw_order_quantity"] = value
+        self._save_ui_settings()
+        self._sync_settings_dialog()
+
+    def _handle_trade_marker_alpha_changed(self, value: int) -> None:
+        self._trade_marker_alpha = min(1.0, max(0.2, int(value) / 100.0))
+        self.chart_widget.set_trade_marker_opacity(self._trade_marker_alpha, self._focused_trade_marker_alpha)
+        self._ui_settings["trade_marker_alpha"] = self._trade_marker_alpha
+        self._save_ui_settings()
+        self._sync_settings_dialog()
+
+    def _handle_focused_trade_marker_alpha_changed(self, value: int) -> None:
+        self._focused_trade_marker_alpha = min(1.0, max(0.2, int(value) / 100.0))
+        self.chart_widget.set_trade_marker_opacity(self._trade_marker_alpha, self._focused_trade_marker_alpha)
+        self._ui_settings["focused_trade_marker_alpha"] = self._focused_trade_marker_alpha
+        self._save_ui_settings()
+        self._sync_settings_dialog()
 
     def _build_right_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setMaximumWidth(260)
+        panel.setObjectName("rightPanel")
+        panel.setFixedWidth(AppTheme.sidebar_width)
+        panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
         trade_box = QGroupBox("交易")
+        trade_box.setProperty("sidebarSection", True)
         trade_layout = QVBoxLayout(trade_box)
-        trade_layout.setContentsMargins(8, 12, 8, 8)
-        trade_layout.setSpacing(4)
+        trade_layout.setContentsMargins(8, 14, 8, 8)
+        trade_layout.setSpacing(6)
 
-        action_header = QLabel("即时")
-        trade_layout.addWidget(action_header)
+        direct_trade_section = QWidget()
+        direct_trade_section.setObjectName("directTradeSection")
+        direct_trade_section.setProperty("card", True)
+        direct_trade_layout = QVBoxLayout(direct_trade_section)
+        direct_trade_layout.setContentsMargins(6, 6, 6, 6)
+        direct_trade_layout.setSpacing(5)
 
-        quantity_row = QHBoxLayout()
-        quantity_row.setSpacing(6)
-        self.quantity_spin = QSpinBox()
+        action_header = QLabel("直接下单")
+        action_header.setProperty("role", "sectionChip")
+        direct_trade_layout.addWidget(action_header)
+
+        action_fields_row = QWidget()
+        action_fields_row.setObjectName("directTradeFieldsRow")
+        action_fields_layout = QHBoxLayout(action_fields_row)
+        action_fields_layout.setContentsMargins(0, 0, 0, 0)
+        action_fields_layout.setSpacing(6)
+        action_fields_layout.addWidget(QLabel("数量"))
+        self.quantity_spin = configure_spinbox(QSpinBox())
         self.quantity_spin.setRange(1, 9999)
-        self.quantity_spin.setValue(1)
+        self.quantity_spin.setValue(self._default_order_quantity())
         self.quantity_spin.setSingleStep(1)
-        self.quantity_spin.setFixedHeight(26)
-        quantity_row.addWidget(QLabel("数量"))
-        quantity_row.addWidget(self.quantity_spin)
-        trade_layout.addLayout(quantity_row)
-
-        price_row = QHBoxLayout()
-        price_row.setSpacing(6)
-        self.price_spin = QDoubleSpinBox()
+        self.quantity_spin.setFixedHeight(24)
+        self.quantity_spin.valueChanged.connect(self._handle_default_order_quantity_changed)
+        action_fields_layout.addWidget(self.quantity_spin, 1)
+        action_fields_layout.addWidget(QLabel("价格"))
+        self.price_spin = configure_spinbox(QDoubleSpinBox())
         self.price_spin.setDecimals(2)
         self.price_spin.setRange(-999999.0, 999999.0)
         self.price_spin.setValue(0.0)
-        self.price_spin.setFixedHeight(26)
-        price_row.addWidget(QLabel("价格"))
-        price_row.addWidget(self.price_spin)
-        trade_layout.addLayout(price_row)
+        self.price_spin.setFixedHeight(24)
+        action_fields_layout.addWidget(self.price_spin, 1)
+        direct_trade_layout.addWidget(action_fields_row)
 
-        for label, action_type in [
-            ("开多", ActionType.OPEN_LONG),
-            ("开空", ActionType.OPEN_SHORT),
-            ("立即平仓", ActionType.CLOSE),
-        ]:
+        action_buttons_row = QWidget()
+        action_buttons_row.setObjectName("directTradeButtonsRow")
+        action_buttons_layout = QHBoxLayout(action_buttons_row)
+        action_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        action_buttons_layout.setSpacing(4)
+        action_buttons_layout.addStretch(1)
+
+        for label, action_type, role, key in (
+            [
+                ("买", ActionType.OPEN_LONG, "long", "buy"),
+                ("卖", ActionType.OPEN_SHORT, "short", "sell"),
+                ("平", ActionType.CLOSE, "quiet", "close"),
+            ]
+        ):
             button = QPushButton(label)
-            button.setFixedHeight(26)
+            button.setFixedSize(54, 26)
+            button.setProperty("role", role)
+            button.setProperty("compactAction", True)
+            button.setProperty("tradeButtonRow", "direct")
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda _, kind=action_type: self.record_action(kind))
-            trade_layout.addWidget(button)
+            self._trade_action_buttons[key] = button
+            action_buttons_layout.addWidget(button)
+        reverse_button = QPushButton("反")
+        reverse_button.setFixedSize(54, 26)
+        reverse_button.setProperty("role", "quiet")
+        reverse_button.setProperty("compactAction", True)
+        reverse_button.setProperty("tradeButtonRow", "direct")
+        reverse_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        reverse_button.clicked.connect(self.record_reverse_action)
+        self._trade_action_buttons["reverse"] = reverse_button
+        action_buttons_layout.addWidget(reverse_button)
+        action_buttons_layout.addStretch(1)
+        direct_trade_layout.addWidget(action_buttons_row)
+        trade_layout.addWidget(direct_trade_section)
 
-        divider = QLabel("画线")
-        trade_layout.addWidget(divider)
+        limit_trade_section = QWidget()
+        limit_trade_section.setObjectName("limitTradeSection")
+        limit_trade_section.setProperty("card", True)
+        limit_trade_layout = QVBoxLayout(limit_trade_section)
+        limit_trade_layout.setContentsMargins(6, 6, 6, 6)
+        limit_trade_layout.setSpacing(5)
 
-        draw_quantity_row = QHBoxLayout()
-        draw_quantity_row.setSpacing(6)
+        divider = QLabel("限价单")
+        divider.setProperty("role", "sectionChip")
+        limit_trade_layout.addWidget(divider)
 
-        self.draw_quantity_spin = QSpinBox()
+        draw_fields_row = QWidget()
+        draw_fields_row.setObjectName("limitTradeFieldsRow")
+        draw_fields_layout = QHBoxLayout(draw_fields_row)
+        draw_fields_layout.setContentsMargins(0, 0, 0, 0)
+        draw_fields_layout.setSpacing(6)
+        draw_fields_layout.addWidget(QLabel("手数"))
+        self.draw_quantity_spin = configure_spinbox(QSpinBox())
         self.draw_quantity_spin.setRange(1, 9999)
-        self.draw_quantity_spin.setValue(1)
+        self.draw_quantity_spin.setValue(self._default_draw_order_quantity())
         self.draw_quantity_spin.setSingleStep(1)
-        self.draw_quantity_spin.setFixedHeight(26)
-        self.draw_quantity_spin.valueChanged.connect(self.quantity_spin.setValue)
-        self.quantity_spin.valueChanged.connect(self.draw_quantity_spin.setValue)
-        draw_quantity_row.addWidget(QLabel("手数"))
-        draw_quantity_row.addWidget(self.draw_quantity_spin)
-        trade_layout.addLayout(draw_quantity_row)
-
-        tick_size_row = QHBoxLayout()
-        tick_size_row.setSpacing(6)
-
-        self.tick_size_spin = QDoubleSpinBox()
+        self.draw_quantity_spin.setFixedHeight(24)
+        self.draw_quantity_spin.valueChanged.connect(self._handle_default_draw_order_quantity_changed)
+        draw_fields_layout.addWidget(self.draw_quantity_spin, 1)
+        draw_fields_layout.addWidget(QLabel("最小跳动"))
+        self.tick_size_spin = configure_spinbox(QDoubleSpinBox())
         self.tick_size_spin.setDecimals(2)
         self.tick_size_spin.setRange(0.01, 999999.0)
         self.tick_size_spin.setValue(1.0)
         self.tick_size_spin.setSingleStep(0.01)
-        self.tick_size_spin.setFixedHeight(26)
+        self.tick_size_spin.setFixedHeight(24)
         self.tick_size_spin.valueChanged.connect(self._handle_tick_size_changed)
-        tick_size_row.addWidget(QLabel("最小跳动"))
-        tick_size_row.addWidget(self.tick_size_spin)
-        trade_layout.addLayout(tick_size_row)
+        draw_fields_layout.addWidget(self.tick_size_spin, 1)
+        limit_trade_layout.addWidget(draw_fields_row)
 
-        for label, order_type in [
-            ("买", OrderLineType.ENTRY_LONG),
-            ("卖", OrderLineType.ENTRY_SHORT),
-            ("平", OrderLineType.EXIT),
-            ("反", OrderLineType.REVERSE),
-        ]:
+        draw_buttons_row = QWidget()
+        draw_buttons_row.setObjectName("limitTradeButtonsRow")
+        draw_buttons_layout = QHBoxLayout(draw_buttons_row)
+        draw_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        draw_buttons_layout.setSpacing(4)
+        draw_buttons_layout.addStretch(1)
+
+        for label, order_type in (
+            [
+                ("买", OrderLineType.ENTRY_LONG),
+                ("卖", OrderLineType.ENTRY_SHORT),
+                ("平", OrderLineType.EXIT),
+                ("反", OrderLineType.REVERSE),
+            ]
+        ):
             button = QPushButton(label)
             button.setCheckable(True)
-            button.setFixedHeight(26)
+            button.setFixedSize(54, 26)
+            button.setProperty("compactAction", True)
+            button.setProperty("tradeButtonRow", "limit")
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            if order_type is OrderLineType.ENTRY_LONG:
+                button.setProperty("role", "long")
+            elif order_type is OrderLineType.ENTRY_SHORT:
+                button.setProperty("role", "short")
+            else:
+                button.setProperty("role", "quiet")
             button.clicked.connect(lambda checked, kind=order_type: self._toggle_draw_order_preview(kind, checked))
             self._draw_order_buttons[order_type] = button
-            trade_layout.addWidget(button)
-        cancel_draw_button = QPushButton("取消画线下单")
-        cancel_draw_button.setFixedHeight(26)
-        cancel_draw_button.clicked.connect(self.cancel_draw_order_preview)
-        trade_layout.addWidget(cancel_draw_button)
+            draw_buttons_layout.addWidget(button)
+        draw_buttons_layout.addStretch(1)
+        limit_trade_layout.addWidget(draw_buttons_row)
+        trade_layout.addWidget(limit_trade_section)
         layout.addWidget(trade_box)
 
-        self.stats_label = QLabel("方向 flat | 仓位 0 | 均价 0 | 已实现PnL 0")
+        position_card = QWidget()
+        position_card.setObjectName("positionSummaryCard")
+        position_card.setProperty("card", True)
+        position_layout = QVBoxLayout(position_card)
+        position_layout.setContentsMargins(10, 8, 10, 8)
+        position_layout.setSpacing(4)
+        position_title = QLabel("仓位")
+        position_title.setProperty("role", "sidebarCardTitle")
+        self.stats_label = QLabel("方向 flat\n仓位 0 · 均价 0\n已实现PnL 0.00")
         self.stats_label.setWordWrap(True)
-        layout.addWidget(self.stats_label)
+        self.stats_label.setObjectName("positionReadout")
+        self.stats_label.setProperty("role", "positionReadout")
+        position_layout.addWidget(position_title)
+        position_layout.addWidget(self.stats_label)
+        layout.addWidget(position_card)
 
-        stats_box = QGroupBox("训练统计")
+        stats_box = QWidget()
+        stats_box.setObjectName("trainingSummaryCard")
+        stats_box.setProperty("card", True)
         stats_layout = QVBoxLayout(stats_box)
-        stats_layout.setContentsMargins(8, 12, 8, 8)
-        stats_layout.setSpacing(4)
-        self.training_stats_label = QLabel("暂无交易统计")
+        stats_layout.setContentsMargins(10, 8, 10, 8)
+        stats_layout.setSpacing(3)
+        stats_title = QLabel("统计")
+        stats_title.setProperty("role", "sidebarCardTitle")
+        self.training_stats_headline = QLabel("总交易 0 · 胜率 --")
+        self.training_stats_headline.setProperty("role", "statsHeadline")
+        self.training_stats_meta = QLabel("")
+        self.training_stats_meta.setProperty("role", "statsMeta")
+        self.training_stats_meta.hide()
+        self.training_stats_label = QLabel("PnL 0.00 · Expectancy --")
         self.training_stats_label.setWordWrap(True)
+        self.training_stats_label.setObjectName("trainingStatsReadout")
+        self.training_stats_label.setProperty("role", "trainingStats")
+        stats_layout.addWidget(stats_title)
+        stats_layout.addWidget(self.training_stats_headline)
         stats_layout.addWidget(self.training_stats_label)
         layout.addWidget(stats_box)
+
+        display_box = QGroupBox("显示")
+        display_box.setProperty("sidebarSection", True)
+        display_layout = QVBoxLayout(display_box)
+        display_layout.setContentsMargins(8, 14, 8, 8)
+        display_layout.setSpacing(4)
         self.open_trade_history_button = QPushButton("历史交易")
         self.open_trade_history_button.setFixedHeight(26)
+        self.open_trade_history_button.setProperty("role", "utility")
         self.open_trade_history_button.clicked.connect(self.open_trade_history_dialog)
-        layout.addWidget(self.open_trade_history_button)
+        display_layout.addWidget(self.open_trade_history_button)
+
+        for toggle_button in (
+            self.bar_count_toggle_button,
+            self.hide_drawings_toggle_button,
+            self.flatten_at_session_end_toggle_button,
+        ):
+            toggle_button.setProperty("role", "toggle")
+            toggle_button.setFixedHeight(24)
+            display_layout.addWidget(toggle_button)
 
         self.show_trade_markers_check = QCheckBox("显示成交点")
-        self.show_trade_markers_check.setChecked(True)
+        self.show_trade_markers_check.setChecked(self._trade_markers_visible)
         self.show_trade_markers_check.toggled.connect(self._handle_trade_markers_toggled)
-        layout.addWidget(self.show_trade_markers_check)
+        display_layout.addWidget(self.show_trade_markers_check)
 
         self.show_trade_links_check = QCheckBox("显示交易连线")
-        self.show_trade_links_check.setChecked(True)
+        self.show_trade_links_check.setChecked(self._trade_links_visible)
         self.show_trade_links_check.toggled.connect(self._handle_trade_links_toggled)
-        layout.addWidget(self.show_trade_links_check)
+        display_layout.addWidget(self.show_trade_links_check)
+        layout.addWidget(display_box)
+
+        session_box = QGroupBox("会话")
+        session_box.setProperty("sidebarSection", True)
+        session_layout = QVBoxLayout(session_box)
+        session_layout.setContentsMargins(8, 14, 8, 8)
+        session_layout.setSpacing(4)
 
         save_button = QPushButton("保存会话")
         save_button.setFixedHeight(26)
+        save_button.setProperty("role", "quiet")
         save_button.clicked.connect(self.save_session)
-        layout.addWidget(save_button)
+        session_layout.addWidget(save_button)
 
         complete_button = QPushButton("标记完成")
         complete_button.setFixedHeight(26)
+        complete_button.setProperty("role", "primary")
         complete_button.clicked.connect(self.complete_session)
-        layout.addWidget(complete_button)
+        session_layout.addWidget(complete_button)
+        layout.addWidget(session_box)
+        self._sync_draw_order_controls()
         layout.addStretch(1)
         return panel
 
@@ -1905,6 +2412,23 @@ class MainWindow(QMainWindow):
         self._log_viewer_dialog.raise_()
         self._log_viewer_dialog.activateWindow()
 
+    def open_log_directory(self) -> None:
+        path = log_dir()
+        path.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def copy_log_directory_path(self) -> None:
+        QApplication.clipboard().setText(str(log_dir()))
+
+    def open_settings_dialog(self) -> None:
+        if self._settings_dialog is None:
+            self._settings_dialog = SettingsDialog(self, self)
+            self._settings_dialog.finished.connect(self._handle_settings_dialog_closed)
+        self._settings_dialog.sync_from_owner()
+        self._settings_dialog.show()
+        self._settings_dialog.raise_()
+        self._settings_dialog.activateWindow()
+
     def open_session_by_id(self, session_id: int) -> None:
         self._load_session(session_id)
 
@@ -1917,6 +2441,11 @@ class MainWindow(QMainWindow):
         if self._log_viewer_dialog is not None:
             self._log_viewer_dialog.deleteLater()
             self._log_viewer_dialog = None
+
+    def _handle_settings_dialog_closed(self) -> None:
+        if self._settings_dialog is not None:
+            self._settings_dialog.deleteLater()
+            self._settings_dialog = None
 
     def delete_dataset_by_id(self, dataset_id: int) -> None:
         active_uses_dataset = False
@@ -1984,8 +2513,9 @@ class MainWindow(QMainWindow):
         self.jump_spin.setMaximum(0)
         self.jump_spin.setValue(0)
         self.jump_spin.blockSignals(False)
-        self.stats_label.setText("方向 flat | 仓位 0 | 均价 0 | 已实现PnL 0")
-        self.training_stats_label.setText("暂无交易统计")
+        self.stats_label.setText("方向 flat\n仓位 0 · 均价 0\n已实现PnL 0.00")
+        self.training_stats_headline.setText("总交易 0 · 胜率 --")
+        self.training_stats_label.setText("PnL 0.00 · Expectancy --")
         self.open_trade_history_button.setEnabled(False)
         if self._trade_history_dialog is not None:
             self._trade_history_dialog.refresh_items()
@@ -2131,11 +2661,10 @@ class MainWindow(QMainWindow):
             else f"{position.quantity:.2f}"
         )
         self.stats_label.setText(
-            " | ".join(
+            "\n".join(
                 [
                     f"方向 {direction}",
-                    f"仓位 {quantity_text}",
-                    f"均价 {format_price(position.average_price, self.engine.session.tick_size)}",
+                    f"仓位 {quantity_text} · 均价 {format_price(position.average_price, self.engine.session.tick_size)}",
                     f"已实现PnL {position.realized_pnl:.2f}",
                 ]
             )
@@ -2151,28 +2680,40 @@ class MainWindow(QMainWindow):
             self._trade_history_dialog.refresh_items()
 
     def _handle_trade_markers_toggled(self, checked: bool) -> None:
-        self._trade_markers_visible = checked
+        if self.show_trade_markers_check.isChecked() != bool(checked):
+            self.show_trade_markers_check.blockSignals(True)
+            self.show_trade_markers_check.setChecked(bool(checked))
+            self.show_trade_markers_check.blockSignals(False)
+        self._trade_markers_visible = bool(checked)
         self.chart_widget.set_trade_markers_visible(checked)
+        self._ui_settings["trade_markers_visible"] = bool(checked)
+        self._save_ui_settings()
+        self._sync_settings_dialog()
 
     def _handle_trade_links_toggled(self, checked: bool) -> None:
-        self._trade_links_visible = checked
+        if self.show_trade_links_check.isChecked() != bool(checked):
+            self.show_trade_links_check.blockSignals(True)
+            self.show_trade_links_check.setChecked(bool(checked))
+            self.show_trade_links_check.blockSignals(False)
+        self._trade_links_visible = bool(checked)
         self.chart_widget.set_trade_links_visible(checked)
+        self._ui_settings["trade_links_visible"] = bool(checked)
+        self._save_ui_settings()
+        self._sync_settings_dialog()
 
     def _update_training_stats(self) -> None:
         if not self.engine:
-            self.training_stats_label.setText("暂无交易统计")
+            self.training_stats_headline.setText("总交易 0 · 胜率 --")
+            self.training_stats_label.setText("PnL 0.00 · Expectancy --")
             return
         stats = self.engine.session.stats
-        planned_rate = (stats.planned_trades / stats.total_trades) if stats.total_trades else 0.0
-        auto_rate = (stats.auto_trades / stats.total_trades) if stats.total_trades else 0.0
+        self.training_stats_headline.setText(
+            f"总交易 {stats.total_trades} · 胜率 {stats.win_rate:.0%}"
+        )
         self.training_stats_label.setText(
-            "\n".join(
-                [
-                    f"总交易 {stats.total_trades} 笔 | 总盈亏 {stats.total_pnl:.2f} | 胜率 {stats.win_rate:.0%} | 盈亏比 {stats.payoff_ratio:.2f} | Expectancy {stats.expectancy:.2f}",
-                    f"做多 {stats.long_trades} 次 | 做空 {stats.short_trades} 次 | 均赢 {stats.average_win:.2f} | 均亏 {stats.average_loss:.2f} | 最大回撤 {stats.max_drawdown:.2f}",
-                    f"平均持仓 {stats.avg_holding_bars:.1f} bars | 连赢 {stats.max_win_streak} | 连亏 {stats.max_loss_streak}",
-                    f"有止损 {stats.trades_with_stop_rate:.0%} | 按计划 {planned_rate:.0%} | 自动平仓 {auto_rate:.0%}",
-                ]
+            (
+                f"PnL {stats.total_pnl:.2f} · Expectancy {stats.expectancy:.2f}\n"
+                f"盈亏比 {stats.payoff_ratio:.2f} · 回撤 {stats.max_drawdown:.2f}"
             )
         )
 
@@ -2353,6 +2894,17 @@ class MainWindow(QMainWindow):
             return
         self._update_ui_from_engine()
         self.save_session(trigger="record_action")
+
+    def record_reverse_action(self) -> None:
+        if not self.engine:
+            self._show_notice("提示", "请先创建或打开一个复盘会话", "当前没有可执行交易动作的复盘会话。")
+            return
+        direction = self.engine.session.position.direction
+        if direction not in {"long", "short"}:
+            self._show_notice("提示", "当前没有持仓", "反手需要先有持仓。")
+            return
+        reverse_action = ActionType.OPEN_SHORT if direction == "long" else ActionType.OPEN_LONG
+        self.record_action(reverse_action)
 
     def create_order_line(self, order_type: OrderLineType) -> None:
         if not self.engine:
@@ -3113,8 +3665,8 @@ class MainWindow(QMainWindow):
             active_drawing_tool=self.chart_widget.active_drawing_tool.value if self.chart_widget.active_drawing_tool else "",
         ).debug("event=toggle_draw_order_preview")
         if not checked:
-            if self.chart_widget.trade_line_mode is None and self.chart_widget.last_hover_price is not None:
-                self.chart_widget.cancel_order_preview()
+            if self.chart_widget.preview_order_type == order_type.value:
+                self.cancel_draw_order_preview()
             return
         self.chart_widget.set_active_drawing_tool(None)
         self.chart_widget.begin_order_preview(order_type.value, float(self.draw_quantity_spin.value()))
@@ -3125,7 +3677,7 @@ class MainWindow(QMainWindow):
             interaction_mode=self.chart_widget.interaction_mode.value,
             preview_order_type=self.chart_widget.preview_order_type or "",
         ).debug("event=toggle_draw_order_preview_applied")
-        self.statusBar().showMessage(f"移动鼠标选择价格，再点击图表创建{self._order_type_label(order_type)}", 3000)
+        self.statusBar().showMessage(f"移动鼠标选择价格，再点击图表创建{self._order_type_label(order_type)}；Esc 或再次点击按钮取消", 3000)
 
     def cancel_draw_order_preview(self) -> None:
         self.chart_widget.cancel_order_preview()
@@ -3133,6 +3685,9 @@ class MainWindow(QMainWindow):
 
     def _sync_draw_order_controls(self, active_order_type: OrderLineType | None = None) -> None:
         has_position = bool(self.engine and self.engine.session.position.is_open)
+        has_engine = self.engine is not None
+        for key, button in self._trade_action_buttons.items():
+            button.setEnabled(has_position if key in {"close", "reverse"} else has_engine)
         for order_type, button in self._draw_order_buttons.items():
             enabled = has_position or order_type not in {OrderLineType.EXIT, OrderLineType.REVERSE}
             button.setEnabled(enabled)
@@ -3440,38 +3995,15 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _drawing_tool_button_stylesheet() -> str:
-        return (
-            "QPushButton {"
-            " background: #f8fafc;"
-            " border: 1px solid #cbd5e1;"
-            " border-radius: 7px;"
-            " padding: 0px;"
-            "}"
-            "QPushButton:hover {"
-            " background: #eef4fb;"
-            " border-color: #94a3b8;"
-            "}"
-            "QPushButton:pressed {"
-            " background: #e2e8f0;"
-            " border-color: #64748b;"
-            "}"
-            "QPushButton:checked {"
-            " background: #dbeafe;"
-            " border: 1px solid #3b82f6;"
-            "}"
-            "QPushButton:disabled {"
-            " background: #f8fafc;"
-            " border-color: #d7dee8;"
-            "}"
-        )
+        return drawing_tool_button_stylesheet()
 
     @staticmethod
     def _toolbar_group_stylesheet() -> str:
         return (
             "QWidget[toolbarGroup='true'] {"
-            " background: #f8fafc;"
-            " border: 1px solid #d6dee8;"
-            " border-radius: 10px;"
+            f" background: {AppTheme.surface};"
+            f" border: 1px solid {AppTheme.border};"
+            f" border-radius: {AppTheme.radius}px;"
             "}"
         )
 

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QLabel, QLineEdit, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QCheckBox, QDialog, QGroupBox, QLabel, QLineEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
@@ -25,6 +25,7 @@ from barbybar.ui.main_window import (
     LogViewerDialog,
     MainWindow,
     SessionLibraryDialog,
+    SettingsDialog,
     UpdateActionDialog,
 )
 from barbybar.update_service import UpdateInfo
@@ -185,8 +186,9 @@ def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None
     for button in window._drawing_tool_buttons.values():
         assert button.icon().isNull() is False
         assert button.text() == ""
-        assert button.minimumWidth() >= 48 or button.width() >= 48
-        assert button.minimumHeight() >= 36 or button.height() >= 36
+        assert button.width() == 30
+        assert 30 <= button.height() <= 32
+        assert button.minimumHeight() >= 30 or button.height() >= 30
 
 
 def test_drawing_toolbar_places_arrow_line_immediately_after_trend_line(window: MainWindow) -> None:
@@ -216,6 +218,33 @@ def test_main_window_exposes_check_update_button(window: MainWindow) -> None:
 def test_main_window_exposes_log_viewer_button(window: MainWindow) -> None:
     assert window.log_viewer_button is not None
     assert window.log_viewer_button.text() == "查看日志"
+
+
+def test_main_window_exposes_settings_button(window: MainWindow) -> None:
+    assert window.settings_button is not None
+    assert window.settings_button.text() == "设置"
+
+
+def test_main_window_applies_professional_light_theme(window: MainWindow) -> None:
+    assert "QPushButton[role='primary']" in window.styleSheet()
+    assert "QPushButton[role='toolbar']" in window.styleSheet()
+    assert window.next_button.property("role") == "primary"
+    assert window.progress_label.property("role") == "statusReadout"
+    assert window.stats_label.property("role") == "positionReadout"
+    assert window.training_stats_label.property("role") == "trainingStats"
+    assert window.open_trade_history_button.property("role") == "utility"
+    assert window.splitter.widget(1).objectName() == "rightPanel"
+
+
+def test_main_window_numeric_inputs_hide_step_buttons(window: MainWindow) -> None:
+    for spinbox in [
+        window.quantity_spin,
+        window.price_spin,
+        window.draw_quantity_spin,
+        window.tick_size_spin,
+        window.jump_spin,
+    ]:
+        assert spinbox.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
 
 
 def test_show_fatal_error_reuses_error_dialog(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -261,8 +290,8 @@ def test_main_window_removes_session_info_panel(window: MainWindow) -> None:
     group_titles = {group.title() for group in window.findChildren(QGroupBox)}
     assert "会话信息" not in group_titles
     assert "交易" in group_titles
-    assert "训练统计" in group_titles
     assert "历史交易" not in group_titles
+    assert window.findChild(QWidget, "trainingSummaryCard") is not None
 
 
 def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
@@ -273,7 +302,10 @@ def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
     assert "卖" in button_texts
     assert "平" in button_texts
     assert "反" in button_texts
-    assert "取消画线下单" in button_texts
+    assert "开多" not in button_texts
+    assert "开空" not in button_texts
+    assert "立即平仓" not in button_texts
+    assert "取消画线下单" not in button_texts
     drawing_tooltips = {button.toolTip() for button in window._drawing_tool_buttons.values()}
     assert drawing_tooltips == {"线段", "箭头线", "斐波那契", "水平线", "矩形", "文字"}
     for button in window._drawing_tool_buttons.values():
@@ -287,45 +319,127 @@ def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
 
 def test_right_panel_uses_compact_trade_layout(window: MainWindow) -> None:
     assert window.splitter.count() == 2
-    assert window.splitter.sizes()[1] <= 260
+    assert window.splitter.widget(1).width() == 288
+    assert window.splitter.widget(1).minimumWidth() == 288
+    assert window.splitter.widget(1).maximumWidth() == 288
     assert window.stats_label.text().startswith("方向 ")
+    assert "\n" in window.stats_label.text()
 
 
-def test_right_panel_uses_vertical_trade_layout(window: MainWindow) -> None:
+def test_right_panel_uses_compact_trade_layout_sections(window: MainWindow) -> None:
     trade_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "交易")
     trade_layout = trade_group.layout()
 
     assert isinstance(trade_layout, QVBoxLayout)
-    assert window.splitter.widget(1).maximumWidth() <= 260
+    assert window.splitter.widget(1).maximumWidth() == 288
+    assert window.splitter.widget(1).minimumWidth() == 288
+    assert trade_group.findChild(QWidget, "directTradeSection") is not None
+    assert trade_group.findChild(QWidget, "limitTradeSection") is not None
+    assert trade_group.findChild(QWidget, "directTradeFieldsRow") is not None
+    assert trade_group.findChild(QWidget, "directTradeButtonsRow") is not None
+    assert trade_group.findChild(QWidget, "limitTradeFieldsRow") is not None
+    assert trade_group.findChild(QWidget, "limitTradeButtonsRow") is not None
+    label_texts = [label.text() for label in trade_group.findChildren(QLabel)]
+    assert "直接下单" in label_texts
+    assert "限价单" in label_texts
 
     button_texts = [button.text() for button in trade_group.findChildren(QPushButton)]
-    for label in ["开多", "开空", "立即平仓", "买", "卖", "平", "反", "取消画线下单"]:
-        assert label in button_texts
+    for label in ["买", "卖", "平", "反"]:
+        assert button_texts.count(label) == 2
+    assert "取消画线下单" not in button_texts
+    assert window.findChild(QWidget, "positionSummaryCard") is not None
+    assert window.findChild(QWidget, "trainingSummaryCard") is not None
+    assert window.quantity_spin.parentWidget() is trade_group.findChild(QWidget, "directTradeFieldsRow")
+    assert window.price_spin.parentWidget() is trade_group.findChild(QWidget, "directTradeFieldsRow")
+    assert window.draw_quantity_spin.parentWidget() is trade_group.findChild(QWidget, "limitTradeFieldsRow")
+    assert window.tick_size_spin.parentWidget() is trade_group.findChild(QWidget, "limitTradeFieldsRow")
+
+
+def test_right_panel_display_section_collects_low_priority_chart_toggles(window: MainWindow) -> None:
+    display_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "显示")
+    button_texts = [button.text() for button in display_group.findChildren(QPushButton)]
+
+    assert button_texts[:4] == ["历史交易", "K线序号", "隐藏画线", "不过夜"]
+    assert window.bar_count_toggle_button.parentWidget() is display_group
+    assert window.hide_drawings_toggle_button.parentWidget() is display_group
+    assert window.flatten_at_session_end_toggle_button.parentWidget() is display_group
+
+
+def test_training_stats_default_to_brief_two_line_summary(window: MainWindow) -> None:
+    assert window.training_stats_headline.text() == "总交易 0 · 胜率 --"
+    assert window.training_stats_label.text() == "PnL 0.00 · Expectancy --"
+    assert window.training_stats_label.text().count("\n") == 0
+    assert window.training_stats_meta.isHidden() is True
+
+
+def test_right_panel_is_fixed_and_splitter_handle_is_disabled(window: MainWindow) -> None:
+    assert window.splitter.handleWidth() == 0
+    assert window.splitter.childrenCollapsible() is False
+    assert window.splitter.handle(1).isEnabled() is False
+    assert window.splitter.widget(1).sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+
+
+def test_trade_buttons_use_single_row_fixed_size_layout(window: MainWindow) -> None:
+    trade_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "交易")
+    direct_row = trade_group.findChild(QWidget, "directTradeButtonsRow")
+    limit_row = trade_group.findChild(QWidget, "limitTradeButtonsRow")
+
+    assert direct_row is not None
+    assert limit_row is not None
+    direct_buttons = [button for button in direct_row.findChildren(QPushButton)]
+    limit_buttons = [button for button in limit_row.findChildren(QPushButton)]
+    assert [button.text() for button in direct_buttons] == ["买", "卖", "平", "反"]
+    assert [button.text() for button in limit_buttons] == ["买", "卖", "平", "反"]
+    for button in [*direct_buttons, *limit_buttons]:
+        assert button.width() == 54
+        assert button.height() == 26
+        assert button.property("compactAction") is True
+        assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+
+
+def test_trade_action_and_draw_order_buttons_use_buy_sell_colors(window: MainWindow) -> None:
+    assert window._trade_action_buttons["buy"].property("role") == "long"
+    assert window._trade_action_buttons["sell"].property("role") == "short"
+    assert window._draw_order_buttons[OrderLineType.ENTRY_LONG].property("role") == "long"
+    assert window._draw_order_buttons[OrderLineType.ENTRY_SHORT].property("role") == "short"
+    assert window._trade_action_buttons["close"].property("role") == "quiet"
+    assert window._trade_action_buttons["reverse"].property("role") == "quiet"
+
+
+def test_trade_button_styles_define_pressed_feedback(window: MainWindow) -> None:
+    stylesheet = window.styleSheet()
+
+    assert "QPushButton[compactAction='true']:pressed" in stylesheet
+    assert "QPushButton[compactAction='true'][role='long']:pressed" in stylesheet
+    assert "QPushButton[compactAction='true'][role='short']:pressed" in stylesheet
 
 
 def test_timeframe_buttons_render_above_chart(window: MainWindow) -> None:
     center_panel = window.splitter.widget(0)
     layout = center_panel.layout()
 
-    assert layout.itemAt(0).layout() is not None
-    assert layout.itemAt(1).widget() is window.chart_widget
+    assert layout.itemAt(0).widget() is window.chart_widget
 
 
 def test_toolbar_separates_timeframes_from_drawing_buttons(window: MainWindow) -> None:
-    center_panel = window.splitter.widget(0)
-    toolbar = center_panel.layout().itemAt(0).layout()
+    top_bar = window.centralWidget().findChild(QWidget, "topNavBar")
+    toolbar = top_bar.layout()
 
     assert toolbar is not None
-    assert toolbar.count() == 4
-    assert toolbar.itemAt(0).widget() is window._timeframe_toolbar_group
-    assert toolbar.itemAt(1).widget() is window._template_toolbar_group
-    assert toolbar.itemAt(2).spacerItem() is not None
-    assert toolbar.itemAt(3).widget() is window._drawing_toolbar_group
+    workspace_tools = top_bar.findChild(QWidget, "workspaceTools")
+    assert toolbar.itemAt(0).widget() is workspace_tools
+    tool_layout = workspace_tools.layout()
+    assert tool_layout.itemAt(0).widget() is window.dataset_button
+    assert tool_layout.itemAt(1).widget() is window.session_button
+    assert tool_layout.itemAt(2).widget() is window._timeframe_toolbar_group
+    assert tool_layout.itemAt(3).widget() is window._template_toolbar_group
+    assert tool_layout.itemAt(4).widget() is window._drawing_toolbar_group
+    assert tool_layout.itemAt(5).spacerItem() is not None
 
 
 def test_toolbar_uses_distinct_group_widgets_for_timeframe_template_and_drawing(window: MainWindow) -> None:
-    center_panel = window.splitter.widget(0)
-    toolbar = center_panel.layout().itemAt(0).layout()
+    top_bar = window.centralWidget().findChild(QWidget, "topNavBar")
+    toolbar = top_bar.layout()
 
     assert window._timeframe_toolbar_group is not None
     assert window._template_toolbar_group is not None
@@ -334,35 +448,182 @@ def test_toolbar_uses_distinct_group_widgets_for_timeframe_template_and_drawing(
     assert toolbar.itemAt(1).widget() is not window._drawing_toolbar_group
 
 
-def test_toolbar_groups_do_not_render_title_labels(window: MainWindow) -> None:
+def test_toolbar_groups_are_flat_and_do_not_render_title_labels(window: MainWindow) -> None:
     for group in [window._timeframe_toolbar_group, window._template_toolbar_group, window._drawing_toolbar_group]:
         assert group is not None
-        assert not any(
-            child.property("toolbarGroupTitle") is True
-            for child in group.findChildren(QLabel)
-        )
+        assert not any(child.property("toolbarGroupTitle") is True for child in group.findChildren(QLabel))
+        assert group.toolTip() in {"周期", "常用模板", "画线"}
 
 
-def test_bar_count_toggle_button_is_placed_beside_clear_drawings(window: MainWindow) -> None:
+def test_replay_control_bar_uses_three_part_layout(window: MainWindow) -> None:
     center_panel = window.splitter.widget(0)
-    controls = center_panel.layout().itemAt(2).layout()
+    controls_bar = center_panel.findChild(QWidget, "replayControlBar")
+
+    status_group = controls_bar.findChild(QWidget, "replayStatusGroup")
+    primary_group = controls_bar.findChild(QWidget, "replayPrimaryActions")
+    secondary_group = controls_bar.findChild(QWidget, "replaySecondaryActions")
+
+    assert status_group is not None
+    assert primary_group is not None
+    assert secondary_group is not None
+    assert status_group.layout().itemAt(0).widget() is window.progress_label
+    assert primary_group.layout().itemAt(0).widget() is window.prev_button
+    assert primary_group.layout().itemAt(1).widget() is window.next_button
+    assert window.next_button.property("role") == "primary"
+    assert controls_bar.parentWidget() is center_panel
+
+
+def test_replay_secondary_actions_keep_expected_order(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(0)
+    controls_bar = center_panel.findChild(QWidget, "replayControlBar")
+    secondary_group = controls_bar.findChild(QWidget, "replaySecondaryActions")
+
+    assert secondary_group is not None
+    secondary_layout = secondary_group.layout()
+    utility_group = secondary_group.findChild(QWidget, "replayUtilityActions")
+    assert secondary_layout.itemAt(0).widget() is utility_group
+    utility_layout = utility_group.layout()
+    assert utility_layout.itemAt(0).widget().text() == "跳转"
+    assert utility_layout.itemAt(1).widget() is window.jump_spin
+    assert utility_layout.itemAt(3).widget() is window.reset_view_button
+    assert utility_layout.itemAt(4).widget() is window.clear_lines_button
+
+
+def test_chart_utility_bar_is_removed_from_chart_area(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(0)
+
+    assert center_panel.findChild(QWidget, "chartUtilityBar") is None
+
+
+def test_app_navigation_buttons_are_placed_in_top_bar(window: MainWindow) -> None:
+    top_bar = window.centralWidget().findChild(QWidget, "topNavBar")
+    controls = top_bar.layout()
 
     assert controls is not None
-    clear_index = next(index for index in range(controls.count()) if controls.itemAt(index).widget() is window.clear_lines_button)
-    assert controls.itemAt(clear_index + 1).widget() is window.bar_count_toggle_button
-    assert controls.itemAt(clear_index + 2).widget() is window.hide_drawings_toggle_button
-    assert controls.itemAt(clear_index + 3).widget() is window.flatten_at_session_end_toggle_button
+    assert controls.itemAt(0).widget().objectName() == "workspaceTools"
+    assert controls.itemAt(1).widget().objectName() == "workspaceActions"
+    workspace_tools = top_bar.findChild(QWidget, "workspaceTools")
+    workspace_actions = top_bar.findChild(QWidget, "workspaceActions")
+    assert window.dataset_button in workspace_tools.findChildren(QPushButton)
+    assert window.session_button in workspace_tools.findChildren(QPushButton)
+    assert window.settings_button in workspace_actions.findChildren(QPushButton)
+    assert window.log_viewer_button in workspace_actions.findChildren(QPushButton)
+    assert window.check_update_button in workspace_actions.findChildren(QPushButton)
 
 
-def test_dataset_session_and_update_buttons_are_placed_before_prev_button(window: MainWindow) -> None:
+def test_top_bar_removes_workspace_brand_copy(window: MainWindow) -> None:
+    top_bar = window.centralWidget().findChild(QWidget, "topNavBar")
+    label_texts = {label.text() for label in top_bar.findChildren(QLabel)}
+
+    assert "专业复盘工作台" not in label_texts
+    assert "BAR-BY-BAR WORKSTATION" not in label_texts
+
+
+def test_replay_controls_are_kept_in_bottom_control_bar(window: MainWindow) -> None:
     center_panel = window.splitter.widget(0)
-    controls = center_panel.layout().itemAt(2).layout()
+    controls_bar = center_panel.findChild(QWidget, "replayControlBar")
 
-    assert controls is not None
-    prev_index = next(index for index in range(controls.count()) if controls.itemAt(index).widget() is window.prev_button)
-    leading_widgets = [controls.itemAt(index).widget() for index in range(prev_index)]
+    widgets = controls_bar.findChildren(QPushButton)
+    assert window.prev_button in widgets
+    assert window.next_button in widgets
+    assert window.dataset_button not in widgets
 
-    assert leading_widgets == [window.dataset_button, window.session_button, window.check_update_button, window.log_viewer_button]
+
+def test_top_bar_uses_centered_compact_container_and_bottom_bar_tracks_chart_width(window: MainWindow) -> None:
+    top_container = window.centralWidget().findChild(QWidget, "topNavBarContainer")
+    top_bar = window.centralWidget().findChild(QWidget, "topNavBar")
+    center_panel = window.splitter.widget(0)
+    bottom_bar = window.centralWidget().findChild(QWidget, "replayControlBar")
+
+    assert top_container is not None
+    assert top_bar is not None
+    assert bottom_bar is not None
+    assert top_container.layout().count() == 1
+    assert top_container.layout().itemAt(0).widget() is top_bar
+    assert bottom_bar.parentWidget() is center_panel
+    assert center_panel.layout().itemAt(1).widget() is bottom_bar
+    assert bottom_bar.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+
+def test_chart_area_is_primary_expanding_region(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(0)
+    top_bar = window.centralWidget().findChild(QWidget, "topNavBar")
+    bottom_bar = center_panel.findChild(QWidget, "replayControlBar")
+
+    assert window.splitter.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert window.splitter.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
+    assert center_panel.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert center_panel.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
+    assert window.chart_widget.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert window.chart_widget.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
+    assert top_bar.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert top_bar.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
+    assert bottom_bar.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert bottom_bar.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
+    assert window.splitter.widget(1).sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+    assert window.splitter.widget(1).sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
+
+
+def test_next_button_is_center_anchor_in_bottom_bar(window: MainWindow) -> None:
+    center_panel = window.splitter.widget(0)
+    controls_bar = center_panel.findChild(QWidget, "replayControlBar")
+    primary_group = controls_bar.findChild(QWidget, "replayPrimaryActions")
+
+    assert primary_group is not None
+    assert controls_bar.layout().itemAt(1).widget() is primary_group
+    assert primary_group.layout().itemAt(1).widget() is window.next_button
+    assert window.next_button.minimumWidth() >= window.prev_button.sizeHint().width()
+
+
+def test_top_bar_and_bottom_bar_use_terminal_strip_heights(window: MainWindow) -> None:
+    top_bar = window.centralWidget().findChild(QWidget, "topNavBar")
+    bottom_bar = window.centralWidget().findChild(QWidget, "replayControlBar")
+
+    assert top_bar.height() >= 60
+    assert bottom_bar.height() >= 50
+
+
+def test_top_bar_height_has_safe_vertical_budget_for_buttons(window: MainWindow) -> None:
+    top_bar = window.centralWidget().findChild(QWidget, "topNavBar")
+    margins = top_bar.layout().contentsMargins()
+    tallest_button = max(
+        [button.minimumHeight() for button in window.timeframe_buttons.values()]
+        + [button.minimumHeight() for button in window._drawing_template_buttons.values()]
+        + [button.minimumHeight() for button in window._drawing_tool_buttons.values()]
+        + [window.dataset_button.minimumHeight(), window.session_button.minimumHeight(), window.settings_button.minimumHeight()]
+    )
+
+    assert top_bar.height() >= tallest_button + margins.top() + margins.bottom()
+
+
+def test_top_toolbar_text_buttons_share_toolbar_role_and_height(window: MainWindow) -> None:
+    toolbar_buttons = [
+        window.dataset_button,
+        window.session_button,
+        window.settings_button,
+        window.log_viewer_button,
+        window.check_update_button,
+        *window._drawing_template_buttons.values(),
+    ]
+
+    for button in toolbar_buttons:
+        assert button.property("role") == "toolbar"
+        assert button.minimumHeight() >= 34 or button.height() >= 34
+
+
+def test_top_toolbar_visual_families_share_aligned_vertical_sizes(window: MainWindow) -> None:
+    assert all(button.minimumHeight() >= 34 or button.height() >= 34 for button in window.timeframe_buttons.values())
+    assert all(button.minimumHeight() >= 34 or button.height() >= 34 for button in window._drawing_template_buttons.values())
+    assert all(button.minimumHeight() >= 34 or button.height() >= 34 for button in [window.dataset_button, window.session_button, window.settings_button, window.log_viewer_button, window.check_update_button])
+    assert all(button.width() == 30 for button in window._drawing_tool_buttons.values())
+
+
+def test_bottom_bar_controls_share_safe_minimum_heights(window: MainWindow) -> None:
+    assert window.prev_button.minimumHeight() >= 30 or window.prev_button.height() >= 30
+    assert window.next_button.minimumHeight() >= 30 or window.next_button.height() >= 30
+    assert window.jump_spin.minimumHeight() >= 30 or window.jump_spin.height() >= 30
+    assert window.reset_view_button.minimumHeight() >= 30 or window.reset_view_button.height() >= 30
+    assert window.clear_lines_button.minimumHeight() >= 30 or window.clear_lines_button.height() >= 30
 
 
 def test_open_log_viewer_reuses_dialog_instance(window: MainWindow) -> None:
@@ -375,6 +636,136 @@ def test_open_log_viewer_reuses_dialog_instance(window: MainWindow) -> None:
     window.open_log_viewer()
 
     assert window._log_viewer_dialog is first_dialog
+
+
+def test_open_settings_dialog_reuses_dialog_instance(window: MainWindow) -> None:
+    window.open_settings_dialog()
+
+    assert window._settings_dialog is not None
+    first_dialog = window._settings_dialog
+    assert first_dialog.isVisible() is True
+
+    window.open_settings_dialog()
+
+    assert window._settings_dialog is first_dialog
+
+
+def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWindow) -> None:
+    dialog = SettingsDialog(window)
+    try:
+        categories = [dialog.category_list.item(index).text() for index in range(dialog.category_list.count())]
+        checkboxes = {checkbox.text() for checkbox in dialog.findChildren(QCheckBox)}
+        buttons = {button.text() for button in dialog.findChildren(QPushButton)}
+
+        assert categories == ["图表显示", "复盘交易", "日志与诊断"]
+        assert {"显示K线序号", "隐藏画线", "显示成交点", "显示交易连线", "不过夜"} <= checkboxes
+        assert {"查看日志", "打开日志目录", "复制日志目录路径"} <= buttons
+        assert dialog.default_order_quantity_spin.value() == window.quantity_spin.value()
+        assert dialog.default_draw_order_quantity_spin.value() == window.draw_quantity_spin.value()
+        assert dialog.trade_marker_alpha_slider.value() == 45
+        assert dialog.focused_trade_marker_alpha_slider.value() == 65
+        assert dialog.default_order_quantity_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
+        assert dialog.default_draw_order_quantity_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
+        label_texts = {label.text() for label in dialog.findChildren(QLabel)}
+        assert "Alt + 左键拖拽" in label_texts
+        assert "悬停 K 线时显示开盘时间和收盘时间" in label_texts
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_settings_dialog_toggles_sync_existing_chart_controls(window: MainWindow) -> None:
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+
+    dialog.bar_count_check.setChecked(False)
+    dialog.hide_drawings_check.setChecked(True)
+    dialog.flatten_check.setChecked(False)
+
+    assert window.bar_count_toggle_button.isChecked() is False
+    assert window.chart_widget.bar_count_labels_visible is False
+    assert window.hide_drawings_toggle_button.isChecked() is True
+    assert window.chart_widget.drawings_hidden is True
+    assert window.flatten_at_session_end_toggle_button.isChecked() is False
+
+    window.bar_count_toggle_button.click()
+
+    assert dialog.bar_count_check.isChecked() is True
+
+
+def test_settings_dialog_toggles_trade_marker_and_link_visibility(window: MainWindow) -> None:
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+
+    dialog.trade_markers_check.setChecked(False)
+    dialog.trade_links_check.setChecked(False)
+
+    saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
+    assert window.show_trade_markers_check.isChecked() is False
+    assert window.chart_widget._trade_markers_visible is False
+    assert window.show_trade_links_check.isChecked() is False
+    assert window.chart_widget._trade_links_visible is False
+    assert saved["trade_markers_visible"] is False
+    assert saved["trade_links_visible"] is False
+
+
+def test_settings_dialog_updates_default_quantities_and_persists(window: MainWindow) -> None:
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+
+    dialog.default_order_quantity_spin.setValue(3)
+    dialog.default_draw_order_quantity_spin.setValue(5)
+
+    saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
+    assert window.quantity_spin.value() == 3
+    assert window.draw_quantity_spin.value() == 5
+    assert saved["default_order_quantity"] == 3
+    assert saved["default_draw_order_quantity"] == 5
+
+
+def test_settings_dialog_updates_trade_marker_alpha_and_persists(window: MainWindow) -> None:
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+
+    dialog.trade_marker_alpha_slider.setValue(55)
+    dialog.focused_trade_marker_alpha_slider.setValue(75)
+
+    saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
+    assert window.chart_widget._trade_marker_opacity == pytest.approx(0.55)
+    assert window.chart_widget._focused_trade_marker_opacity == pytest.approx(0.75)
+    assert saved["trade_marker_alpha"] == pytest.approx(0.55)
+    assert saved["focused_trade_marker_alpha"] == pytest.approx(0.75)
+
+
+def test_settings_dialog_log_button_reuses_log_viewer(window: MainWindow) -> None:
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+
+    dialog.open_log_button.click()
+    first_dialog = window._log_viewer_dialog
+    dialog.open_log_button.click()
+
+    assert first_dialog is not None
+    assert window._log_viewer_dialog is first_dialog
+
+
+def test_settings_dialog_log_directory_actions(window: MainWindow, app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    opened_urls: list[str] = []
+    monkeypatch.setattr("barbybar.ui.main_window.QDesktopServices.openUrl", lambda url: opened_urls.append(url.toLocalFile()) or True)
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+
+    dialog.open_log_dir_button.click()
+    dialog.copy_log_dir_button.click()
+
+    assert [Path(path) for path in opened_urls] == [paths.default_log_dir()]
+    assert QApplication.clipboard().text() == str(paths.default_log_dir())
 
 
 def test_log_viewer_dialog_reads_selected_log_file(app: QApplication, tmp_path: Path) -> None:
@@ -442,6 +833,62 @@ def test_main_window_loads_hide_drawings_toggle_from_global_ui_settings(app: QAp
     try:
         assert main_window.hide_drawings_toggle_button.isChecked() is True
         assert main_window.chart_widget.drawings_hidden is True
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_loads_trade_visibility_from_global_ui_settings(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_ui_settings_path().write_text('{"trade_markers_visible": false, "trade_links_visible": false}', encoding="utf-8")
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.show_trade_markers_check.isChecked() is False
+        assert main_window.chart_widget._trade_markers_visible is False
+        assert main_window.show_trade_links_check.isChecked() is False
+        assert main_window.chart_widget._trade_links_visible is False
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_loads_default_quantities_from_global_ui_settings(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_ui_settings_path().write_text('{"default_order_quantity": 3, "default_draw_order_quantity": 5}', encoding="utf-8")
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.quantity_spin.value() == 3
+        assert main_window.draw_quantity_spin.value() == 5
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_loads_trade_marker_alpha_from_global_ui_settings(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(case_dir / "app-data"))
+    paths.default_ui_settings_path().write_text('{"trade_marker_alpha": 0.55, "focused_trade_marker_alpha": 0.75}', encoding="utf-8")
+    repo = Repository(case_dir / "barbybar.db")
+    main_window = MainWindow(repo)
+    try:
+        assert main_window.chart_widget._trade_marker_opacity == pytest.approx(0.55)
+        assert main_window.chart_widget._focused_trade_marker_opacity == pytest.approx(0.75)
     finally:
         main_window.close()
         main_window.deleteLater()
@@ -568,16 +1015,17 @@ def test_top_area_does_not_keep_empty_top_bar_spacing(window: MainWindow) -> Non
     center_panel = window.splitter.widget(0)
     layout = center_panel.layout()
 
-    assert layout.contentsMargins().top() <= 2
-    assert layout.spacing() <= 4
+    assert layout.contentsMargins().top() == 0
+    assert layout.spacing() == 6
 
 
 def test_toolbar_group_margins_are_compact(window: MainWindow) -> None:
     for group in [window._timeframe_toolbar_group, window._template_toolbar_group, window._drawing_toolbar_group]:
         assert group is not None
         margins = group.layout().contentsMargins()
-        assert margins.top() <= 4
-        assert margins.bottom() <= 4
+        assert margins.top() == 0
+        assert margins.bottom() == 0
+        assert margins.right() == 10
 
 
 def test_set_timeframe_choices_supports_1d(window: MainWindow) -> None:
@@ -915,14 +1363,36 @@ def test_draw_order_controls_sync_position_state(window: MainWindow) -> None:
 
     window._sync_draw_order_controls()
 
+    assert window._trade_action_buttons["buy"].isEnabled() is True
+    assert window._trade_action_buttons["sell"].isEnabled() is True
+    assert window._trade_action_buttons["close"].isEnabled() is False
+    assert window._trade_action_buttons["reverse"].isEnabled() is False
     assert window._draw_order_buttons[OrderLineType.EXIT].isEnabled() is False
     assert window._draw_order_buttons[OrderLineType.REVERSE].isEnabled() is False
 
     window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=101)
     window._sync_draw_order_controls()
 
+    assert window._trade_action_buttons["close"].isEnabled() is True
+    assert window._trade_action_buttons["reverse"].isEnabled() is True
     assert window._draw_order_buttons[OrderLineType.EXIT].isEnabled() is True
     assert window._draw_order_buttons[OrderLineType.REVERSE].isEnabled() is True
+
+
+def test_reverse_trade_action_uses_opposite_open_action(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    captured: list[ActionType] = []
+    monkeypatch.setattr(window, "record_action", lambda action_type: captured.append(action_type))
+
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=101)
+    window.record_reverse_action()
+
+    assert captured[-1] is ActionType.OPEN_SHORT
+
+    window.engine.record_action(ActionType.OPEN_SHORT, quantity=1, price=101)
+    window.record_reverse_action()
+
+    assert captured[-1] is ActionType.OPEN_LONG
 
 
 def test_update_ui_from_engine_syncs_trade_markers(window: MainWindow) -> None:
@@ -1247,6 +1717,28 @@ def test_update_action_dialog_can_render_single_button_notice() -> None:
         dialog.close()
 
 
+def test_update_action_dialog_uses_shared_dialog_card_and_button_roles() -> None:
+    dialog = UpdateActionDialog(
+        "删除案例",
+        "确定删除当前案例？",
+        "删除后无法恢复。",
+        "详细说明",
+        accept_text="删除",
+        cancel_text="取消",
+        accept_role="danger",
+    )
+    try:
+        assert "QLabel[role='dialogHeading']" in dialog.styleSheet()
+        card = dialog.findChild(QWidget, "updateDialogCard")
+        assert card is not None
+        assert card.property("dialogCard") is True
+        assert dialog.accept_button.property("role") == "danger"
+        assert dialog.cancel_button is not None
+        assert dialog.cancel_button.property("role") == "secondary"
+    finally:
+        dialog.close()
+
+
 def test_handle_update_download_finished_shows_error_and_stays_open_when_launch_fails(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     window._active_update_download_token = 1
     update_info = UpdateInfo(
@@ -1375,6 +1867,21 @@ def test_order_preview_cancel_resets_button_state(window: MainWindow) -> None:
     window.chart_widget.cancel_order_preview()
 
     assert window._draw_order_buttons[OrderLineType.ENTRY_LONG].isChecked() is False
+    assert window.chart_widget.interaction_mode is InteractionMode.BROWSE
+
+
+def test_clicking_active_draw_order_button_again_cancels_preview(window: MainWindow) -> None:
+    _seed_engine(window)
+    button = window._draw_order_buttons[OrderLineType.ENTRY_LONG]
+
+    button.click()
+    assert window.chart_widget.preview_order_type == OrderLineType.ENTRY_LONG.value
+    assert button.isChecked() is True
+
+    button.click()
+
+    assert window.chart_widget.preview_order_type is None
+    assert button.isChecked() is False
     assert window.chart_widget.interaction_mode is InteractionMode.BROWSE
 
 
@@ -1510,12 +2017,14 @@ def test_text_drawing_cancel_with_empty_text_deletes_placeholder(window: MainWin
 
 def test_text_drawing_dialog_focuses_text_input(app: QApplication) -> None:
     dialog = DrawingPropertiesDialog(
-        ChartDrawing(tool_type=DrawingToolType.TEXT, anchors=[DrawingAnchor(10.0, 100.0)], style={"text": ""})
+        ChartDrawing(tool_type=DrawingToolType.TEXT, anchors=[DrawingAnchor(10.0, 100.0)], style={"text": "hello"})
     )
     dialog.show()
     app.processEvents()
+    dialog._focus_text_input()
+    app.processEvents()
 
-    assert dialog.text_edit.hasFocus() is True
+    assert dialog.text_edit.textCursor().position() == len(dialog.text_edit.toPlainText())
 
     dialog.close()
     dialog.deleteLater()
@@ -1553,6 +2062,8 @@ def test_drawing_dialog_exposes_line_opacity_for_line_tools() -> None:
 
     assert dialog.line_opacity_spin.value() == 0.45
     assert payload["opacity"] == 0.45
+    assert dialog.width_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
+    assert dialog.line_opacity_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
     dialog.close()
     dialog.deleteLater()
 
@@ -1761,11 +2272,11 @@ def test_update_ui_populates_training_stats_and_trade_history(window: MainWindow
 
     window._update_ui_from_engine()
 
+    assert window.training_stats_headline.text() == "总交易 1 · 胜率 100%"
     assert "Expectancy" in window.training_stats_label.text()
-    assert "总交易 1 笔" in window.training_stats_label.text()
-    assert "做多 1 次" in window.training_stats_label.text()
-    assert "做空 0 次" in window.training_stats_label.text()
-    assert "总盈亏 3.00" in window.training_stats_label.text()
+    assert "PnL 3.00" in window.training_stats_label.text()
+    assert "盈亏比" in window.training_stats_label.text()
+    assert window.training_stats_label.text().count("\n") == 1
     assert window.open_trade_history_button.isEnabled() is True
 
     window.open_trade_history_dialog()

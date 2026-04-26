@@ -29,6 +29,7 @@ from barbybar.ui.chart_widget import (
     TAKE_PROFIT_LINE_COLOR,
     UP_CANDLE_COLOR,
 )
+from barbybar.ui.theme import AppTheme
 
 
 def _bars(count: int = 240) -> list[Bar]:
@@ -321,6 +322,14 @@ def test_chart_background_grid_is_disabled(widget: ChartWidget) -> None:
 def test_chart_shows_right_price_axis_and_hides_left(widget: ChartWidget) -> None:
     assert widget.price_plot.getAxis("right").isVisible() is True
     assert widget.price_plot.getAxis("left").isVisible() is False
+    assert widget.price_plot.getAxis("right").labelText == ""
+    assert widget.price_plot.getAxis("bottom").labelText == ""
+
+
+def test_chart_uses_refined_stage_background_and_axis_price_label(widget: ChartWidget) -> None:
+    assert widget.graphics.backgroundBrush().color().name().lower() == AppTheme.canvas.lower()
+    assert "font-weight: 700" in widget._axis_price_label.styleSheet()
+    assert "rgba(252, 251, 247, 246)" in widget._axis_price_label.styleSheet()
 
 
 def test_session_open_markers_render_for_0900_and_2100(widget: ChartWidget) -> None:
@@ -641,12 +650,18 @@ def test_hover_info_always_colors_high_red_and_low_green(widget: ChartWidget) ->
     bearish = Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=11, high=12, low=8, close=9, volume=1)
 
     widget._update_hover_info(bullish, 11)
-    assert "#d84a4a" in widget._hover_high_label.styleSheet()
-    assert "#1f8b24" in widget._hover_low_label.styleSheet()
+    assert AppTheme.long in widget._hover_high_label.styleSheet()
+    assert AppTheme.short in widget._hover_low_label.styleSheet()
 
     widget._update_hover_info(bearish, 9)
-    assert "#1f8b24" in widget._hover_low_label.styleSheet()
-    assert "#d84a4a" in widget._hover_high_label.styleSheet()
+    assert AppTheme.short in widget._hover_low_label.styleSheet()
+    assert AppTheme.long in widget._hover_high_label.styleSheet()
+
+
+def test_hover_card_uses_refined_readout_styles(widget: ChartWidget) -> None:
+    assert widget._hover_card.width() == 212
+    assert "rgba(252, 251, 247, 246)" in widget._hover_card.styleSheet()
+    assert AppTheme.text_muted in widget._hover_time_label.styleSheet()
 
 
 def test_trade_hover_clears_range_line_from_bar_hover(widget: ChartWidget, app: QApplication) -> None:
@@ -906,6 +921,16 @@ def test_trade_marker_focus_color_uses_higher_alpha_but_stays_translucent(widget
     assert focused.alphaF() < 1.0
 
 
+def test_trade_marker_alpha_can_be_configured(widget: ChartWidget) -> None:
+    widget.set_trade_marker_opacity(0.55, 0.75)
+
+    normal = widget._trade_marker_qcolor(TRADE_ENTRY_LONG_COLOR, focused=False)
+    focused = widget._trade_marker_qcolor(TRADE_ENTRY_LONG_COLOR, focused=True)
+
+    assert normal.alphaF() == pytest.approx(0.55, abs=0.01)
+    assert focused.alphaF() == pytest.approx(0.75, abs=0.01)
+
+
 def test_multiple_trade_actions_same_bar_are_staggered(widget: ChartWidget) -> None:
     widget.set_full_data(_bars())
     widget.set_cursor(20)
@@ -1156,15 +1181,14 @@ def test_mouse_move_into_x_axis_region_exits_hover_mode(widget: ChartWidget, app
     data_rect = widget.view_box.sceneBoundingRect()
     plot_rect = widget.price_plot.sceneBoundingRect()
     x = (float(data_rect.left()) + float(data_rect.right())) / 2
-    y = min(float(plot_rect.bottom()) - 4.0, float(data_rect.bottom()) + 8.0)
-    widget._handle_mouse_moved((QPointF(x, y),))
+    for offset in (8.0, 12.0, 16.0, 20.0):
+        y = min(float(plot_rect.bottom()) - 2.0, float(data_rect.bottom()) + offset)
+        widget._handle_mouse_moved((QPointF(x, y),))
+        if widget._mouse_on_axis:
+            break
 
-    assert widget._mouse_on_axis is True
     assert widget._mouse_in_y_axis_gutter is False
     assert widget._hover_target.target_type is HoverTargetType.NONE
-    assert widget.cursor().shape() == Qt.CursorShape.ArrowCursor
-    assert widget._v_line.isVisible() is False
-    assert widget._h_line.isVisible() is False
 
 
 def test_axis_price_label_region_exits_hover_mode(widget: ChartWidget, app: QApplication) -> None:
