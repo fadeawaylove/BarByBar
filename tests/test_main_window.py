@@ -373,7 +373,7 @@ def test_right_panel_display_section_collects_low_priority_chart_toggles(window:
 
 
 def test_training_stats_default_to_brief_two_line_summary(window: MainWindow) -> None:
-    assert window.training_stats_headline.text() == "总交易 0 · 胜率 --"
+    assert window.training_stats_headline.text() == "总交易 0 · 胜率 -- · 盈亏比 --"
     assert window.training_stats_label.text() == "总盈亏 0.00 · 期望值 --"
     assert window.training_stats_label.text().count("\n") == 0
     assert window.training_stats_meta.isHidden() is True
@@ -1776,7 +1776,7 @@ def test_confirm_update_download_uses_custom_dialog(window: MainWindow, monkeypa
     update_info = UpdateInfo(
         version="0.3.0",
         tag="v0.3.0",
-        release_notes="Fix A\nFix B",
+        release_notes="## 本次改动\n- Fix A\n- [Fix B](https://example.com/fix-b)",
         installer_url="https://example.com/BarByBar-v0.3.0-windows-x64-setup.exe",
         installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
     )
@@ -1795,7 +1795,7 @@ def test_confirm_update_download_uses_custom_dialog(window: MainWindow, monkeypa
     assert window._confirm_update_download(update_info) is True
     assert captured["heading"] == "BarByBar 0.3.0 已可下载"
     assert "当前版本" in captured["summary"]
-    assert "Fix A" in captured["detail"]
+    assert captured["detail"] == "本次改动\n- Fix A\n- Fix B: https://example.com/fix-b"
     assert captured["accept_text"] == "开始下载"
     assert captured["cancel_text"] == "暂不更新"
 
@@ -1972,6 +1972,7 @@ def test_update_action_dialog_hides_detail_panel_when_empty() -> None:
     try:
         assert dialog.heading_label.text() == "0.3.0 已下载完成"
         assert dialog.summary_label.text() == "关闭当前程序后将启动安装器。"
+        assert dialog.detail_label.isHidden() is True
         assert dialog.detail_text.isHidden() is True
     finally:
         dialog.close()
@@ -1989,6 +1990,25 @@ def test_update_action_dialog_can_render_single_button_notice() -> None:
     try:
         assert dialog.accept_button.text() == "知道了"
         assert dialog.cancel_button is None
+        assert dialog.eyebrow_label.text() == "检查更新"
+        assert dialog.accept_button.minimumWidth() >= 148
+    finally:
+        dialog.close()
+
+
+def test_update_action_dialog_uses_stable_footer_button_widths() -> None:
+    dialog = UpdateActionDialog(
+        "发现新版本",
+        "BarByBar 0.5.1 已可下载",
+        "当前版本 0.5.0。",
+        "更新说明",
+        accept_text="开始下载",
+        cancel_text="暂不更新",
+    )
+    try:
+        assert dialog.accept_button.minimumWidth() >= 112
+        assert dialog.cancel_button is not None
+        assert dialog.cancel_button.minimumWidth() >= 112
     finally:
         dialog.close()
 
@@ -2548,10 +2568,9 @@ def test_update_ui_populates_training_stats_and_trade_history(window: MainWindow
 
     window._update_ui_from_engine()
 
-    assert window.training_stats_headline.text() == "总交易 1 · 胜率 100%"
+    assert window.training_stats_headline.text() == "总交易 1 · 胜率 100% · 盈亏比 3.00"
     assert "期望值" in window.training_stats_label.text()
     assert "总盈亏 3.00" in window.training_stats_label.text()
-    assert "盈亏比" in window.training_stats_label.text()
     assert "盈利因子" in window.training_stats_label.text()
     assert "均持仓" in window.training_stats_label.text()
     assert window.training_stats_label.text().count("\n") == 2

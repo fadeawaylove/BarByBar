@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -435,49 +436,75 @@ class UpdateActionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
-        self.setMinimumWidth(520)
+        has_detail = bool(detail.strip())
+        single_action = cancel_text is None
+        self.setMinimumWidth(520 if single_action and not has_detail else 580)
         self.setStyleSheet(dialog_stylesheet())
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout.setContentsMargins(18, 18, 18, 18)
         card = QWidget(self)
         card.setObjectName("updateDialogCard")
         card.setProperty("dialogCard", True)
         card.setStyleSheet(dialog_card_stylesheet())
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(20, 18, 20, 18)
-        card_layout.setSpacing(10)
+        card_layout.setContentsMargins(24, 22, 24, 22)
+        card_layout.setSpacing(12)
 
-        eyebrow = QLabel(title)
-        eyebrow.setProperty("role", "dialogEyebrow")
+        self.eyebrow_label = QLabel(title)
+        self.eyebrow_label.setProperty("role", "dialogEyebrow")
         self.heading_label = QLabel(heading)
         self.heading_label.setWordWrap(True)
         self.heading_label.setProperty("role", "dialogHeading")
         self.summary_label = QLabel(summary)
         self.summary_label.setWordWrap(True)
         self.summary_label.setProperty("role", "dialogSummary")
+        self.detail_label = QLabel("更新说明")
+        self.detail_label.setProperty("role", "dialogSectionTitle")
         self.detail_text = QTextEdit()
         self.detail_text.setReadOnly(True)
+        self.detail_text.setProperty("role", "dialogDetail")
         self.detail_text.setPlainText(detail)
-        self.detail_text.setVisible(bool(detail.strip()))
-        self.detail_text.setMinimumHeight(140 if detail.strip() else 0)
+        self.detail_label.setVisible(has_detail)
+        self.detail_text.setVisible(has_detail)
+        self.detail_text.setMinimumHeight(172 if has_detail else 0)
 
-        buttons = QDialogButtonBox(self)
-        self.accept_button = buttons.addButton(accept_text, QDialogButtonBox.ButtonRole.AcceptRole)
+        footer_layout = QHBoxLayout()
+        footer_layout.setContentsMargins(0, 4, 0, 0)
+        footer_layout.setSpacing(10)
+
+        self.accept_button = QPushButton(accept_text, card)
         self.accept_button.setProperty("role", accept_role)
         self.accept_button.clicked.connect(self.accept)
+        self.accept_button.setMinimumWidth(148 if single_action else 120)
+        self.accept_button.setMinimumHeight(AppTheme.control_height_md)
+        self.accept_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_button: QPushButton | None = None
         if cancel_text:
-            self.cancel_button = buttons.addButton(cancel_text, QDialogButtonBox.ButtonRole.RejectRole)
+            footer_layout.addStretch(1)
+            self.cancel_button = QPushButton(cancel_text, card)
             self.cancel_button.setProperty("role", "secondary")
             self.cancel_button.clicked.connect(self.reject)
+            self.cancel_button.setMinimumWidth(120)
+            self.cancel_button.setMinimumHeight(AppTheme.control_height_md)
+            self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            footer_layout.addWidget(self.cancel_button)
+        else:
+            footer_layout.addStretch(1)
+        footer_layout.addWidget(self.accept_button)
+        footer_layout.addStretch(1 if single_action else 0)
 
-        card_layout.addWidget(eyebrow)
+        card_layout.addWidget(self.eyebrow_label)
         card_layout.addWidget(self.heading_label)
         card_layout.addWidget(self.summary_label)
-        card_layout.addWidget(self.detail_text)
-        card_layout.addWidget(buttons)
+        if has_detail:
+            card_layout.addWidget(self.detail_label)
+            card_layout.addWidget(self.detail_text)
+        else:
+            card_layout.addSpacing(2)
+        card_layout.addLayout(footer_layout)
         root_layout.addWidget(card)
+        self.resize(620, 408 if has_detail else 210)
 
 
 class InlineErrorDialog(QDialog):
@@ -2337,7 +2364,7 @@ class MainWindow(QMainWindow):
         stats_layout.setSpacing(3)
         stats_title = QLabel("统计")
         stats_title.setProperty("role", "sidebarCardTitle")
-        self.training_stats_headline = QLabel("总交易 0 · 胜率 --")
+        self.training_stats_headline = QLabel("总交易 0 · 胜率 -- · 盈亏比 --")
         self.training_stats_headline.setProperty("role", "statsHeadline")
         self.training_stats_meta = QLabel("")
         self.training_stats_meta.setProperty("role", "statsMeta")
@@ -2739,7 +2766,7 @@ class MainWindow(QMainWindow):
         self.jump_spin.setValue(0)
         self.jump_spin.blockSignals(False)
         self.stats_label.setText("方向 空仓\n仓位 0 · 均价 0\n已实现盈亏 0.00")
-        self.training_stats_headline.setText("总交易 0 · 胜率 --")
+        self.training_stats_headline.setText("总交易 0 · 胜率 -- · 盈亏比 --")
         self.training_stats_meta.clear()
         self.training_stats_meta.hide()
         self.training_stats_label.setText("总盈亏 0.00 · 期望值 --")
@@ -2981,7 +3008,7 @@ class MainWindow(QMainWindow):
 
     def _update_training_stats(self) -> None:
         if not self.engine:
-            self.training_stats_headline.setText("总交易 0 · 胜率 --")
+            self.training_stats_headline.setText("总交易 0 · 胜率 -- · 盈亏比 --")
             self.training_stats_meta.clear()
             self.training_stats_meta.hide()
             self.training_stats_label.setText("总盈亏 0.00 · 期望值 --")
@@ -2994,14 +3021,14 @@ class MainWindow(QMainWindow):
                 f"止损覆盖 {stop_rate}"
         )
         self.training_stats_headline.setText(
-            f"总交易 {stats.total_trades} · 胜率 {stats.win_rate:.0%}"
+            f"总交易 {stats.total_trades} · 胜率 {stats.win_rate:.0%} · 盈亏比 {stats.payoff_ratio:.2f}"
         )
         self.training_stats_meta.setText(meta_text)
         self.training_stats_meta.setVisible(True)
         self.training_stats_label.setText(
             (
                 f"总盈亏 {stats.total_pnl:.2f} · 期望值 {stats.expectancy:.2f} · 均笔 {stats.average_pnl:.2f}\n"
-                f"盈亏比 {stats.payoff_ratio:.2f} · 盈利因子 {stats.profit_factor:.2f} · 回撤 {stats.max_drawdown:.2f}\n"
+                f"盈利因子 {stats.profit_factor:.2f} · 回撤 {stats.max_drawdown:.2f}\n"
                 f"均持仓 {stats.avg_holding_bars:.1f} 根 · 连胜 {stats.max_win_streak} / 连亏 {stats.max_loss_streak}"
             )
         )
@@ -3426,7 +3453,27 @@ class MainWindow(QMainWindow):
         stripped = notes.strip()
         if not stripped:
             return "本次发布未提供更新说明。"
-        lines = [line.rstrip() for line in stripped.splitlines()]
+        lines: list[str] = []
+        for raw_line in stripped.splitlines():
+            line = raw_line.rstrip()
+            if not line.strip():
+                if lines and lines[-1]:
+                    lines.append("")
+                continue
+            text = re.sub(r"\[(.*?)\]\((https?://[^)]+)\)", r"\1: \2", line.strip())
+            text = re.sub(r"^#{1,6}\s*", "", text)
+            text = re.sub(r"^[-*+]\s+", "- ", text)
+            text = re.sub(r"^>\s*", "", text)
+            text = text.replace("`", "")
+            if text.startswith("```"):
+                continue
+            lines.append(text)
+        while lines and not lines[0]:
+            lines.pop(0)
+        while lines and not lines[-1]:
+            lines.pop()
+        if not lines:
+            return "本次发布未提供更新说明。"
         summary = "\n".join(lines[:12]).strip()
         if len(lines) > 12:
             summary += "\n..."
@@ -3465,6 +3512,7 @@ class MainWindow(QMainWindow):
             detail,
             accept_text="知道了",
             cancel_text=None,
+            accept_role="secondary",
             parent=self,
         )
         dialog.exec()
@@ -3477,6 +3525,7 @@ class MainWindow(QMainWindow):
             detail,
             accept_text="知道了",
             cancel_text=None,
+            accept_role="secondary",
             parent=self,
         )
         dialog.exec()

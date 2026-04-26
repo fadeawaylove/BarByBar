@@ -249,6 +249,11 @@ QLabel[role='dialogSummary'] {{
     color: {AppTheme.text_muted};
     font-size: 13px;
 }}
+QLabel[role='dialogSectionTitle'] {{
+    color: {AppTheme.primary};
+    font-size: 12px;
+    font-weight: 800;
+}}
 QLabel[role='dialogStatus'] {{
     color: {AppTheme.text_muted};
     font-size: 12px;
@@ -437,6 +442,14 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {{
     color: {AppTheme.text};
     padding: 4px 8px;
     selection-background-color: {AppTheme.primary_soft};
+}}
+QTextEdit[role='dialogDetail'] {{
+    background: {AppTheme.surface};
+    border: 1px solid {AppTheme.border};
+    border-radius: {AppTheme.radius_md}px;
+    padding: 10px 12px;
+    font-size: 12px;
+    line-height: 1.5;
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QTextEdit:focus {{
     border-color: {AppTheme.primary};
