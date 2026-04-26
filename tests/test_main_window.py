@@ -29,6 +29,7 @@ from barbybar.ui.main_window import (
     SettingsDialog,
     UpdateActionDialog,
 )
+from barbybar.ui.theme import AppTheme
 from barbybar.update_service import UpdateInfo
 
 
@@ -2031,6 +2032,23 @@ def test_update_action_dialog_uses_shared_dialog_card_and_button_roles() -> None
         assert dialog.accept_button.property("role") == "danger"
         assert dialog.cancel_button is not None
         assert dialog.cancel_button.property("role") == "secondary"
+    finally:
+        dialog.close()
+
+
+def test_update_action_dialog_primary_button_uses_explicit_filled_style() -> None:
+    dialog = UpdateActionDialog(
+        "安装更新",
+        "0.5.4 已下载完成",
+        "关闭当前程序后将启动安装器。",
+        "安装包信息",
+        accept_text="立即安装",
+        cancel_text="稍后安装",
+    )
+    try:
+        style = dialog.accept_button.styleSheet()
+        assert AppTheme.primary in style
+        assert AppTheme.text_inverse in style
     finally:
         dialog.close()
 

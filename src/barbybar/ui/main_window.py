@@ -421,6 +421,35 @@ class UpdateDownloadWorker(QObject):
 
 
 class UpdateActionDialog(QDialog):
+    @staticmethod
+    def _button_stylesheet(role: str) -> str:
+        if role == "danger":
+            return (
+                f"background: {AppTheme.danger};"
+                f"border: 1px solid {AppTheme.danger};"
+                f"border-radius: 10px;"
+                f"color: {AppTheme.text_inverse};"
+                "font-weight: 800;"
+                "padding: 7px 14px;"
+            )
+        if role == "secondary":
+            return (
+                f"background: {AppTheme.primary_tint};"
+                f"border: 1px solid {AppTheme.border};"
+                f"border-radius: 10px;"
+                f"color: {AppTheme.primary};"
+                "font-weight: 700;"
+                "padding: 7px 14px;"
+            )
+        return (
+            f"background: {AppTheme.primary};"
+            f"border: 1px solid {AppTheme.primary};"
+            f"border-radius: 10px;"
+            f"color: {AppTheme.text_inverse};"
+            "font-weight: 800;"
+            "padding: 7px 14px;"
+        )
+
     def __init__(
         self,
         title: str,
@@ -475,6 +504,7 @@ class UpdateActionDialog(QDialog):
 
         self.accept_button = QPushButton(accept_text, card)
         self.accept_button.setProperty("role", accept_role)
+        self.accept_button.setStyleSheet(self._button_stylesheet(accept_role))
         self.accept_button.clicked.connect(self.accept)
         self.accept_button.setMinimumWidth(148 if single_action else 120)
         self.accept_button.setMinimumHeight(AppTheme.control_height_md)
@@ -484,6 +514,7 @@ class UpdateActionDialog(QDialog):
             footer_layout.addStretch(1)
             self.cancel_button = QPushButton(cancel_text, card)
             self.cancel_button.setProperty("role", "secondary")
+            self.cancel_button.setStyleSheet(self._button_stylesheet("secondary"))
             self.cancel_button.clicked.connect(self.reject)
             self.cancel_button.setMinimumWidth(120)
             self.cancel_button.setMinimumHeight(AppTheme.control_height_md)
