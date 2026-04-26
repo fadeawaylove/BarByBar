@@ -1563,7 +1563,7 @@ class ChartWidget(QWidget):
     def _hover_bar_time_text(self, bar: Bar) -> str:
         open_time = bar.open_timestamp or bar.close_timestamp
         close_time = bar.close_timestamp
-        return f"开 {open_time:%Y-%m-%d %H:%M} | 收 {close_time:%Y-%m-%d %H:%M}"
+        return f"开 {open_time:%Y-%m-%d %H:%M}\n收 {close_time:%Y-%m-%d %H:%M}"
 
     def _update_trade_hover_info(self, detail_lines: list[str]) -> None:
         labels = [
@@ -1740,7 +1740,7 @@ class ChartWidget(QWidget):
     def _position_hover_card(self) -> None:
         if not hasattr(self, "_hover_card"):
             return
-        x = max(self._hover_card_margin, self.width() - self._hover_card.width() - self._hover_card_margin)
+        x = self._hover_card_margin
         y = self._hover_card_margin
         self._hover_card.move(x, y)
 

@@ -652,7 +652,7 @@ def test_hover_info_contains_ohlc_and_mouse_price(widget: ChartWidget) -> None:
     widget._update_hover_info(bars[5], 123.45)
 
     assert not widget._hover_card.isHidden()
-    assert widget._hover_time_label.text() == "开 2025-01-01 09:04 | 收 2025-01-01 09:05"
+    assert widget._hover_time_label.text() == "开 2025-01-01 09:04\n收 2025-01-01 09:05"
     assert widget._hover_open_label.text() == "开 104.1"
     assert widget._hover_high_label.text() == "高 106.1"
     assert widget._hover_low_label.text() == "低 103.4"
@@ -677,6 +677,14 @@ def test_hover_card_uses_refined_readout_styles(widget: ChartWidget) -> None:
     assert widget._hover_card.width() == 212
     assert "rgba(252, 251, 247, 246)" in widget._hover_card.styleSheet()
     assert AppTheme.text_muted in widget._hover_time_label.styleSheet()
+
+
+def test_hover_card_is_positioned_at_top_left_margin(widget: ChartWidget) -> None:
+    widget.resize(900, 600)
+    widget._position_hover_card()
+
+    assert widget._hover_card.x() == widget._hover_card_margin
+    assert widget._hover_card.y() == widget._hover_card_margin
 
 
 def test_trade_hover_clears_range_line_from_bar_hover(widget: ChartWidget, app: QApplication) -> None:
