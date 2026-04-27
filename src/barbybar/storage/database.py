@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS order_lines (
 CREATE TABLE IF NOT EXISTS drawings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
+    chart_timeframe TEXT NOT NULL DEFAULT '1m',
     tool_type TEXT NOT NULL,
     anchors_json TEXT NOT NULL DEFAULT '[]',
     style_json TEXT NOT NULL DEFAULT '{}',
@@ -166,6 +167,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             CREATE TABLE IF NOT EXISTS drawings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id INTEGER NOT NULL,
+                chart_timeframe TEXT NOT NULL DEFAULT '1m',
                 tool_type TEXT NOT NULL,
                 anchors_json TEXT NOT NULL DEFAULT '[]',
                 style_json TEXT NOT NULL DEFAULT '{}',
@@ -175,5 +177,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )
             """
         )
+        drawing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(drawings)").fetchall()}
+    if drawing_columns and "chart_timeframe" not in drawing_columns:
+        conn.execute("ALTER TABLE drawings ADD COLUMN chart_timeframe TEXT NOT NULL DEFAULT '1m'")
+        conn.execute(
+            """
+            UPDATE drawings
+            SET chart_timeframe = COALESCE(
+                (
+                    SELECT sessions.chart_timeframe
+                    FROM sessions
+                    WHERE sessions.id = drawings.session_id
+                ),
+                '1m'
+            )
+            WHERE chart_timeframe = '1m'
+            """
+        )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_drawings_session_timeframe ON drawings(session_id, chart_timeframe)")
     conn.execute("UPDATE datasets SET display_name = symbol WHERE display_name = ''")
     conn.commit()

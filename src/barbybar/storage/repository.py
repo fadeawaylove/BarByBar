@@ -392,10 +392,14 @@ class Repository:
                     ),
                 )
         if drawings is not None:
+            drawing_timeframe = normalize_timeframe(session.chart_timeframe)
             incoming_ids = {drawing.id for drawing in drawings if drawing.id is not None}
             existing_ids = {
                 row["id"]
-                for row in self.conn.execute("SELECT id FROM drawings WHERE session_id = ?", (session.id,)).fetchall()
+                for row in self.conn.execute(
+                    "SELECT id FROM drawings WHERE session_id = ? AND chart_timeframe = ?",
+                    (session.id, drawing_timeframe),
+                ).fetchall()
             }
             stale_ids = existing_ids - incoming_ids
             if stale_ids:
@@ -407,10 +411,10 @@ class Repository:
                 if drawing.id is None:
                     cursor = self.conn.execute(
                         """
-                        INSERT INTO drawings(session_id, tool_type, anchors_json, style_json)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO drawings(session_id, chart_timeframe, tool_type, anchors_json, style_json)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
-                        (session.id, drawing.tool_type.value, anchors_json, style_json),
+                        (session.id, drawing_timeframe, drawing.tool_type.value, anchors_json, style_json),
                     )
                     drawing.id = int(cursor.lastrowid)
                     drawing.session_id = session.id
@@ -418,10 +422,10 @@ class Repository:
                 self.conn.execute(
                     """
                     UPDATE drawings
-                    SET tool_type = ?, anchors_json = ?, style_json = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ? AND session_id = ?
+                    SET chart_timeframe = ?, tool_type = ?, anchors_json = ?, style_json = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND session_id = ? AND chart_timeframe = ?
                     """,
-                    (drawing.tool_type.value, anchors_json, style_json, drawing.id, session.id),
+                    (drawing_timeframe, drawing.tool_type.value, anchors_json, style_json, drawing.id, session.id, drawing_timeframe),
                 )
         self.conn.commit()
         return self.get_session(session.id)
@@ -529,8 +533,11 @@ class Repository:
             for row in rows
         ]
 
-    def get_drawings(self, session_id: int) -> list[ChartDrawing]:
-        rows = self.conn.execute("SELECT * FROM drawings WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()
+    def get_drawings(self, session_id: int, chart_timeframe: str) -> list[ChartDrawing]:
+        rows = self.conn.execute(
+            "SELECT * FROM drawings WHERE session_id = ? AND chart_timeframe = ? ORDER BY id",
+            (session_id, normalize_timeframe(chart_timeframe)),
+        ).fetchall()
         return [
             ChartDrawing(
                 id=row["id"],

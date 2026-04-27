@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from math import floor
 import re
 import subprocess
 import threading
@@ -106,6 +107,7 @@ EXTEND_WINDOW_AFTER = 150
 WINDOW_BUFFER_THRESHOLD = 20
 AUTO_SAVE_DELAY_MS = 800
 MAX_DRAWING_TEMPLATE_SHORTCUTS = 8
+VIEWPORT_EXTENSION_THRESHOLD_BARS = 10.0
 CANDLE_COLOR_SETTING_KEYS = (
     "candle_up_body_color",
     "candle_up_wick_color",
@@ -337,10 +339,10 @@ class SessionLoadWorker(QObject):
             order_step = perf_counter()
             order_lines = repo.get_order_lines(session.id or 0)
             log.debug("event=get_order_lines elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - order_step) * 1000)
-            drawing_step = perf_counter()
-            drawings = repo.get_drawings(session.id or 0)
-            log.debug("event=get_drawings elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - drawing_step) * 1000)
             timeframe = self.chart_timeframe or session.chart_timeframe
+            drawing_step = perf_counter()
+            drawings = repo.get_drawings(session.id or 0, timeframe)
+            log.debug("event=get_drawings elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - drawing_step) * 1000)
             window_step = perf_counter()
             window = repo.get_chart_window(
                 session.id or 0,
@@ -1696,6 +1698,7 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._perform_auto_save)
         self._session_dirty = False
+        self._viewport_window_extension_active = False
         self._trade_action_buttons: dict[str, QPushButton] = {}
         self._draw_order_buttons: dict[OrderLineType, QPushButton] = {}
         self._drawing_tool_buttons: dict[DrawingToolType, QPushButton] = {}
@@ -1947,6 +1950,7 @@ class MainWindow(QMainWindow):
         self.chart_widget.drawingPropertiesRequested.connect(self._handle_drawing_properties_requested)
         self.chart_widget.drawingTemplateSaveRequested.connect(self._handle_drawing_template_save_requested)
         self.chart_widget.interactionModeChanged.connect(self._sync_chart_interaction_controls)
+        self.chart_widget.viewportChanged.connect(self._handle_chart_viewport_changed)
         self.chart_widget.orderLineCreated.connect(self._handle_chart_order_line_created)
         self.chart_widget.orderLineMoved.connect(self._handle_chart_order_line_moved)
         self.chart_widget.protectiveOrderCreated.connect(self._handle_chart_protective_order_created)
@@ -3145,7 +3149,7 @@ class MainWindow(QMainWindow):
             timestamp = self.engine.bars[local_index].timestamp
             self.progress_label.setText(f"查看交易 #{item.trade_number} | Bar {target_index + 1} | {timestamp:%Y-%m-%d %H:%M}")
 
-    def _ensure_window_contains_index(self, target_index: int) -> bool:
+    def _ensure_window_contains_index(self, target_index: int, *, preserve_viewport: bool = False) -> bool:
         if not self.engine or not self.current_session_id:
             return False
         current_index = self.engine.session.current_index
@@ -3171,6 +3175,7 @@ class MainWindow(QMainWindow):
             self.engine.session.current_index,
             self.engine.total_count,
             self.engine.window_start_index,
+            preserve_viewport=preserve_viewport,
             timeframe=self.engine.session.chart_timeframe,
         )
         self._update_ui_from_engine()
@@ -3314,7 +3319,7 @@ class MainWindow(QMainWindow):
         self._update_ui_from_engine()
         self.save_session(trigger="move_stop_to_break_even")
 
-    def save_session(self, *, trigger: str = "manual") -> None:
+    def save_session(self, *, trigger: str = "manual", persist_drawings: bool = True) -> None:
         if not self.engine:
             return
         self._auto_save_timer.stop()
@@ -3324,7 +3329,7 @@ class MainWindow(QMainWindow):
             self.engine.session,
             self.engine.actions,
             self.engine.order_lines,
-            self.chart_widget.drawings(),
+            self.chart_widget.drawings() if persist_drawings else None,
         )
         self.engine.session = saved
         self.engine.order_lines = self.repo.get_order_lines(saved.id or 0)
@@ -3358,9 +3363,11 @@ class MainWindow(QMainWindow):
             return
         self._flush_pending_auto_save("change_chart_timeframe")
         anchor_time = self.engine.session.current_bar_time or self.engine.current_bar.timestamp
+        self.engine.session.current_bar_time = anchor_time
+        self.save_session(trigger="change_chart_timeframe:source")
         self.engine.session.chart_timeframe = normalized
         self.engine.session.current_bar_time = anchor_time
-        self.save_session(trigger="change_chart_timeframe")
+        self.save_session(trigger="change_chart_timeframe", persist_drawings=False)
         logger.bind(component="chart", session_id=self.current_session_id, chart_timeframe=normalized).info(
             "event=change_chart_timeframe"
         )
@@ -3982,23 +3989,31 @@ class MainWindow(QMainWindow):
             component="chart_window",
             session_id=self.current_session_id,
             chart_timeframe=self.engine.session.chart_timeframe,
+            target_index=previous_index,
         ).debug("event=extend_backward_window current_index={} buffer={}", self.engine.session.current_index, self.engine.backward_buffer)
-        window = self.repo.get_chart_window(
-            self.current_session_id,
-            self.engine.session.chart_timeframe,
-            self.engine.current_bar.timestamp,
-            EXTEND_WINDOW_BEFORE,
-            EXTEND_WINDOW_AFTER,
-        )
-        self.engine.replace_window(window.bars, window.global_start_index, window.total_count)
-        self.chart_widget.set_window_data(
-            self.engine.bars,
-            self.engine.session.current_index,
-            self.engine.total_count,
-            self.engine.window_start_index,
-            preserve_viewport=True,
-            timeframe=self.engine.session.chart_timeframe,
-        )
+        self._ensure_window_contains_index(previous_index, preserve_viewport=True)
+
+    @Slot()
+    def _handle_chart_viewport_changed(self) -> None:
+        if (
+            not self.engine
+            or self._viewport_window_extension_active
+            or self._active_loader_thread is not None
+        ):
+            return
+        left, _right = self.chart_widget.current_x_range()
+        left_threshold = float(self.engine.window_start_index) + VIEWPORT_EXTENSION_THRESHOLD_BARS
+        needs_backward = left <= left_threshold and self.engine.window_start_index > 0
+        if not needs_backward:
+            return
+        target_index = max(0, min(self.engine.total_count - 1, int(floor(left)) - EXTEND_WINDOW_BEFORE))
+        if target_index >= self.engine.window_start_index:
+            target_index = max(0, self.engine.window_start_index - EXTEND_WINDOW_BEFORE)
+        self._viewport_window_extension_active = True
+        try:
+            self._ensure_window_contains_index(target_index, preserve_viewport=True)
+        finally:
+            self._viewport_window_extension_active = False
 
     def _schedule_auto_save(self, reason: str) -> None:
         if not self.engine:

@@ -1275,6 +1275,63 @@ def test_main_window_reopens_with_last_selected_chart_timeframe(app: QApplicatio
         app.processEvents()
 
 
+def test_main_window_loads_drawings_per_chart_timeframe(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(480):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    dataset = repo.import_csv(csv_path, "IF", "1m")
+    session = repo.create_session(dataset.id or 0, start_index=10)
+    session.chart_timeframe = "5m"
+    repo.save_session(
+        session,
+        [],
+        [],
+        [ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 100.0)])],
+    )
+    session.chart_timeframe = "60m"
+    repo.save_session(
+        session,
+        [],
+        [],
+        [ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(2.0, 99.0), DrawingAnchor(4.0, 104.0)])],
+    )
+    session.chart_timeframe = "5m"
+    repo.save_session(session, [], [])
+
+    window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, window)
+        assert [drawing.tool_type for drawing in window.chart_widget.drawings()] == [DrawingToolType.HORIZONTAL_LINE]
+
+        window.change_chart_timeframe("60m")
+        _wait_for_loaded_session(app, window)
+
+        assert window.engine is not None
+        assert window.engine.session.chart_timeframe == "60m"
+        assert [drawing.tool_type for drawing in window.chart_widget.drawings()] == [DrawingToolType.RECTANGLE]
+
+        window.change_chart_timeframe("5m")
+        _wait_for_loaded_session(app, window)
+
+        assert window.engine is not None
+        assert window.engine.session.chart_timeframe == "5m"
+        assert [drawing.tool_type for drawing in window.chart_widget.drawings()] == [DrawingToolType.HORIZONTAL_LINE]
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
 def test_main_window_restores_drawing_style_presets_from_saved_session(app: QApplication) -> None:
     temp_root = Path("C:/code/BarByBar/.pytest-temp")
     temp_root.mkdir(exist_ok=True)
@@ -1714,6 +1771,40 @@ def test_step_forward_refits_y_axis_after_manual_vertical_drag(window: MainWindo
     assert y_max == pytest.approx(high + padding + preserved_offset)
     window._auto_save_timer.stop()
     window._session_dirty = False
+
+
+def test_viewport_change_extends_backward_window_from_left_edge(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    assert window.engine is not None
+    window.engine.replace_window(window.engine.bars, window_start_index=200, total_count=1000)
+    captured: list[tuple[int, bool]] = []
+
+    monkeypatch.setattr(window.chart_widget, "current_x_range", lambda: (205.0, 260.0))
+    monkeypatch.setattr(
+        window,
+        "_ensure_window_contains_index",
+        lambda target_index, *, preserve_viewport=False: captured.append((target_index, preserve_viewport)) or True,
+    )
+
+    window._handle_chart_viewport_changed()
+
+    assert captured == [(55, True)]
+
+
+def test_viewport_change_does_not_extend_forward_window(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    assert window.engine is not None
+    window.engine.replace_window(window.engine.bars, window_start_index=200, total_count=1000)
+
+    monkeypatch.setattr(window.chart_widget, "current_x_range", lambda: (260.0, 999.0))
+    monkeypatch.setattr(window, "_ensure_window_contains_index", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        window,
+        "_ensure_window_for_forward",
+        lambda: (_ for _ in ()).throw(AssertionError("forward extension should not run from viewport changes")),
+    )
+
+    window._handle_chart_viewport_changed()
 
 
 def test_trade_marker_visibility_toggle_updates_chart_widget(window: MainWindow) -> None:
@@ -2170,6 +2261,61 @@ def test_confirm_clear_drawings_confirms_and_clears(window: MainWindow, monkeypa
     assert window._auto_save_timer.isActive() is False
     window._auto_save_timer.stop()
     window._session_dirty = False
+
+
+def test_confirm_clear_drawings_only_clears_current_timeframe(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(480):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    dataset = repo.import_csv(csv_path, "IF", "1m")
+    session = repo.create_session(dataset.id or 0, start_index=10)
+    session.chart_timeframe = "5m"
+    repo.save_session(
+        session,
+        [],
+        [],
+        [ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 100.0)])],
+    )
+    session.chart_timeframe = "60m"
+    repo.save_session(
+        session,
+        [],
+        [],
+        [ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(2.0, 99.0), DrawingAnchor(4.0, 104.0)])],
+    )
+    session.chart_timeframe = "5m"
+    repo.save_session(session, [], [])
+
+    window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, window)
+        assert len(window.chart_widget.drawings()) == 1
+
+        window._confirm_dialog = lambda *args, **kwargs: True
+        window.confirm_clear_drawings()
+
+        assert window.chart_widget.drawings() == []
+        assert repo.get_drawings(session.id or 0, "5m") == []
+        assert [drawing.tool_type for drawing in repo.get_drawings(session.id or 0, "60m")] == [DrawingToolType.RECTANGLE]
+
+        window.change_chart_timeframe("60m")
+        _wait_for_loaded_session(app, window)
+
+        assert [drawing.tool_type for drawing in window.chart_widget.drawings()] == [DrawingToolType.RECTANGLE]
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()
 
 
 def test_order_preview_cancel_resets_button_state(window: MainWindow) -> None:

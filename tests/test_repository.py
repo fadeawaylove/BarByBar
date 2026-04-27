@@ -43,7 +43,7 @@ def test_repository_roundtrip() -> None:
         saved = repo.get_session(session.id or 0)
         actions = repo.get_session_actions(session.id or 0)
         order_lines = repo.get_order_lines(session.id or 0)
-        loaded_drawings = repo.get_drawings(session.id or 0)
+        loaded_drawings = repo.get_drawings(session.id or 0, "5m")
         assert saved.notes.startswith("Breakout")
         assert saved.chart_timeframe == "5m"
         assert saved.tick_size == default_tick_size_for_symbol("IF")
@@ -529,7 +529,7 @@ def test_repository_roundtrip_fib_and_text_styles() -> None:
         ]
         repo.save_session(session, [], [], drawings)
 
-        loaded = repo.get_drawings(session.id or 0)
+        loaded = repo.get_drawings(session.id or 0, session.chart_timeframe)
 
         assert loaded[0].tool_type is DrawingToolType.FIB_RETRACEMENT
         assert loaded[0].style["fib_levels"] == [0.0, 0.382, 0.5, 0.618, 1.0, 2.0]
@@ -555,7 +555,7 @@ def test_get_drawings_normalizes_legacy_empty_style_json() -> None:
         )
         repo.conn.commit()
 
-        drawings = repo.get_drawings(session.id or 0)
+        drawings = repo.get_drawings(session.id or 0, session.chart_timeframe)
 
         assert drawings[0].style["color"] == "#ff9f1c"
         assert drawings[0].style["line_style"] == "solid"
@@ -654,8 +654,8 @@ def test_save_session_persists_drawings_by_session() -> None:
         repo.save_session(first, [], [], first_drawings)
         repo.save_session(second, [], [], second_drawings)
 
-        loaded_first = repo.get_drawings(first.id or 0)
-        loaded_second = repo.get_drawings(second.id or 0)
+        loaded_first = repo.get_drawings(first.id or 0, first.chart_timeframe)
+        loaded_second = repo.get_drawings(second.id or 0, second.chart_timeframe)
 
         assert [drawing.tool_type for drawing in loaded_first] == [
             DrawingToolType.PARALLEL_CHANNEL,
@@ -665,6 +665,178 @@ def test_save_session_persists_drawings_by_session() -> None:
         assert loaded_first[1].anchors[1].y == 110.0
         assert [drawing.tool_type for drawing in loaded_second] == [DrawingToolType.HORIZONTAL_LINE]
         assert len(loaded_second[0].anchors) == 1
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_save_session_persists_drawings_by_chart_timeframe() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+
+        session.chart_timeframe = "5m"
+        first_drawings = [
+            ChartDrawing(
+                tool_type=DrawingToolType.HORIZONTAL_LINE,
+                anchors=[DrawingAnchor(3.0, 105.0)],
+            )
+        ]
+        repo.save_session(session, [], [], first_drawings)
+
+        session.chart_timeframe = "60m"
+        second_drawings = [
+            ChartDrawing(
+                tool_type=DrawingToolType.RECTANGLE,
+                anchors=[DrawingAnchor(1.0, 100.0), DrawingAnchor(4.0, 110.0)],
+            )
+        ]
+        repo.save_session(session, [], [], second_drawings)
+
+        loaded_5m = repo.get_drawings(session.id or 0, "5m")
+        loaded_60m = repo.get_drawings(session.id or 0, "60m")
+
+        assert [drawing.tool_type for drawing in loaded_5m] == [DrawingToolType.HORIZONTAL_LINE]
+        assert [drawing.tool_type for drawing in loaded_60m] == [DrawingToolType.RECTANGLE]
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_save_session_replaces_only_current_timeframe_drawings() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+
+        session.chart_timeframe = "5m"
+        repo.save_session(
+            session,
+            [],
+            [],
+            [ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(3.0, 105.0)])],
+        )
+
+        session.chart_timeframe = "60m"
+        repo.save_session(
+            session,
+            [],
+            [],
+            [ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(1.0, 100.0), DrawingAnchor(4.0, 110.0)])],
+        )
+
+        session.chart_timeframe = "5m"
+        repo.save_session(
+            session,
+            [],
+            [],
+            [ChartDrawing(tool_type=DrawingToolType.RAY, anchors=[DrawingAnchor(2.0, 101.0), DrawingAnchor(5.0, 107.0)])],
+        )
+
+        loaded_5m = repo.get_drawings(session.id or 0, "5m")
+        loaded_60m = repo.get_drawings(session.id or 0, "60m")
+
+        assert [drawing.tool_type for drawing in loaded_5m] == [DrawingToolType.RAY]
+        assert [drawing.tool_type for drawing in loaded_60m] == [DrawingToolType.RECTANGLE]
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_connect_migrates_legacy_drawings_to_session_chart_timeframe() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE datasets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL DEFAULT '',
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                total_bars INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                replay_timeframe TEXT NOT NULL DEFAULT '1m',
+                chart_timeframe TEXT NOT NULL DEFAULT '1m',
+                title TEXT NOT NULL,
+                start_index INTEGER NOT NULL,
+                current_index INTEGER NOT NULL,
+                current_bar_time TEXT,
+                tick_size REAL NOT NULL DEFAULT 1.0,
+                status TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                drawing_style_presets_json TEXT NOT NULL DEFAULT '{}',
+                position_json TEXT NOT NULL DEFAULT '{}',
+                stats_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE drawings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                tool_type TEXT NOT NULL,
+                anchors_json TEXT NOT NULL DEFAULT '[]',
+                style_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO datasets(id, display_name, symbol, timeframe, source_path, total_bars, start_time, end_time, created_at)
+            VALUES (1, 'legacy.csv', 'IF', '1m', 'legacy.csv', 10, '2025-01-01T09:00:00', '2025-01-01T09:09:00', '2025-01-01T09:00:00')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO sessions(
+                id, dataset_id, symbol, timeframe, replay_timeframe, chart_timeframe, title,
+                start_index, current_index, current_bar_time, tick_size, status, notes, tags_json,
+                drawing_style_presets_json, position_json, stats_json, created_at, updated_at
+            ) VALUES (
+                1, 1, 'IF', '1m', '1m', '60m', 'legacy session',
+                0, 0, '2025-01-01T09:00:00', 1.0, 'active', '', '[]',
+                '{}', '{}', '{}', '2025-01-01T09:00:00', '2025-01-02T10:00:00'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO drawings(session_id, tool_type, anchors_json, style_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (1, DrawingToolType.HORIZONTAL_LINE.value, '[{"x": 2.0, "y": 100.0}]', "{}"),
+        )
+        conn.commit()
+        conn.close()
+
+        repo = Repository(db_path)
+        drawings = repo.get_drawings(1, "60m")
+        row = repo.conn.execute("SELECT chart_timeframe FROM drawings WHERE session_id = 1").fetchone()
+
+        assert row is not None
+        assert row["chart_timeframe"] == "60m"
+        assert len(drawings) == 1
+        assert drawings[0].tool_type is DrawingToolType.HORIZONTAL_LINE
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
