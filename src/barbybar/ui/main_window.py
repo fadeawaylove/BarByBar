@@ -52,7 +52,7 @@ from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QIcon, QKeySequ
 
 from barbybar import __version__
 from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
-from barbybar.data.tick_size import format_price, price_decimals_for_tick, snap_price
+from barbybar.data.tick_size import format_average_price, format_price, price_decimals_for_tick, snap_price
 from barbybar.data.timeframe import SUPPORTED_REPLAY_TIMEFRAMES, default_chart_timeframe, normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import (
@@ -3122,7 +3122,7 @@ class MainWindow(QMainWindow):
             "\n".join(
                 [
                     f"方向 {direction}",
-                    f"仓位 {quantity_text} · 均价 {format_price(position.average_price, self.engine.session.tick_size)}",
+                    f"仓位 {quantity_text} · 均价 {format_average_price(position.average_price, self.engine.session.tick_size)}",
                     f"已实现PnL {position.realized_pnl:.2f}",
                 ]
             )
@@ -4209,11 +4209,13 @@ class MainWindow(QMainWindow):
 
     def _sync_draw_order_controls(self, active_order_type: OrderLineType | None = None) -> None:
         has_position = bool(self.engine and self.engine.session.position.is_open)
+        has_pending_entry = bool(self.engine and self.engine.has_active_entry_order_line())
+        can_create_flattening_line = has_position or has_pending_entry
         has_engine = self.engine is not None
         for key, button in self._trade_action_buttons.items():
             button.setEnabled(has_position if key in {"close", "reverse"} else has_engine)
         for order_type, button in self._draw_order_buttons.items():
-            enabled = has_position or order_type not in {OrderLineType.EXIT, OrderLineType.REVERSE}
+            enabled = can_create_flattening_line or order_type not in {OrderLineType.EXIT, OrderLineType.REVERSE}
             button.setEnabled(enabled)
             button.blockSignals(True)
             button.setChecked(active_order_type is order_type)

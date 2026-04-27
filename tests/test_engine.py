@@ -325,6 +325,55 @@ def test_reverse_order_line_flips_position_direction() -> None:
     assert engine.actions[-1].action_type is ActionType.OPEN_SHORT
 
 
+def test_flattening_order_lines_can_be_created_after_pending_entry_line() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.place_order_line(OrderLineType.ENTRY_LONG, price=103, quantity=1)
+
+    exit_line = engine.place_order_line(OrderLineType.EXIT, price=104, quantity=1)
+    reverse_line = engine.place_order_line(OrderLineType.REVERSE, price=105, quantity=1)
+
+    assert exit_line.order_type is OrderLineType.EXIT
+    assert reverse_line.order_type is OrderLineType.REVERSE
+
+
+def test_flattening_order_lines_still_require_position_or_pending_entry_line() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+
+    for order_type in [OrderLineType.EXIT, OrderLineType.REVERSE]:
+        try:
+            engine.place_order_line(order_type, price=101, quantity=1)
+        except ValueError as exc:
+            assert "当前没有持仓或待成交入场条件单" in str(exc)
+        else:
+            raise AssertionError(f"{order_type.value} should require a position or pending entry line")
+
+
+def test_flattening_order_line_waits_until_pending_entry_fills() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=100, high=103, low=99, close=102, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 3), open=102, high=105, low=101, close=104, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.place_order_line(OrderLineType.ENTRY_LONG, price=102, quantity=1)
+    engine.place_order_line(OrderLineType.EXIT, price=104, quantity=1)
+
+    engine.step_forward()
+    assert engine.session.position.is_open is False
+    assert not any(action.action_type is ActionType.CLOSE for action in engine.actions)
+
+    engine.step_forward()
+    assert engine.session.position.direction == "long"
+
+    engine.step_forward()
+    assert engine.session.position.is_open is False
+    assert engine.actions[-1].action_type is ActionType.CLOSE
+
+
 def test_entry_short_above_price_triggers_when_bar_range_covers_price() -> None:
     bars = [
         Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),

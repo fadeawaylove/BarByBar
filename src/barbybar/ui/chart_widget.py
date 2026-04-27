@@ -12,7 +12,7 @@ from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QBrush, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPicture, QPolygonF
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsPathItem, QLabel, QLayout, QMenu, QVBoxLayout, QWidget
 
-from barbybar.data.tick_size import format_price
+from barbybar.data.tick_size import format_average_price, format_price
 from barbybar.data.timeframe import DAY_TIMEFRAME, normalize_timeframe, timeframe_to_minutes
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, normalize_drawing_style
 from barbybar.ui.theme import AppTheme
@@ -2406,7 +2406,8 @@ class ChartWidget(QWidget):
             OrderLineType.AVERAGE_PRICE: "多单" if self._position_direction == "long" else "空单" if self._position_direction == "short" else "持仓",
         }
         quantity = int(round(line.quantity))
-        label = f"{labels[line.order_type]} {quantity}手 {format_price(line.price, self._tick_size)}"
+        price_text = format_average_price(line.price, self._tick_size) if line.order_type is OrderLineType.AVERAGE_PRICE else format_price(line.price, self._tick_size)
+        label = f"{labels[line.order_type]} {quantity}手 {price_text}"
         if line.order_type is OrderLineType.AVERAGE_PRICE:
             pnl_text = self._average_price_pnl_text(line)
             return f"{label} ({pnl_text})" if pnl_text is not None else label
@@ -2419,7 +2420,7 @@ class ChartWidget(QWidget):
         if abs(diff) < 0.0001:
             diff_text = "0"
         else:
-            diff_text = format_price(abs(diff), self._tick_size)
+            diff_text = format_average_price(abs(diff), self._tick_size)
             diff_text = f"+{diff_text}" if diff > 0 else f"-{diff_text}"
         return f"{label} ({diff_text})"
 
@@ -2436,7 +2437,7 @@ class ChartWidget(QWidget):
         diff = current_close - average_price if self._position_direction == "long" else average_price - current_close
         if abs(diff) < 0.0001:
             return "0"
-        diff_text = format_price(abs(diff), self._tick_size)
+        diff_text = format_average_price(abs(diff), self._tick_size)
         return f"+{diff_text}" if diff > 0 else f"-{diff_text}"
 
     def _protective_reference_price(self, line: OrderLine) -> float | None:

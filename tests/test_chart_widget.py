@@ -3041,6 +3041,23 @@ def test_average_price_label_falls_back_without_position_direction(widget: Chart
     assert widget._order_line_label(line) == "持仓 1手 108"
 
 
+def test_average_price_label_preserves_fractional_cost_with_integer_tick(widget: ChartWidget) -> None:
+    widget.set_tick_size(1)
+    widget.set_full_data(_bars())
+    widget.set_cursor(10)
+    widget.set_position_direction("long")
+    line = OrderLine(
+        order_type=OrderLineType.AVERAGE_PRICE,
+        price=108.5,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=0,
+        created_at=datetime(2025, 1, 1, 9, 0),
+    )
+
+    assert widget._order_line_label(line) == "多单 1手 108.5 (+1.3)"
+
+
 def test_average_price_label_falls_back_without_active_bar(widget: ChartWidget) -> None:
     widget.set_tick_size(1)
     widget.set_position_direction("long")

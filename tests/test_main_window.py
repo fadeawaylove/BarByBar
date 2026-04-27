@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QCheckBox, QDialog
 
 from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
-from barbybar.data.tick_size import default_tick_size_for_symbol, format_price, price_decimals_for_tick
+from barbybar.data.tick_size import default_tick_size_for_symbol, format_average_price, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, WindowBars
 from barbybar.storage.repository import Repository
@@ -1716,6 +1716,19 @@ def test_draw_order_controls_sync_position_state(window: MainWindow) -> None:
     assert window._draw_order_buttons[OrderLineType.REVERSE].isEnabled() is True
 
 
+def test_draw_order_controls_enable_flattening_lines_for_pending_entry(window: MainWindow) -> None:
+    _seed_engine(window)
+    assert window.engine is not None
+    window.engine.place_order_line(OrderLineType.ENTRY_LONG, price=window.engine.current_bar.close + 10, quantity=1)
+
+    window._sync_draw_order_controls()
+
+    assert window._trade_action_buttons["close"].isEnabled() is False
+    assert window._trade_action_buttons["reverse"].isEnabled() is False
+    assert window._draw_order_buttons[OrderLineType.EXIT].isEnabled() is True
+    assert window._draw_order_buttons[OrderLineType.REVERSE].isEnabled() is True
+
+
 def test_reverse_trade_action_uses_opposite_open_action(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_engine(window)
     captured: list[ActionType] = []
@@ -2915,6 +2928,20 @@ def test_tick_format_helpers_cap_at_two_decimals() -> None:
     assert format_price(5915, 1) == "5915"
     assert format_price(5914.2, 0.2) == "5914.2"
     assert format_price(5914.02, 0.02) == "5914.02"
+    assert format_average_price(100.5, 1) == "100.5"
+    assert format_average_price(100.666666, 1) == "100.67"
+
+
+def test_position_average_price_readout_preserves_fractional_cost(window: MainWindow) -> None:
+    _seed_engine(window)
+    assert window.engine is not None
+    window.engine.session.tick_size = 1
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    window.engine.record_action(ActionType.ADD, quantity=1, price=101)
+
+    window._update_ui_from_engine()
+
+    assert "均价 100.5" in window.stats_label.text()
 
 
 def test_busy_overlay_show_and_hide(window: MainWindow) -> None:

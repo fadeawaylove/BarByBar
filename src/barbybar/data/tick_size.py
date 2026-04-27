@@ -108,3 +108,17 @@ def format_price(price: float | int | None, tick_size: float) -> str:
         return "-"
     decimals = price_decimals_for_tick(tick_size)
     return f"{float(price):.{decimals}f}"
+
+
+def value_decimals(value: float | int | None) -> int:
+    if value is None:
+        return 0
+    text = f"{float(value):.8f}".rstrip("0").rstrip(".")
+    return min(len(text.split(".")[1]) if "." in text else 0, 2)
+
+
+def format_average_price(price: float | int | None, tick_size: float) -> str:
+    if price is None:
+        return "-"
+    decimals = max(price_decimals_for_tick(tick_size), value_decimals(price))
+    return f"{float(price):.{decimals}f}"

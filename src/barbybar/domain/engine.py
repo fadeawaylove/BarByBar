@@ -230,8 +230,10 @@ class ReviewEngine:
             raise ValueError("Average price line is derived and cannot be placed manually.")
         self._save_snapshot()
         quantity = max(quantity, 0.1)
-        if order_type in {OrderLineType.EXIT, OrderLineType.REVERSE} and not self.session.position.is_open:
-            raise ValueError("当前没有持仓，无法创建平仓/反手条件线。")
+        if order_type in {OrderLineType.EXIT, OrderLineType.REVERSE} and not (
+            self.session.position.is_open or self.has_active_entry_order_line()
+        ):
+            raise ValueError("当前没有持仓或待成交入场条件单，无法创建平仓/反手条件线。")
         if order_type in {OrderLineType.STOP_LOSS, OrderLineType.TAKE_PROFIT}:
             line = self._create_protective_line(order_type, price, quantity, note)
             self._sync_position_from_lines()
@@ -856,6 +858,9 @@ class ReviewEngine:
             if line.order_type is order_type and line.is_active:
                 return line
         return None
+
+    def has_active_entry_order_line(self) -> bool:
+        return any(line.is_active and line.is_entry for line in self.order_lines)
 
     def _active_protective_lines(self, order_type: OrderLineType) -> list[OrderLine]:
         return [
