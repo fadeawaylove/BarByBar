@@ -17,6 +17,7 @@ from barbybar.ui.chart_widget import (
     ChartWidget,
     DRAWING_SNAP_DISTANCE_PX,
     DOWN_CANDLE_COLOR,
+    HoverTarget,
     HoverTargetType,
     InteractionMode,
     STOP_LOSS_LINE_COLOR,
@@ -652,7 +653,7 @@ def test_hover_info_contains_ohlc_and_mouse_price(widget: ChartWidget) -> None:
     widget._update_hover_info(bars[5], 123.45)
 
     assert not widget._hover_card.isHidden()
-    assert widget._hover_time_label.text() == "开 2025-01-01 09:04\n收 2025-01-01 09:05"
+    assert widget._hover_time_label.text() == "开 2025-01-01 09:04 | 收 2025-01-01 09:05"
     assert widget._hover_open_label.text() == "开 104.1"
     assert widget._hover_high_label.text() == "高 106.1"
     assert widget._hover_low_label.text() == "低 103.4"
@@ -1741,6 +1742,23 @@ def test_ctrl_preview_anchor_uses_same_snap_rule(widget: ChartWidget, app: QAppl
     assert anchor.y == bar.high
 
 
+def test_drawing_preview_skips_rebuild_when_anchor_is_unchanged(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    app.processEvents()
+    rebuilds: list[bool] = []
+    monkeypatch.setattr(widget, "_rebuild_line_items", lambda: rebuilds.append(True))
+
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(11.0, widget._bars[11].high))
+    widget._handle_mouse_moved((scene_pos,))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert len(rebuilds) == 1
+
+
 def test_ctrl_preview_anchor_remains_free_when_price_is_far(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -2538,6 +2556,53 @@ def test_log_interaction_includes_state_fields(widget: ChartWidget, monkeypatch)
     assert captured["interaction_mode"] == widget.interaction_mode.value
     assert captured["suppress_next_left_click"] == widget._suppress_next_left_click
     assert captured["event"] == "test_event"
+
+
+def test_log_interaction_skips_high_frequency_events(widget: ChartWidget, monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeBoundLogger:
+        def debug(self, message: str, **kwargs) -> None:
+            captured.append({"message": message, **kwargs})
+
+    def fake_bind(**kwargs):
+        captured.append(dict(kwargs))
+        return _FakeBoundLogger()
+
+    monkeypatch.setattr("barbybar.ui.chart_widget.logger.bind", fake_bind)
+
+    widget._log_interaction("hover_active", hover_index=1)
+    widget._log_interaction("scene_click_received", in_chart=True)
+
+    assert len(captured) == 2
+    assert captured[0]["event"] == "scene_click_received"
+    assert captured[1]["message"].startswith("event=scene_click_received")
+
+
+def test_hover_info_reuses_layout_when_content_is_unchanged(widget: ChartWidget, monkeypatch) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(widget._hover_card, "adjustSize", lambda: calls.append(True))
+    widget.set_full_data(_bars())
+    bar = widget._bars[5]
+
+    widget._update_hover_info(bar, 123.45)
+    widget._update_hover_info(bar, 123.45)
+
+    assert len(calls) == 1
+
+
+def test_apply_hover_target_rebuilds_only_affected_layers(widget: ChartWidget, monkeypatch) -> None:
+    calls = {"orders": 0, "drawings": 0, "trades": 0}
+    monkeypatch.setattr(widget, "_rebuild_order_line_items", lambda: calls.__setitem__("orders", calls["orders"] + 1))
+    monkeypatch.setattr(widget, "_rebuild_line_items", lambda: calls.__setitem__("drawings", calls["drawings"] + 1))
+    monkeypatch.setattr(widget, "_rebuild_trade_marker_items", lambda: calls.__setitem__("trades", calls["trades"] + 1))
+
+    widget._apply_hover_target(HoverTarget(target_type=HoverTargetType.ORDER_LINE, order_line_id=1))
+    assert calls == {"orders": 1, "drawings": 0, "trades": 0}
+
+    calls.update({"orders": 0, "drawings": 0, "trades": 0})
+    widget._apply_hover_target(HoverTarget(target_type=HoverTargetType.DRAWING_BODY, drawing_index=0))
+    assert calls == {"orders": 1, "drawings": 1, "trades": 0}
 
 
 def test_hover_card_is_positioned_top_right(widget: ChartWidget) -> None:

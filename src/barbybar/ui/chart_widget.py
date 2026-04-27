@@ -56,6 +56,17 @@ DEFAULT_RIGHT_PADDING = 3.0
 DRAWING_SNAP_DISTANCE_PX = 50.0
 INTERACTIVE_VIEWPORT_REFRESH_DELAY_MS = 90
 VIEWPORT_CHANGED_THROTTLE_MS = 60
+HIGH_FREQUENCY_INTERACTION_LOG_EVENTS = frozenset(
+    {
+        "editable_order_hit_test",
+        "hover_active",
+        "mouse_move_drawing_preview",
+        "mouse_move_drawing_preview_outside_chart",
+        "mouse_move_order_preview",
+        "mouse_move_skipped_dragging",
+        "sync_cursor",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -445,6 +456,7 @@ class ChartWidget(QWidget):
         self._trade_marker_items_dirty = True
         self._deferred_overlay_refresh_pending = False
         self._pending_viewport_changed = False
+        self._hover_card_content_cache: tuple[str, ...] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1313,6 +1325,7 @@ class ChartWidget(QWidget):
             self.price_plot.setXRange(left, right, padding=0)
             visible_window_has_bars = self._apply_y_range(left, right)
             if interactive:
+                self._rebuild_trade_geometry(None)
                 self._schedule_deferred_overlay_refresh()
             else:
                 self._refresh_viewport_overlays(viewport_changed=True)
@@ -1574,21 +1587,28 @@ class ChartWidget(QWidget):
                 point = self.price_plot.vb.mapSceneToView(pos)
                 raw_anchor = DrawingAnchor(float(point.x()), float(point.y()))
                 anchor = self._normalized_drawing_anchor(raw_anchor)
-                self._drawing_preview_raw_anchor = self._stabilize_drawing_anchor(raw_anchor)
-                self._drawing_preview_anchor = anchor
-                self._log_interaction(
-                    "mouse_move_drawing_preview",
-                    raw_x=round(self._drawing_preview_raw_anchor.x, 3),
-                    raw_y=round(self._drawing_preview_raw_anchor.y, 3),
-                    mapped_x=round(anchor.x, 3),
-                    mapped_y=round(anchor.y, 3),
-                    pending_anchors=len(self._pending_drawing_anchors),
+                stabilized_raw_anchor = self._stabilize_drawing_anchor(raw_anchor)
+                preview_changed = (
+                    self._drawing_preview_raw_anchor != stabilized_raw_anchor
+                    or self._drawing_preview_anchor != anchor
                 )
-                self._rebuild_line_items()
+                if preview_changed:
+                    self._drawing_preview_raw_anchor = stabilized_raw_anchor
+                    self._drawing_preview_anchor = anchor
+                    self._log_interaction(
+                        "mouse_move_drawing_preview",
+                        raw_x=round(self._drawing_preview_raw_anchor.x, 3),
+                        raw_y=round(self._drawing_preview_raw_anchor.y, 3),
+                        mapped_x=round(anchor.x, 3),
+                        mapped_y=round(anchor.y, 3),
+                        pending_anchors=len(self._pending_drawing_anchors),
+                    )
+                    self._rebuild_line_items()
             else:
                 self._log_interaction("mouse_move_drawing_preview_outside_chart")
-                self._clear_drawing_preview_state()
-                self._rebuild_line_items()
+                if self._drawing_preview_raw_anchor is not None or self._drawing_preview_anchor is not None:
+                    self._clear_drawing_preview_state()
+                    self._rebuild_line_items()
         if (
             not self._crosshair_enabled
             or self._cursor < 0
@@ -1655,20 +1675,24 @@ class ChartWidget(QWidget):
         self._show_axis_price_label(price)
 
     def _update_hover_info(self, bar: Bar, price: float) -> None:
-        self._hover_time_label.setText(self._hover_bar_time_text(bar))
-        self._hover_open_label.setText(f"开 {format_price(bar.open, self._tick_size)}")
-        self._hover_high_label.setText(f"高 {format_price(bar.high, self._tick_size)}")
-        self._hover_low_label.setText(f"低 {format_price(bar.low, self._tick_size)}")
-        self._hover_close_label.setText(f"收 {format_price(bar.close, self._tick_size)}")
-        self._hover_range_label.setText(f"幅 {format_price(bar.high - bar.low, self._tick_size)}")
+        texts = (
+            self._hover_bar_time_text(bar),
+            f"开 {format_price(bar.open, self._tick_size)}",
+            f"高 {format_price(bar.high, self._tick_size)}",
+            f"低 {format_price(bar.low, self._tick_size)}",
+            f"收 {format_price(bar.close, self._tick_size)}",
+            f"幅 {format_price(bar.high - bar.low, self._tick_size)}",
+        )
         neutral_style = f"color: {AppTheme.text}; font-size: 12px; font-weight: 600;"
-        self._hover_open_label.setStyleSheet(neutral_style)
-        self._hover_high_label.setStyleSheet(f"color: {AppTheme.long}; font-size: 12px; font-weight: 800;")
-        self._hover_low_label.setStyleSheet(f"color: {AppTheme.short}; font-size: 12px; font-weight: 800;")
-        self._hover_close_label.setStyleSheet(neutral_style)
-        self._hover_range_label.setStyleSheet(f"color: {AppTheme.text_muted}; font-size: 11px; font-weight: 600;")
-        self._hover_card.layout().activate()
-        self._hover_card.adjustSize()
+        styles = (
+            f"color: {AppTheme.text_muted}; font-size: 11px; font-weight: 600;",
+            neutral_style,
+            f"color: {AppTheme.long}; font-size: 12px; font-weight: 800;",
+            f"color: {AppTheme.short}; font-size: 12px; font-weight: 800;",
+            neutral_style,
+            f"color: {AppTheme.text_muted}; font-size: 11px; font-weight: 600;",
+        )
+        self._apply_hover_card_content(texts, styles)
         self._position_hover_card()
         self._hover_card.raise_()
         self._hover_card.show()
@@ -1676,25 +1700,37 @@ class ChartWidget(QWidget):
     def _hover_bar_time_text(self, bar: Bar) -> str:
         open_time = bar.open_timestamp or bar.close_timestamp
         close_time = bar.close_timestamp
-        return f"开 {open_time:%Y-%m-%d %H:%M}\n收 {close_time:%Y-%m-%d %H:%M}"
+        return f"开 {open_time:%Y-%m-%d %H:%M} | 收 {close_time:%Y-%m-%d %H:%M}"
 
     def _update_trade_hover_info(self, detail_lines: list[str]) -> None:
-        labels = [
+        labels_count = 6
+        texts = tuple((detail_lines + [""] * max(0, labels_count - len(detail_lines)))[:labels_count])
+        styles = tuple(f"color: {AppTheme.text}; font-size: 12px; font-weight: 600;" for _ in range(labels_count))
+        self._apply_hover_card_content(texts, styles)
+        self._position_hover_card()
+        self._hover_card.raise_()
+        self._hover_card.show()
+
+    def _apply_hover_card_content(self, texts: tuple[str, ...], styles: tuple[str, ...]) -> None:
+        payload = texts + styles
+        if self._hover_card_content_cache == payload:
+            return
+        labels = (
             self._hover_time_label,
             self._hover_open_label,
             self._hover_high_label,
             self._hover_low_label,
             self._hover_close_label,
             self._hover_range_label,
-        ]
-        for label, text in zip(labels, detail_lines + [""] * max(0, len(labels) - len(detail_lines))):
-            label.setText(text)
-            label.setStyleSheet(f"color: {AppTheme.text}; font-size: 12px; font-weight: 600;")
+        )
+        for label, text, style in zip(labels, texts, styles):
+            if label.text() != text:
+                label.setText(text)
+            if label.styleSheet() != style:
+                label.setStyleSheet(style)
+        self._hover_card_content_cache = payload
         self._hover_card.layout().activate()
         self._hover_card.adjustSize()
-        self._position_hover_card()
-        self._hover_card.raise_()
-        self._hover_card.show()
 
     def _hide_crosshair(self, *, preserve_axis_label: bool = False) -> None:
         self._v_line.hide()
@@ -1928,10 +1964,24 @@ class ChartWidget(QWidget):
             bar_index=target.bar_index if target.bar_index is not None else -1,
             distance_px=round(float(target.distance_px), 3) if target.distance_px is not None else -1.0,
         )
-        self._rebuild_order_line_items()
-        self._rebuild_line_items()
-        self._rebuild_trade_marker_items()
+        refresh_areas = self._hover_refresh_areas(previous) | self._hover_refresh_areas(target)
+        if "order_lines" in refresh_areas:
+            self._rebuild_order_line_items()
+        if "drawings" in refresh_areas:
+            self._rebuild_line_items()
+        if "trade_markers" in refresh_areas:
+            self._rebuild_trade_marker_items()
         self._sync_cursor()
+
+    @staticmethod
+    def _hover_refresh_areas(target: HoverTarget) -> set[str]:
+        if target.target_type is HoverTargetType.ORDER_LINE:
+            return {"order_lines"}
+        if target.target_type in {HoverTargetType.DRAWING_ANCHOR, HoverTargetType.DRAWING_BODY}:
+            return {"drawings"}
+        if target.target_type in {HoverTargetType.TRADE_MARKER, HoverTargetType.TRADE_LINK}:
+            return {"trade_markers"}
+        return set()
 
     def _is_hovered_order_line(self, line: OrderLine) -> bool:
         if self._hover_target.target_type is not HoverTargetType.ORDER_LINE:
@@ -3633,6 +3683,8 @@ class ChartWidget(QWidget):
         self._sync_cursor()
 
     def _log_interaction(self, event: str, **fields) -> None:
+        if event in HIGH_FREQUENCY_INTERACTION_LOG_EVENTS:
+            return
         payload = {
             "interaction_mode": self._interaction_mode.value,
             "active_drawing_tool": self._active_drawing_tool.value if self._active_drawing_tool else "",
