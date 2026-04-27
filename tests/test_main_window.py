@@ -24,8 +24,10 @@ from barbybar.ui.main_window import (
     DrawingPropertiesDialog,
     DrawingTemplateDialog,
     DrawingTemplateManagerDialog,
+    FlatTextLabel,
     LogViewerDialog,
     MainWindow,
+    ReadOnlyTextPanel,
     SessionLibraryDialog,
     SettingsDialog,
     UpdateActionDialog,
@@ -2106,6 +2108,10 @@ def test_update_action_dialog_can_render_single_button_notice() -> None:
         assert dialog.accept_button.text() == "知道了"
         assert dialog.cancel_button is None
         assert dialog.eyebrow_label.text() == "检查更新"
+        assert isinstance(dialog.eyebrow_label, FlatTextLabel)
+        assert isinstance(dialog.heading_label, FlatTextLabel)
+        assert isinstance(dialog.summary_label, FlatTextLabel)
+        assert isinstance(dialog.detail_label, FlatTextLabel)
         assert dialog.accept_button.minimumWidth() >= 148
     finally:
         dialog.close()
@@ -2143,6 +2149,7 @@ def test_update_action_dialog_uses_shared_dialog_card_and_button_roles() -> None
         card = dialog.findChild(QWidget, "updateDialogCard")
         assert card is not None
         assert card.property("dialogCard") is True
+        assert card.styleSheet() == ""
         assert dialog.accept_button.property("role") == "danger"
         assert dialog.cancel_button is not None
         assert dialog.cancel_button.property("role") == "secondary"
@@ -2163,6 +2170,31 @@ def test_update_action_dialog_primary_button_uses_explicit_filled_style() -> Non
         style = dialog.accept_button.styleSheet()
         assert AppTheme.primary in style
         assert AppTheme.text_inverse in style
+    finally:
+        dialog.close()
+
+
+def test_update_action_dialog_uses_flat_text_controls_without_frames() -> None:
+    dialog = UpdateActionDialog(
+        "发现新版本",
+        "BarByBar 0.5.6 已可下载",
+        "当前版本 0.5.5。",
+        "本次改动\n- Fix A",
+        accept_text="开始下载",
+        cancel_text="暂不更新",
+    )
+    try:
+        assert "#updateActionDialog { background: transparent; }" not in dialog.styleSheet()
+        assert "#updateActionDialog { background:" in dialog.styleSheet()
+        for label in [dialog.eyebrow_label, dialog.heading_label, dialog.summary_label, dialog.detail_label]:
+            assert isinstance(label, FlatTextLabel)
+            assert label.frameShape() == label.Shape.NoFrame
+            assert label.focusPolicy() == Qt.FocusPolicy.NoFocus
+        assert isinstance(dialog.detail_text, ReadOnlyTextPanel)
+        assert dialog.detail_text.isReadOnly() is True
+        assert dialog.detail_text.scroll_area.frameShape() == dialog.detail_text.scroll_area.Shape.NoFrame
+        assert dialog.detail_text.scroll_area.cornerWidget() is None
+        assert dialog.detail_text.toPlainText() == "本次改动\n- Fix A"
     finally:
         dialog.close()
 

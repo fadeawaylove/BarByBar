@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QColorDialog,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -96,6 +98,7 @@ from barbybar.ui.theme import (
     error_banner_stylesheet,
     muted_status_stylesheet,
     progress_bar_stylesheet,
+    rgba,
 )
 from barbybar.update_service import UpdateInfo, check_for_update, download_installer
 
@@ -423,13 +426,111 @@ class UpdateDownloadWorker(QObject):
         self.finished.emit(self.task_id, str(downloaded_path))
 
 
+class FlatTextLabel(QLabel):
+    def __init__(self, text: str = "", parent: QWidget | None = None, *, selectable: bool = False) -> None:
+        super().__init__(text, parent)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFrameShadow(QFrame.Shadow.Plain)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setWordWrap(True)
+        self.setMargin(0)
+        self.setIndent(0)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAutoFillBackground(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse if selectable else Qt.TextInteractionFlag.NoTextInteraction
+        )
+
+
+class ReadOnlyTextPanel(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("updateDialogDetailPanel")
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setObjectName("updateDialogDetailScrollArea")
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setFrameShadow(QFrame.Shadow.Plain)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.viewport().setObjectName("updateDialogDetailViewport")
+        self.scroll_area.viewport().setAutoFillBackground(False)
+
+        self.content = QWidget(self.scroll_area)
+        self.content.setObjectName("updateDialogDetailContent")
+        content_layout = QVBoxLayout(self.content)
+        content_layout.setContentsMargins(14, 12, 14, 12)
+        content_layout.setSpacing(0)
+
+        self.content_label = FlatTextLabel("", self.content, selectable=True)
+        self.content_label.setObjectName("updateDialogDetailContentLabel")
+        content_layout.addWidget(self.content_label)
+        content_layout.addStretch(1)
+
+        self.scroll_area.setWidget(self.content)
+        root_layout.addWidget(self.scroll_area)
+
+    def setPlainText(self, text: str) -> None:
+        self.content_label.setText(text)
+
+    def toPlainText(self) -> str:
+        return self.content_label.text()
+
+    def isReadOnly(self) -> bool:
+        return True
+
+
 class UpdateActionDialog(QDialog):
+    @staticmethod
+    def _dialog_chrome_override() -> str:
+        return (
+            f"#updateActionDialog {{ background: {AppTheme.surface_elevated}; }}"
+            "#updateActionDialog QWidget#updateDialogCard {"
+            f" background: {AppTheme.surface_elevated};"
+            " border: none;"
+            f" border-radius: {AppTheme.radius_xl}px;"
+            "}"
+            "#updateActionDialog QLabel[role='dialogEyebrow'],"
+            "#updateActionDialog QLabel[role='dialogHeading'],"
+            "#updateActionDialog QLabel[role='dialogSummary'],"
+            "#updateActionDialog QLabel[role='dialogSectionTitle'] {"
+            " background: transparent;"
+            " border: none;"
+            " padding: 0px;"
+            "}"
+            "#updateActionDialog QWidget#updateDialogDetailPanel {"
+            f" background: {rgba(AppTheme.surface_soft, 216)};"
+            " border: none;"
+            f" border-radius: {AppTheme.radius_md}px;"
+            "}"
+            "#updateActionDialog QScrollArea#updateDialogDetailScrollArea,"
+            "#updateActionDialog QWidget#updateDialogDetailViewport,"
+            "#updateActionDialog QWidget#updateDialogDetailContent,"
+            "#updateActionDialog QLabel#updateDialogDetailContentLabel {"
+            " background: transparent;"
+            " border: none;"
+            "}"
+            "#updateActionDialog QPushButton[role='primary'],"
+            "#updateActionDialog QPushButton[role='secondary'],"
+            "#updateActionDialog QPushButton[role='danger'] {"
+            " border: none;"
+            "}"
+        )
+
     @staticmethod
     def _button_stylesheet(role: str) -> str:
         if role == "danger":
             return (
                 f"background: {AppTheme.danger};"
-                f"border: 1px solid {AppTheme.danger};"
+                "border: none;"
                 f"border-radius: 10px;"
                 f"color: {AppTheme.text_inverse};"
                 "font-weight: 800;"
@@ -438,7 +539,7 @@ class UpdateActionDialog(QDialog):
         if role == "secondary":
             return (
                 f"background: {AppTheme.primary_tint};"
-                f"border: 1px solid {AppTheme.border};"
+                "border: none;"
                 f"border-radius: 10px;"
                 f"color: {AppTheme.primary};"
                 "font-weight: 700;"
@@ -446,7 +547,7 @@ class UpdateActionDialog(QDialog):
             )
         return (
             f"background: {AppTheme.primary};"
-            f"border: 1px solid {AppTheme.primary};"
+            "border: none;"
             f"border-radius: 10px;"
             f"color: {AppTheme.text_inverse};"
             "font-weight: 800;"
@@ -466,36 +567,32 @@ class UpdateActionDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.setObjectName("updateActionDialog")
         self.setWindowTitle(title)
         self.setModal(True)
         has_detail = bool(detail.strip())
         single_action = cancel_text is None
         self.setMinimumWidth(520 if single_action and not has_detail else 580)
-        self.setStyleSheet(dialog_stylesheet())
+        self.setStyleSheet(dialog_stylesheet() + self._dialog_chrome_override())
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(18, 18, 18, 18)
         card = QWidget(self)
         card.setObjectName("updateDialogCard")
         card.setProperty("dialogCard", True)
-        card.setStyleSheet(dialog_card_stylesheet())
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(24, 22, 24, 22)
         card_layout.setSpacing(12)
 
-        self.eyebrow_label = QLabel(title)
+        self.eyebrow_label = FlatTextLabel(title, card)
         self.eyebrow_label.setProperty("role", "dialogEyebrow")
-        self.heading_label = QLabel(heading)
-        self.heading_label.setWordWrap(True)
+        self.heading_label = FlatTextLabel(heading, card)
         self.heading_label.setProperty("role", "dialogHeading")
-        self.summary_label = QLabel(summary)
-        self.summary_label.setWordWrap(True)
+        self.summary_label = FlatTextLabel(summary, card)
         self.summary_label.setProperty("role", "dialogSummary")
-        self.detail_label = QLabel("更新说明")
+        self.detail_label = FlatTextLabel("更新说明", card)
         self.detail_label.setProperty("role", "dialogSectionTitle")
-        self.detail_text = QTextEdit()
-        self.detail_text.setReadOnly(True)
-        self.detail_text.setProperty("role", "dialogDetail")
+        self.detail_text = ReadOnlyTextPanel(card)
         self.detail_text.setPlainText(detail)
         self.detail_label.setVisible(has_detail)
         self.detail_text.setVisible(has_detail)
