@@ -2536,6 +2536,50 @@ def test_dragging_drawing_emits_drawings_changed_once_on_finish(widget: ChartWid
     assert changes == ["changed"]
 
 
+def test_dragging_drawing_skips_rebuild_when_anchor_is_unchanged(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(20.0, 100.0), DrawingAnchor(24.0, 104.0)])])
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(20.0, 100.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    rebuilds: list[str] = []
+    monkeypatch.setattr(widget, "_rebuild_line_items", lambda: rebuilds.append("all"))
+    monkeypatch.setattr(widget, "_rebuild_single_drawing_items", lambda index: rebuilds.append(f"single:{index}"))
+
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start))
+
+    assert rebuilds == []
+
+
+def test_dragging_drawing_rebuilds_only_active_drawing_item(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_drawings(
+        [
+            ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(20.0, 100.0), DrawingAnchor(24.0, 104.0)]),
+            ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(30.0, 99.0), DrawingAnchor(34.0, 103.0)]),
+        ]
+    )
+    app.processEvents()
+
+    start = widget.price_plot.vb.mapViewToScene(QPointF(20.0, 100.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(21.0, 101.0))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    rebuilds: list[str] = []
+    monkeypatch.setattr(widget, "_rebuild_line_items", lambda: rebuilds.append("all"))
+    monkeypatch.setattr(widget, "_rebuild_single_drawing_items", lambda index: rebuilds.append(f"single:{index}"))
+
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+
+    assert rebuilds == ["single:0"]
+
+
 def test_log_interaction_includes_state_fields(widget: ChartWidget, monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -2603,6 +2647,68 @@ def test_apply_hover_target_rebuilds_only_affected_layers(widget: ChartWidget, m
     calls.update({"orders": 0, "drawings": 0, "trades": 0})
     widget._apply_hover_target(HoverTarget(target_type=HoverTargetType.DRAWING_BODY, drawing_index=0))
     assert calls == {"orders": 1, "drawings": 1, "trades": 0}
+
+
+def test_hover_drawing_hit_test_skips_drawings_outside_visible_x_range(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(180)
+    far_drawing = ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(0.0, 99.0), DrawingAnchor(5.0, 103.0)])
+    visible_drawing = ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(120.0, 99.0), DrawingAnchor(124.0, 103.0)])
+    widget.set_drawings([far_drawing, visible_drawing])
+    app.processEvents()
+    calls: list[ChartDrawing] = []
+    original = widget._drawing_hit_test
+
+    def wrapped(drawing: ChartDrawing, scene_pos: QPointF):
+        calls.append(drawing)
+        return original(drawing, scene_pos)
+
+    monkeypatch.setattr(widget, "_drawing_hit_test", wrapped)
+
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(122.0, 101.0))
+    hit = widget._drawing_at_scene_pos(scene_pos)
+    assert hit is not None
+    assert hit[0] == 1
+    assert hit[1].tool_type is DrawingToolType.RECTANGLE
+    assert calls == [hit[1]]
+
+
+def test_horizontal_line_hover_is_not_clipped_by_drawing_x_range(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(180)
+    drawing = ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(0.0, 101.0)])
+    widget.set_drawings([drawing])
+    app.processEvents()
+
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(130.0, 101.0))
+
+    hit = widget._drawing_at_scene_pos(scene_pos)
+    assert hit is not None
+    assert hit[0] == 0
+    assert hit[1].tool_type is DrawingToolType.HORIZONTAL_LINE
+
+
+def test_trade_hover_ignores_markers_outside_visible_x_range(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(180)
+    far_action = SessionAction(ActionType.OPEN_LONG, 0, datetime(2025, 1, 1, 9, 0), price=101.0, quantity=1)
+    visible_action = SessionAction(ActionType.CLOSE, 120, datetime(2025, 1, 1, 11, 0), price=101.0, quantity=1)
+    widget.set_trade_actions([far_action, visible_action])
+    app.processEvents()
+
+    far_marker = next(marker for marker in widget._trade_markers if marker.action is far_action)
+    far_scene = widget.price_plot.vb.mapViewToScene(QPointF(far_marker.x, far_marker.y))
+    visible_marker = next(marker for marker in widget._trade_markers if marker.action is visible_action)
+    visible_scene = widget.price_plot.vb.mapViewToScene(QPointF(visible_marker.x, visible_marker.y))
+
+    assert widget._trade_marker_at_scene_pos(far_scene) is None
+    assert widget._trade_marker_at_scene_pos(visible_scene) == (visible_marker, None)
 
 
 def test_hover_card_is_positioned_top_right(widget: ChartWidget) -> None:
@@ -3507,6 +3613,38 @@ def test_hovered_editable_order_line_drag_moves_line_instead_of_panning_chart(wi
     assert widget._hovered_order_line_id == 12
     assert widget._drag_order_label.isVisible() is False
     assert 12 in widget._order_line_labels
+
+
+def test_order_line_drag_rebuilds_only_on_finish(widget: ChartWidget, app: QApplication, monkeypatch) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.set_tick_size(0.2)
+    line = OrderLine(
+        order_type=OrderLineType.STOP_LOSS,
+        price=98.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=1,
+        created_at=datetime(2025, 1, 1, 9, 0),
+        id=12,
+    )
+    widget.set_order_lines([line])
+    app.processEvents()
+    start = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.0))
+    move = widget.price_plot.vb.mapViewToScene(QPointF(100.0, 98.13))
+    widget._handle_mouse_moved((start,))
+    rebuilds: list[bool] = []
+    monkeypatch.setattr(widget, "_rebuild_order_line_items", lambda: rebuilds.append(True))
+
+    widget.view_box.mouseDragEvent(_FakeDragEvent(start, start, is_start=True))
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, start))
+    assert rebuilds == []
+
+    widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
+
+    assert len(rebuilds) == 1
 
 
 def test_hovered_editable_order_line_small_drag_does_not_emit_update(widget: ChartWidget, app: QApplication) -> None:

@@ -56,6 +56,7 @@ DEFAULT_RIGHT_PADDING = 3.0
 DRAWING_SNAP_DISTANCE_PX = 50.0
 INTERACTIVE_VIEWPORT_REFRESH_DELAY_MS = 90
 VIEWPORT_CHANGED_THROTTLE_MS = 60
+HIT_TEST_X_BUFFER_PX = 48.0
 HIGH_FREQUENCY_INTERACTION_LOG_EVENTS = frozenset(
     {
         "editable_order_hit_test",
@@ -1107,6 +1108,15 @@ class ChartWidget(QWidget):
             self._add_drawing_items(preview, preview=True)
         self._add_snap_preview_guide_item()
 
+    def _rebuild_single_drawing_items(self, drawing_index: int) -> None:
+        if self._drawings_hidden or not (0 <= drawing_index < len(self._drawings)):
+            self._rebuild_line_items()
+            return
+        for item in list(self.price_plot.items):
+            if getattr(item, "_barbybar_line", False) and getattr(item, "_barbybar_drawing_index", None) == drawing_index:
+                self.price_plot.removeItem(item)
+        self._add_drawing_items(self._drawings[drawing_index], preview=False)
+
     def _rebuild_trade_marker_items(self) -> None:
         for item in list(self.price_plot.items):
             if getattr(item, "_barbybar_trade_marker", False):
@@ -1221,6 +1231,14 @@ class ChartWidget(QWidget):
         if self._active_drag_target.order_line_id is not None and line.id is not None:
             return line.id == self._active_drag_target.order_line_id
         return self._active_drag_target.order_line_type is not None and line.order_type is self._active_drag_target.order_line_type
+
+    def _hide_dragged_order_line_label(self) -> None:
+        order_id = self._active_drag_target.order_line_id
+        if order_id is None:
+            return
+        label = self._order_line_labels.pop(order_id, None)
+        if label is not None:
+            self.price_plot.removeItem(label)
 
     def _order_line_drag_preview_model(self, price: float) -> OrderLine | None:
         target_id = self._protective_drag_line_id
@@ -2017,7 +2035,7 @@ class ChartWidget(QWidget):
         order_target = self._order_line_hover_target(scene_pos, view_pos)
         if order_target is not None:
             return order_target
-        anchor_hit = self._drawing_anchor_at_scene_pos(scene_pos)
+        anchor_hit = self._drawing_anchor_at_scene_pos(scene_pos, use_visible_filter=not allow_outside_plot)
         if anchor_hit is not None:
             drawing_index, anchor_index = anchor_hit
             anchor_scene = self.price_plot.vb.mapViewToScene(
@@ -2032,7 +2050,7 @@ class ChartWidget(QWidget):
                 view_pos=view_pos,
                 distance_px=distance,
             )
-        drawing_hit = self._drawing_at_scene_pos(scene_pos)
+        drawing_hit = self._drawing_at_scene_pos(scene_pos, use_visible_filter=not allow_outside_plot)
         if drawing_hit is not None:
             drawing_index, _drawing = drawing_hit
             border_distance, _inside = self._drawing_hit_test(self._drawings[drawing_index], scene_pos)
@@ -2098,6 +2116,31 @@ class ChartWidget(QWidget):
                     distance_px=distance,
                 )
         return best_target
+
+    def _hover_hit_x_bounds(self) -> tuple[float, float]:
+        left, right = self.price_plot.viewRange()[0]
+        pixels_per_bar = self._pixels_per_bar()
+        buffer_bars = HIT_TEST_X_BUFFER_PX / pixels_per_bar if pixels_per_bar > 0.0001 else 3.0
+        buffer_bars = max(3.0, buffer_bars)
+        return float(left) - buffer_bars, float(right) + buffer_bars
+
+    @staticmethod
+    def _x_range_intersects(left: float, right: float, bounds: tuple[float, float]) -> bool:
+        return max(left, bounds[0]) <= min(right, bounds[1])
+
+    def _drawing_may_intersect_x_bounds(self, drawing: ChartDrawing, bounds: tuple[float, float]) -> bool:
+        if drawing.tool_type is DrawingToolType.HORIZONTAL_LINE:
+            return True
+        if not drawing.anchors:
+            return False
+        if drawing.tool_type in {DrawingToolType.TREND_LINE, DrawingToolType.EXTENDED_LINE}:
+            style = normalize_drawing_style(drawing.tool_type, drawing.style)
+            if bool(style.get("extend_left")) or bool(style.get("extend_right")):
+                return True
+        if drawing.tool_type is DrawingToolType.HORIZONTAL_RAY:
+            return max(anchor.x for anchor in drawing.anchors) >= bounds[0]
+        x_values = [anchor.x for anchor in drawing.anchors]
+        return self._x_range_intersects(min(x_values), max(x_values), bounds)
 
     def _editable_order_id_at_scene_pos(self, scene_y: float) -> int | None:
         closest_id: int | None = None
@@ -2252,13 +2295,16 @@ class ChartWidget(QWidget):
         delete_action = menu.addAction("删除画线")
         return menu, properties_action, save_template_action, delete_action
 
-    def _drawing_at_scene_pos(self, scene_pos) -> tuple[int, ChartDrawing] | None:  # noqa: ANN001
+    def _drawing_at_scene_pos(self, scene_pos, *, use_visible_filter: bool = True) -> tuple[int, ChartDrawing] | None:  # noqa: ANN001
         if self._drawings_hidden:
             return None
+        x_bounds = self._hover_hit_x_bounds() if use_visible_filter else None
         hit_index: int | None = None
         hit_priority = 99.0
         hit_distance = float("inf")
         for index, drawing in enumerate(self._drawings):
+            if x_bounds is not None and not self._drawing_may_intersect_x_bounds(drawing, x_bounds):
+                continue
             border_distance, inside = self._drawing_hit_test(drawing, scene_pos)
             if border_distance is None and not inside:
                 continue
@@ -2272,12 +2318,15 @@ class ChartWidget(QWidget):
             return None
         return hit_index, self._drawings[hit_index]
 
-    def _drawing_anchor_at_scene_pos(self, scene_pos) -> tuple[int, int] | None:  # noqa: ANN001
+    def _drawing_anchor_at_scene_pos(self, scene_pos, *, use_visible_filter: bool = True) -> tuple[int, int] | None:  # noqa: ANN001
         if self._drawings_hidden:
             return None
+        x_bounds = self._hover_hit_x_bounds() if use_visible_filter else None
         hit: tuple[int, int] | None = None
         closest_distance = float("inf")
         for drawing_index, drawing in enumerate(self._drawings):
+            if x_bounds is not None and not self._drawing_may_intersect_x_bounds(drawing, x_bounds):
+                continue
             for anchor_index, anchor in enumerate(drawing.anchors):
                 anchor_scene = self.price_plot.vb.mapViewToScene(QPointF(anchor.x, anchor.y))
                 distance = hypot(float(scene_pos.x()) - float(anchor_scene.x()), float(scene_pos.y()) - float(anchor_scene.y()))
@@ -2332,6 +2381,14 @@ class ChartWidget(QWidget):
                 return index
         return None
 
+    @staticmethod
+    def _tag_drawing_item(item: object, drawing: ChartDrawing, drawing_index: int | None) -> None:
+        item._barbybar_line = True
+        item._barbybar_drawing_id = drawing.id
+        item._barbybar_drawing_tool = drawing.tool_type.value
+        if drawing_index is not None:
+            item._barbybar_drawing_index = drawing_index
+
     def _add_drawing_anchor_items(self, drawing: ChartDrawing, drawing_index: int | None, is_hovered: bool) -> None:
         if drawing_index is None:
             return
@@ -2350,9 +2407,7 @@ class ChartWidget(QWidget):
                 brush=pg.mkBrush(AppTheme.chart_trade_exit if is_active_anchor else AppTheme.surface_elevated),
                 pen=pg.mkPen(AppTheme.chart_anchor if is_active_anchor else AppTheme.chart_anchor_idle, width=2),
             )
-            item._barbybar_line = True
-            item._barbybar_drawing_id = drawing.id
-            item._barbybar_drawing_tool = drawing.tool_type.value
+            self._tag_drawing_item(item, drawing, drawing_index)
             item.setZValue(20)
             self.price_plot.addItem(item)
 
@@ -2408,13 +2463,21 @@ class ChartWidget(QWidget):
         return None
 
     def _trade_marker_at_scene_pos(self, scene_pos) -> tuple[TradeMarker | None, TradeLink | None] | None:  # noqa: ANN001
+        x_bounds = self._hover_hit_x_bounds()
+        view_x = float(self.price_plot.vb.mapSceneToView(scene_pos).x())
+        if not (x_bounds[0] <= view_x <= x_bounds[1]):
+            return None
         if self._trade_markers_visible:
             for marker in self._trade_markers:
+                if not (x_bounds[0] <= marker.x <= x_bounds[1]):
+                    continue
                 marker_scene = self.price_plot.vb.mapViewToScene(QPointF(marker.x, marker.y))
                 if hypot(float(scene_pos.x()) - float(marker_scene.x()), float(scene_pos.y()) - float(marker_scene.y())) <= TRADE_MARKER_HIT_DISTANCE_PX:
                     return marker, None
         if self._trade_links_visible:
             for link in self._trade_links:
+                if not self._x_range_intersects(min(link.x1, link.x2), max(link.x1, link.x2), x_bounds):
+                    continue
                 start = self.price_plot.vb.mapViewToScene(QPointF(link.x1, link.y1))
                 end = self.price_plot.vb.mapViewToScene(QPointF(link.x2, link.y2))
                 distance = self._point_to_segment_distance(
@@ -2608,6 +2671,7 @@ class ChartWidget(QWidget):
         point = self.price_plot.vb.mapSceneToView(scene_pos)
         current_anchor = self._stabilize_drawing_anchor(DrawingAnchor(float(point.x()), float(point.y())))
         drawing = self._drawings[self._drag_drawing_index]
+        previous_anchors = [(anchor.x, anchor.y) for anchor in drawing.anchors]
         if self._drawing_drag_mode is DrawingDragMode.ANCHOR:
             if self._drag_anchor_index is None:
                 return
@@ -2619,8 +2683,10 @@ class ChartWidget(QWidget):
                 self._stabilize_drawing_anchor(DrawingAnchor(anchor.x + delta_x, anchor.y + delta_y))
                 for anchor in self._drag_start_anchors
             ]
+        if previous_anchors == [(anchor.x, anchor.y) for anchor in drawing.anchors]:
+            return
         self._drag_drawing_changed = True
-        self._rebuild_line_items()
+        self._rebuild_single_drawing_items(self._drag_drawing_index)
 
     def _finish_drawing_drag(self) -> None:
         changed = self._drag_drawing_changed
@@ -2793,7 +2859,7 @@ class ChartWidget(QWidget):
             self._set_dragging(True)
             self._show_axis_price_label(snapped_price)
             self._update_drag_order_label(snapped_price)
-            self._rebuild_order_line_items()
+            self._hide_dragged_order_line_label()
             self._log_interaction(
                 "begin_order_line_drag_existing_line",
                 order_line_id=editable_order_id,
@@ -2836,7 +2902,7 @@ class ChartWidget(QWidget):
             self._set_dragging(True)
             self._show_axis_price_label(snapped_price)
             self._update_drag_order_label(snapped_price)
-            self._rebuild_order_line_items()
+            self._hide_dragged_order_line_label()
             self._log_interaction(
                 "begin_order_line_drag_transient_protective_line",
                 order_type=line.order_type.value,
@@ -2861,7 +2927,6 @@ class ChartWidget(QWidget):
         self._hide_drag_order_label()
         self._active_drag_target = ActiveDragTarget(target_type=ActiveDragTargetType.ORDER_LINE, order_line_type=OrderLineType.AVERAGE_PRICE)
         self._set_dragging(True)
-        self._rebuild_order_line_items()
         self._log_interaction(
             "begin_order_line_drag_average_line",
             start_price=round(float(line.price), 6),
@@ -2877,6 +2942,8 @@ class ChartWidget(QWidget):
             return
         point = self.price_plot.vb.mapSceneToView(scene_pos)
         snapped_price = self._snap_price(float(point.y()))
+        if self._protective_drag_preview_price == snapped_price:
+            return
         self._protective_drag_preview_price = snapped_price
         if self._protective_drag_from_average:
             resolved = self._resolve_protective_order_type_from_price(snapped_price)
@@ -3068,9 +3135,7 @@ class ChartWidget(QWidget):
         if drawing.tool_type is DrawingToolType.TEXT:
             text_item = self._drawing_text_item(drawing, style, preview=preview)
             if text_item is not None:
-                text_item._barbybar_line = True
-                text_item._barbybar_drawing_id = drawing.id
-                text_item._barbybar_drawing_tool = drawing.tool_type.value
+                self._tag_drawing_item(text_item, drawing, drawing_index)
                 text_item.setZValue(19 if preview else 18)
                 self.price_plot.addItem(text_item)
             if not preview:
@@ -3083,9 +3148,7 @@ class ChartWidget(QWidget):
                 movable=False,
                 pen=self._drawing_pen(style, preview=preview, highlighted=is_hovered),
             )
-            item._barbybar_line = True
-            item._barbybar_drawing_id = drawing.id
-            item._barbybar_drawing_tool = drawing.tool_type.value
+            self._tag_drawing_item(item, drawing, drawing_index)
             item.setZValue(18 if preview else 17)
             self.price_plot.addItem(item)
             if not preview:
@@ -3094,29 +3157,21 @@ class ChartWidget(QWidget):
         pen = self._drawing_pen(style, preview=preview, highlighted=is_hovered)
         fill_item = self._drawing_fill_item(drawing, style, preview=preview)
         if fill_item is not None:
-            fill_item._barbybar_line = True
-            fill_item._barbybar_drawing_id = drawing.id
-            fill_item._barbybar_drawing_tool = drawing.tool_type.value
+            self._tag_drawing_item(fill_item, drawing, drawing_index)
             self.price_plot.addItem(fill_item)
         for x_values, y_values in self._drawing_segments(drawing):
             item = pg.PlotCurveItem(x_values, y_values, pen=pen)
-            item._barbybar_line = True
-            item._barbybar_drawing_id = drawing.id
-            item._barbybar_drawing_tool = drawing.tool_type.value
+            self._tag_drawing_item(item, drawing, drawing_index)
             item.setZValue(18 if preview else 17)
             self.price_plot.addItem(item)
         arrow_head_item = self._drawing_arrow_head_item(drawing, style, preview=preview, highlighted=is_hovered)
         if arrow_head_item is not None:
-            arrow_head_item._barbybar_line = True
-            arrow_head_item._barbybar_drawing_id = drawing.id
-            arrow_head_item._barbybar_drawing_tool = drawing.tool_type.value
+            self._tag_drawing_item(arrow_head_item, drawing, drawing_index)
             arrow_head_item.setZValue(18 if preview else 17)
             self.price_plot.addItem(arrow_head_item)
         if not preview:
             for label_item in self._drawing_label_items(drawing, style):
-                label_item._barbybar_line = True
-                label_item._barbybar_drawing_id = drawing.id
-                label_item._barbybar_drawing_tool = drawing.tool_type.value
+                self._tag_drawing_item(label_item, drawing, drawing_index)
                 label_item.setZValue(19)
                 self.price_plot.addItem(label_item)
         if not preview:
