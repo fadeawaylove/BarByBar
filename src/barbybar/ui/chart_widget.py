@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from enum import Enum
 from math import ceil, floor, hypot, sqrt
+from time import perf_counter
 
 import pyqtgraph as pg
 from loguru import logger
-from PySide6.QtCore import QEvent, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QBrush, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPicture, QPolygonF
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsPathItem, QLabel, QLayout, QMenu, QVBoxLayout, QWidget
 
@@ -53,6 +54,8 @@ TRADE_MARKER_FOCUSED_OPACITY = 0.65
 Y_AXIS_DRAG_GUTTER_WIDTH_PX = 48.0
 DEFAULT_RIGHT_PADDING = 3.0
 DRAWING_SNAP_DISTANCE_PX = 50.0
+INTERACTIVE_VIEWPORT_REFRESH_DELAY_MS = 90
+VIEWPORT_CHANGED_THROTTLE_MS = 60
 
 
 @dataclass(slots=True)
@@ -374,6 +377,7 @@ class ChartWidget(QWidget):
         self._right_padding = DEFAULT_RIGHT_PADDING
         self._left_padding = 3.0
         self._is_applying_viewport = False
+        self._interactive_viewport = False
         self._crosshair_enabled = True
         self._hover_card_margin = 12
         self._trade_line_mode: str | None = None
@@ -435,6 +439,12 @@ class ChartWidget(QWidget):
         self._temporary_measure_active = False
         self._temporary_measure_start_anchor: DrawingAnchor | None = None
         self._temporary_measure_end_anchor: DrawingAnchor | None = None
+        self._session_markers_dirty = True
+        self._order_line_items_dirty = True
+        self._trade_geometry_dirty = True
+        self._trade_marker_items_dirty = True
+        self._deferred_overlay_refresh_pending = False
+        self._pending_viewport_changed = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -514,6 +524,15 @@ class ChartWidget(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.graphics.scene().sigMouseClicked.connect(self._handle_scene_click)
         self._mouse_proxy = pg.SignalProxy(self.graphics.scene().sigMouseMoved, rateLimit=60, slot=self._handle_mouse_moved)
+        self._deferred_overlay_refresh_timer = QTimer(self)
+        self._deferred_overlay_refresh_timer.setSingleShot(True)
+        self._deferred_overlay_refresh_timer.timeout.connect(self._flush_deferred_overlay_refresh)
+        self._viewport_changed_timer = QTimer(self)
+        self._viewport_changed_timer.setSingleShot(True)
+        self._viewport_changed_timer.timeout.connect(self._emit_queued_viewport_changed)
+        self._interactive_viewport_reset_timer = QTimer(self)
+        self._interactive_viewport_reset_timer.setSingleShot(True)
+        self._interactive_viewport_reset_timer.timeout.connect(self._finish_interactive_viewport)
 
     @property
     def draw_mode(self) -> bool:
@@ -716,6 +735,7 @@ class ChartWidget(QWidget):
 
     def set_order_lines(self, order_lines: list[OrderLine]) -> None:
         self._order_lines = list(order_lines)
+        self._order_line_items_dirty = True
         if self._hover_target.target_type is HoverTargetType.ORDER_LINE:
             matching_line = self._matching_order_line_for_target(self._hover_target)
             if matching_line is None:
@@ -736,6 +756,8 @@ class ChartWidget(QWidget):
 
     def set_trade_actions(self, actions: list[SessionAction], trades: list[Trade] | None = None) -> None:
         self._trade_actions = list(actions)
+        self._trade_geometry_dirty = True
+        self._trade_marker_items_dirty = True
         self._rebuild_trade_geometry(trades)
         self._rebuild_trade_marker_items()
 
@@ -743,23 +765,28 @@ class ChartWidget(QWidget):
         # Historical trade navigation no longer adds a persistent highlight overlay.
         self._focused_trade_number = None
         self._focused_trade_points = None
+        self._trade_marker_items_dirty = True
         self._rebuild_trade_marker_items()
 
     def set_trade_markers_visible(self, visible: bool) -> None:
         self._trade_markers_visible = bool(visible)
+        self._trade_marker_items_dirty = True
         self._rebuild_trade_marker_items()
 
     def set_trade_links_visible(self, visible: bool) -> None:
         self._trade_links_visible = bool(visible)
+        self._trade_marker_items_dirty = True
         self._rebuild_trade_marker_items()
 
     def set_trade_marker_opacity(self, opacity: float, focused_opacity: float) -> None:
         self._trade_marker_opacity = min(1.0, max(0.2, float(opacity)))
         self._focused_trade_marker_opacity = min(1.0, max(0.2, float(focused_opacity)))
+        self._trade_marker_items_dirty = True
         self._rebuild_trade_marker_items()
 
     def set_bar_count_labels_visible(self, visible: bool) -> None:
         self._bar_count_labels_visible = bool(visible)
+        self._session_markers_dirty = True
         self._rebuild_session_markers()
 
     def set_drawings_hidden(self, hidden: bool) -> None:
@@ -794,6 +821,7 @@ class ChartWidget(QWidget):
         self._global_start_index = max(0, global_start_index)
         self._total_count = max(0, total_count)
         self._cursor = cursor if self._bars else -1
+        self._mark_all_viewport_overlays_dirty()
         if not preserve_viewport:
             self._reset_y_axis_offset()
         self._viewport.max_bars_in_view = max(200, self._total_count or len(self._bars))
@@ -859,7 +887,7 @@ class ChartWidget(QWidget):
         self._viewport.bars_in_view = new_bars
         self._viewport.right_edge_index = new_left + new_bars
         self._viewport.follow_latest = self._is_near_latest(self._viewport.right_edge_index)
-        self._apply_viewport()
+        self._apply_viewport(interactive=True)
 
     def pan_x(self, delta_bars: float) -> None:
         if self._cursor < 0:
@@ -878,7 +906,7 @@ class ChartWidget(QWidget):
             previous_follow_latest=previous_follow_latest,
             next_follow_latest=self._viewport.follow_latest,
         )
-        self._apply_viewport()
+        self._apply_viewport(interactive=True)
 
     def clear_lines(self) -> None:
         self._clear_temporary_measurement()
@@ -964,6 +992,9 @@ class ChartWidget(QWidget):
             x_values.append(self._global_start_index + index)
             ema_values.append(ema_prefix[index])
         self._ema_curve.setData(x=x_values, y=ema_values)
+        self._session_markers_dirty = True
+        self._trade_geometry_dirty = True
+        self._trade_marker_items_dirty = True
         self._rebuild_session_markers()
         self._rebuild_line_items()
 
@@ -976,8 +1007,10 @@ class ChartWidget(QWidget):
             ):
                 self.price_plot.removeItem(item)
         if not self._bars:
+            self._session_markers_dirty = False
             return
         if normalize_timeframe(self._chart_timeframe) == DAY_TIMEFRAME:
+            self._session_markers_dirty = False
             return
         timeframe_minutes = self._session_annotation_timeframe_minutes()
         local_cursor = self._cursor - self._global_start_index if self._cursor >= 0 else -1
@@ -1047,6 +1080,7 @@ class ChartWidget(QWidget):
             count_label.setZValue(4)
             count_label.setPos(x_pos, y_pos)
             self.price_plot.addItem(count_label, ignoreBounds=True)
+        self._session_markers_dirty = False
 
     def _rebuild_line_items(self) -> None:
         for item in list(self.price_plot.items):
@@ -1066,6 +1100,7 @@ class ChartWidget(QWidget):
             if getattr(item, "_barbybar_trade_marker", False):
                 self.price_plot.removeItem(item)
         if not self._bars or self._cursor < 0:
+            self._trade_marker_items_dirty = False
             return
         if self._trade_links_visible:
             for link in self._trade_links:
@@ -1132,9 +1167,10 @@ class ChartWidget(QWidget):
                         brush=pg.mkBrush(AppTheme.chart_trade_exit),
                         pen=pg.mkPen(AppTheme.chart_anchor, width=2),
                     )
-                    focus_marker._barbybar_trade_marker = True
-                    focus_marker.setZValue(18)
-                    self.price_plot.addItem(focus_marker)
+                focus_marker._barbybar_trade_marker = True
+                focus_marker.setZValue(18)
+                self.price_plot.addItem(focus_marker)
+        self._trade_marker_items_dirty = False
 
     def _rebuild_order_line_items(self) -> None:
         for item in list(self.price_plot.items):
@@ -1165,6 +1201,7 @@ class ChartWidget(QWidget):
                 self._order_line_labels[line.id] = label
                 scene_point = self.price_plot.vb.mapViewToScene(QPointF(float(self._global_start_index), float(line.price)))
                 self._order_line_scene_positions[line.id] = float(scene_point.y())
+        self._order_line_items_dirty = False
 
     def _is_drag_label_target(self, line: OrderLine) -> bool:
         if self._active_drag_target.target_type is not ActiveDragTargetType.ORDER_LINE:
@@ -1258,9 +1295,12 @@ class ChartWidget(QWidget):
     def _hide_drag_order_label(self) -> None:
         self._drag_order_label.hide()
 
-    def _apply_viewport(self) -> None:
+    def _apply_viewport(self, *, interactive: bool = False) -> None:
         if not self._bars or self._is_applying_viewport:
             return
+        started = perf_counter()
+        if interactive:
+            self._begin_interactive_viewport()
         self._is_applying_viewport = True
         try:
             requested_right_edge = float(self._viewport.right_edge_index)
@@ -1272,10 +1312,10 @@ class ChartWidget(QWidget):
             right = visible_right + self._right_padding
             self.price_plot.setXRange(left, right, padding=0)
             visible_window_has_bars = self._apply_y_range(left, right)
-            self._rebuild_session_markers()
-            self._rebuild_order_line_items()
-            self._rebuild_trade_geometry(None)
-            self._rebuild_trade_marker_items()
+            if interactive:
+                self._schedule_deferred_overlay_refresh()
+            else:
+                self._refresh_viewport_overlays(viewport_changed=True)
             self._log_interaction(
                 "viewport_applied",
                 requested_right_edge=round(requested_right_edge, 3),
@@ -1291,10 +1331,12 @@ class ChartWidget(QWidget):
                 follow_latest=requested_follow_latest,
                 applied_follow_latest=bool(self._viewport.follow_latest),
                 visible_window_has_bars=visible_window_has_bars,
+                interactive=interactive,
+                elapsed_ms=round((perf_counter() - started) * 1000, 3),
             )
         finally:
             self._is_applying_viewport = False
-        self.viewportChanged.emit()
+        self._queue_viewport_changed(immediate=not interactive)
 
     def _clamp_viewport(self) -> tuple[float, float]:
         blank_buffer = float(max(self._viewport.bars_in_view * 4, self._total_count or len(self._bars), 200))
@@ -1319,6 +1361,77 @@ class ChartWidget(QWidget):
         auto_high = high + padding
         self.price_plot.setYRange(auto_low + self._y_axis_offset, auto_high + self._y_axis_offset, padding=0)
         return True
+
+    def _mark_all_viewport_overlays_dirty(self) -> None:
+        self._session_markers_dirty = True
+        self._order_line_items_dirty = True
+        self._trade_geometry_dirty = True
+        self._trade_marker_items_dirty = True
+
+    def _begin_interactive_viewport(self) -> None:
+        self._interactive_viewport = True
+        self._interactive_viewport_reset_timer.start(INTERACTIVE_VIEWPORT_REFRESH_DELAY_MS)
+
+    def _finish_interactive_viewport(self) -> None:
+        if not self._interactive_viewport:
+            return
+        self._interactive_viewport = False
+        self._flush_deferred_overlay_refresh()
+
+    def _schedule_deferred_overlay_refresh(self) -> None:
+        self._deferred_overlay_refresh_pending = True
+        self._mark_all_viewport_overlays_dirty()
+        self._deferred_overlay_refresh_timer.start(INTERACTIVE_VIEWPORT_REFRESH_DELAY_MS)
+
+    def _refresh_viewport_overlays(self, *, viewport_changed: bool) -> None:
+        started = perf_counter()
+        geometry_rebuilt = False
+        if viewport_changed or self._session_markers_dirty:
+            self._rebuild_session_markers()
+        if viewport_changed or self._order_line_items_dirty:
+            self._rebuild_order_line_items()
+        if viewport_changed or self._trade_geometry_dirty:
+            self._rebuild_trade_geometry(None)
+            geometry_rebuilt = True
+        if viewport_changed or geometry_rebuilt or self._trade_marker_items_dirty:
+            self._rebuild_trade_marker_items()
+        logger.bind(
+            component="chart_viewport",
+            viewport_changed=viewport_changed,
+            interactive=self._interactive_viewport,
+        ).debug(
+            "event=refresh_viewport_overlays elapsed_ms={elapsed_ms:.3f} session_dirty={session_dirty} order_dirty={order_dirty} trade_geometry_dirty={trade_geometry_dirty} trade_markers_dirty={trade_markers_dirty}",
+            elapsed_ms=(perf_counter() - started) * 1000,
+            session_dirty=self._session_markers_dirty,
+            order_dirty=self._order_line_items_dirty,
+            trade_geometry_dirty=self._trade_geometry_dirty,
+            trade_markers_dirty=self._trade_marker_items_dirty,
+        )
+
+    def _flush_deferred_overlay_refresh(self) -> None:
+        if not self._deferred_overlay_refresh_pending or not self._bars:
+            return
+        if self._interactive_viewport:
+            self._deferred_overlay_refresh_timer.start(INTERACTIVE_VIEWPORT_REFRESH_DELAY_MS)
+            return
+        self._deferred_overlay_refresh_pending = False
+        self._refresh_viewport_overlays(viewport_changed=True)
+        self._queue_viewport_changed(immediate=True)
+
+    def _queue_viewport_changed(self, *, immediate: bool = False) -> None:
+        self._pending_viewport_changed = True
+        if immediate:
+            self._viewport_changed_timer.stop()
+            self._emit_queued_viewport_changed()
+            return
+        if not self._viewport_changed_timer.isActive():
+            self._viewport_changed_timer.start(VIEWPORT_CHANGED_THROTTLE_MS)
+
+    def _emit_queued_viewport_changed(self) -> None:
+        if not self._pending_viewport_changed:
+            return
+        self._pending_viewport_changed = False
+        self.viewportChanged.emit()
 
     def _revealed_window_bars(self, left: float, right_edge: float) -> list[tuple[int, Bar]]:
         if self._cursor < 0:
@@ -3166,6 +3279,7 @@ class ChartWidget(QWidget):
         if not self._bars or self._cursor < 0:
             self._trade_markers = []
             self._trade_links = []
+            self._trade_geometry_dirty = False
             return
         visible_actions = [
             action
@@ -3214,6 +3328,7 @@ class ChartWidget(QWidget):
             marker.detail_lines = self._trade_action_detail_lines(marker)
         self._trade_markers = markers
         self._trade_links = links
+        self._trade_geometry_dirty = False
 
     @staticmethod
     def _trade_marker_role(action: SessionAction, active_direction: str) -> tuple[str, str]:
@@ -3436,14 +3551,17 @@ class ChartWidget(QWidget):
             return
         self._is_dragging = dragging
         if dragging:
+            self._begin_interactive_viewport()
             self._log_interaction("hover_hidden_dragging")
             self._hide_crosshair()
         else:
+            self._interactive_viewport_reset_timer.stop()
             self._pan_drag_start_scene_pos = None
             self._hide_crosshair()
             self._hide_drag_order_label()
             if self._interaction_mode is InteractionMode.BROWSE:
                 self._log_interaction("hover_resume_after_drag")
+            self._finish_interactive_viewport()
         self._log_interaction("set_dragging", dragging=dragging)
         self._sync_cursor()
         self.interactionModeChanged.emit(self._interaction_mode)

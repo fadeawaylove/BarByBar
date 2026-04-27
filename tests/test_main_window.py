@@ -15,6 +15,7 @@ from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, WindowBars
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
+import barbybar.ui.main_window as main_window_module
 from barbybar.ui.main_window import (
     BatchImportOutcome,
     BatchImportProgress,
@@ -1805,6 +1806,28 @@ def test_viewport_change_does_not_extend_forward_window(window: MainWindow, monk
     )
 
     window._handle_chart_viewport_changed()
+
+
+def test_viewport_change_respects_backward_extension_cooldown(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    assert window.engine is not None
+    window.engine.replace_window(window.engine.bars, window_start_index=200, total_count=1000)
+    monkeypatch.setattr(window.chart_widget, "current_x_range", lambda: (205.0, 260.0))
+
+    captured: list[tuple[int, bool]] = []
+    monkeypatch.setattr(
+        window,
+        "_ensure_window_contains_index",
+        lambda target_index, *, preserve_viewport=False: captured.append((target_index, preserve_viewport)) or True,
+    )
+    times = iter([10.0, 10.0, 10.01, 10.25, 10.25])
+    monkeypatch.setattr(main_window_module, "perf_counter", lambda: next(times))
+
+    window._handle_chart_viewport_changed()
+    window._handle_chart_viewport_changed()
+    window._handle_chart_viewport_changed()
+
+    assert captured == [(55, True), (55, True)]
 
 
 def test_trade_marker_visibility_toggle_updates_chart_widget(window: MainWindow) -> None:

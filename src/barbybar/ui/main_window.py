@@ -108,6 +108,7 @@ WINDOW_BUFFER_THRESHOLD = 20
 AUTO_SAVE_DELAY_MS = 800
 MAX_DRAWING_TEMPLATE_SHORTCUTS = 8
 VIEWPORT_EXTENSION_THRESHOLD_BARS = 10.0
+VIEWPORT_EXTENSION_COOLDOWN_MS = 180.0
 CANDLE_COLOR_SETTING_KEYS = (
     "candle_up_body_color",
     "candle_up_wick_color",
@@ -1699,6 +1700,7 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.timeout.connect(self._perform_auto_save)
         self._session_dirty = False
         self._viewport_window_extension_active = False
+        self._last_viewport_window_extension_at = 0.0
         self._trade_action_buttons: dict[str, QPushButton] = {}
         self._draw_order_buttons: dict[OrderLineType, QPushButton] = {}
         self._drawing_tool_buttons: dict[DrawingToolType, QPushButton] = {}
@@ -4001,6 +4003,16 @@ class MainWindow(QMainWindow):
             or self._active_loader_thread is not None
         ):
             return
+        now = perf_counter()
+        cooldown_s = VIEWPORT_EXTENSION_COOLDOWN_MS / 1000.0
+        if now - self._last_viewport_window_extension_at < cooldown_s:
+            logger.bind(
+                component="chart_window",
+                session_id=self.current_session_id,
+                chart_timeframe=self.engine.session.chart_timeframe,
+                cooldown_ms=VIEWPORT_EXTENSION_COOLDOWN_MS,
+            ).debug("event=skip_viewport_backward_extension_cooldown")
+            return
         left, _right = self.chart_widget.current_x_range()
         left_threshold = float(self.engine.window_start_index) + VIEWPORT_EXTENSION_THRESHOLD_BARS
         needs_backward = left <= left_threshold and self.engine.window_start_index > 0
@@ -4010,10 +4022,22 @@ class MainWindow(QMainWindow):
         if target_index >= self.engine.window_start_index:
             target_index = max(0, self.engine.window_start_index - EXTEND_WINDOW_BEFORE)
         self._viewport_window_extension_active = True
+        started = perf_counter()
         try:
+            self._last_viewport_window_extension_at = now
             self._ensure_window_contains_index(target_index, preserve_viewport=True)
         finally:
             self._viewport_window_extension_active = False
+        logger.bind(
+            component="chart_window",
+            session_id=self.current_session_id,
+            chart_timeframe=self.engine.session.chart_timeframe,
+            left=round(float(left), 3),
+            target_index=target_index,
+        ).debug(
+            "event=viewport_backward_extension elapsed_ms={elapsed_ms:.3f}",
+            elapsed_ms=(perf_counter() - started) * 1000,
+        )
 
     def _schedule_auto_save(self, reason: str) -> None:
         if not self.engine:
