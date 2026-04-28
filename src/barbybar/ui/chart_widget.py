@@ -1494,7 +1494,7 @@ class ChartWidget(QWidget):
         scene_pos = event.scenePos()
         in_chart = bool(self.price_plot.sceneBoundingRect().contains(scene_pos))
         is_double = bool(event.double()) if hasattr(event, "double") else False
-        if in_chart and not self._is_dragging:
+        if in_chart and not self._is_dragging and not self._suppress_existing_hover_targets():
             self._apply_hover_target(self._compute_hover_target(scene_pos))
         self._log_interaction(
             "scene_click_received",
@@ -1595,7 +1595,7 @@ class ChartWidget(QWidget):
         if self._is_dragging:
             self._log_interaction("mouse_move_skipped_dragging")
         else:
-            if self._mouse_on_axis:
+            if self._mouse_on_axis or self._suppress_existing_hover_targets():
                 point = self.price_plot.vb.mapSceneToView(pos) if self._plot_scene_rect().contains(pos) else None
                 self._apply_hover_target(self._empty_hover_target(scene_pos=pos, view_pos=point))
             else:
@@ -2027,6 +2027,9 @@ class ChartWidget(QWidget):
         )
 
     def _compute_hover_target(self, scene_pos, *, allow_outside_plot: bool = False) -> HoverTarget:  # noqa: ANN001
+        if self._suppress_existing_hover_targets():
+            view_pos = self.price_plot.vb.mapSceneToView(scene_pos) if self._plot_scene_rect().contains(scene_pos) else None
+            return self._empty_hover_target(scene_pos=scene_pos, view_pos=view_pos)
         if self._cursor < 0:
             return self._empty_hover_target(scene_pos=scene_pos)
         if not allow_outside_plot and not self.price_plot.sceneBoundingRect().contains(scene_pos):
@@ -2093,6 +2096,9 @@ class ChartWidget(QWidget):
             view_pos=view_pos,
             distance_px=0.0,
         )
+
+    def _suppress_existing_hover_targets(self) -> bool:
+        return self._interaction_mode is InteractionMode.DRAWING
 
     def _order_line_hover_target(self, scene_pos, view_pos: QPointF) -> HoverTarget | None:  # noqa: ANN001
         best_target: HoverTarget | None = None

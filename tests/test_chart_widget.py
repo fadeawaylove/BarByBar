@@ -2941,6 +2941,23 @@ def test_hover_target_identifies_drawing_anchor(widget: ChartWidget, app: QAppli
     assert widget._hover_target.anchor_index == 0
 
 
+def test_drawing_mode_suppresses_hover_for_existing_drawing(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    app.processEvents()
+
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 100.0))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget.interaction_mode is InteractionMode.DRAWING
+    assert widget._hover_target.target_type is HoverTargetType.NONE
+    assert widget.cursor().shape() == Qt.CursorShape.CrossCursor
+
+
 def test_delete_drawing_removes_only_target(widget: ChartWidget) -> None:
     widget.set_drawings(
         [
@@ -3375,6 +3392,35 @@ def test_hovering_editable_order_line_marks_it_selected(widget: ChartWidget, app
     assert widget._hovered_order_line_id == 12
     assert widget.cursor().shape() == Qt.CursorShape.SizeVerCursor
     assert widget._order_line_items[12].pen.widthF() == 2.0
+
+
+def test_drawing_mode_suppresses_hover_for_existing_order_line(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_tick_size(0.2)
+    line = OrderLine(
+        order_type=OrderLineType.STOP_LOSS,
+        price=98.0,
+        quantity=1,
+        created_bar_index=0,
+        active_from_bar_index=1,
+        created_at=datetime(2025, 1, 1, 9, 0),
+        id=12,
+    )
+    widget.set_order_lines([line])
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+    app.processEvents()
+
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(10.0, 98.0))
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert widget.interaction_mode is InteractionMode.DRAWING
+    assert widget._hover_target.target_type is HoverTargetType.NONE
+    assert widget._hovered_order_line_id is None
+    assert widget.cursor().shape() == Qt.CursorShape.CrossCursor
+    assert widget._order_line_items[12].pen.widthF() == 1.0
 
 
 def test_average_price_drag_emits_take_profit_for_long_above_average(widget: ChartWidget, app: QApplication) -> None:
