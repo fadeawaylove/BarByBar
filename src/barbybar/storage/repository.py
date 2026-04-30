@@ -534,20 +534,41 @@ class Repository:
         ]
 
     def get_drawings(self, session_id: int, chart_timeframe: str) -> list[ChartDrawing]:
+        normalized_timeframe = normalize_timeframe(chart_timeframe)
         rows = self.conn.execute(
-            "SELECT * FROM drawings WHERE session_id = ? AND chart_timeframe = ? ORDER BY id",
-            (session_id, normalize_timeframe(chart_timeframe)),
+            """
+            SELECT *
+            FROM drawings
+            WHERE session_id = ?
+              AND (chart_timeframe = ? OR chart_timeframe = '1m')
+            ORDER BY id
+            """,
+            (session_id, normalized_timeframe),
         ).fetchall()
-        return [
-            ChartDrawing(
-                id=row["id"],
-                session_id=row["session_id"],
-                tool_type=DrawingToolType(row["tool_type"]),
-                anchors=[DrawingAnchor.from_dict(item) for item in json.loads(row["anchors_json"])],
-                style=normalize_drawing_style(DrawingToolType(row["tool_type"]), json.loads(row["style_json"])),
+        drawings: list[ChartDrawing] = []
+        for row in rows:
+            try:
+                tool_type = DrawingToolType(row["tool_type"])
+                anchors = [DrawingAnchor.from_dict(item) for item in json.loads(row["anchors_json"])]
+                style = normalize_drawing_style(tool_type, json.loads(row["style_json"]))
+            except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                logger.bind(
+                    component="session_repository",
+                    session_id=session_id,
+                    drawing_id=row["id"],
+                    tool_type=row["tool_type"],
+                ).warning("event=skip_invalid_drawing error={}", str(exc))
+                continue
+            drawings.append(
+                ChartDrawing(
+                    id=row["id"],
+                    session_id=row["session_id"],
+                    tool_type=tool_type,
+                    anchors=anchors,
+                    style=style,
+                )
             )
-            for row in rows
-        ]
+        return drawings
 
     def _dataset_from_row(self, row) -> DataSet:
         return DataSet(

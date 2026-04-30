@@ -539,19 +539,23 @@ class ReviewEngine:
             self._update_drawdown(bar.close)
             return False
         self._trigger_line(hit_line, index, bar.timestamp)
+        close_quantity = min(hit_line.quantity, position.quantity)
         auto_action = SessionAction(
-            action_type=ActionType.CLOSE,
+            action_type=ActionType.CLOSE if close_quantity >= position.quantity else ActionType.REDUCE,
             bar_index=index,
             timestamp=bar.timestamp,
             price=fill_price,
-            quantity=position.quantity,
+            quantity=close_quantity,
             note=f"Auto close by {hit_line.order_type.value}",
             extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
             session_id=self.session.id,
         )
         self._apply_action(auto_action)
         self.actions.append(auto_action)
-        self._remove_protective_lines()
+        if self.session.position.is_open:
+            self._sync_position_from_lines()
+        else:
+            self._remove_protective_lines()
         self._update_drawdown(fill_price)
         return True
 
@@ -617,14 +621,20 @@ class ReviewEngine:
             self._update_drawdown(bar.close)
             return False
         self._trigger_line(hit_line, index, bar.timestamp)
-        quantity = position.quantity
+        current_quantity = position.quantity
         direction = position.direction
+        order_close_quantity = hit_line.quantity
+        reverse_open_quantity = 0.0
+        if hit_line.order_type is OrderLineType.REVERSE:
+            order_close_quantity = min(hit_line.quantity * 2, current_quantity)
+            reverse_open_quantity = max((hit_line.quantity * 2) - current_quantity, 0.0)
+        close_quantity = min(order_close_quantity, current_quantity)
         close_action = SessionAction(
-            action_type=ActionType.CLOSE,
+            action_type=ActionType.CLOSE if close_quantity >= current_quantity else ActionType.REDUCE,
             bar_index=index,
             timestamp=bar.timestamp,
             price=fill_price,
-            quantity=quantity,
+            quantity=close_quantity,
             note=f"Auto close by {hit_line.order_type.value}",
             extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
             session_id=self.session.id,
@@ -632,18 +642,19 @@ class ReviewEngine:
         self._apply_action(close_action)
         self.actions.append(close_action)
         if hit_line.order_type is OrderLineType.REVERSE and direction is not None:
-            reverse_action = SessionAction(
-                action_type=ActionType.OPEN_SHORT if direction == "long" else ActionType.OPEN_LONG,
-                bar_index=index,
-                timestamp=bar.timestamp,
-                price=fill_price,
-                quantity=quantity,
-                note="Auto reverse by reverse line",
-                extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
-                session_id=self.session.id,
-            )
-            self._apply_action(reverse_action)
-            self.actions.append(reverse_action)
+            if reverse_open_quantity > 0:
+                reverse_action = SessionAction(
+                    action_type=ActionType.OPEN_SHORT if direction == "long" else ActionType.OPEN_LONG,
+                    bar_index=index,
+                    timestamp=bar.timestamp,
+                    price=fill_price,
+                    quantity=reverse_open_quantity,
+                    note="Auto reverse by reverse line",
+                    extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
+                    session_id=self.session.id,
+                )
+                self._apply_action(reverse_action)
+                self.actions.append(reverse_action)
         self._cancel_flattening_lines()
         self._update_drawdown(fill_price)
         return True

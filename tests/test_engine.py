@@ -311,6 +311,78 @@ def test_exit_order_line_closes_existing_position() -> None:
     assert any(action.action_type is ActionType.CLOSE for action in engine.actions)
 
 
+def test_stop_loss_line_can_partially_close_position() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+    engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is True
+    assert engine.session.position.quantity == 1
+    assert engine.trades[-1].quantity == 1
+    assert engine.trades[-1].exit_price == 99
+
+
+def test_take_profit_line_can_partially_close_position() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=101, high=103, low=100, close=102, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+    engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is True
+    assert engine.session.position.quantity == 1
+    assert engine.trades[-1].quantity == 1
+    assert engine.trades[-1].exit_price == 102
+
+
+def test_partial_protective_trigger_keeps_remaining_protective_lines() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+    first = engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+    second = engine.place_order_line(OrderLineType.STOP_LOSS, price=97, quantity=1)
+
+    engine.step_forward()
+
+    assert first.status.name == "TRIGGERED"
+    assert second.is_active is True
+    assert engine.session.position.quantity == 1
+    assert engine.session.position.stop_loss == 97
+
+
+def test_exit_order_line_can_partially_close_position() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+    engine.place_order_line(OrderLineType.EXIT, price=100.5, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is True
+    assert engine.session.position.quantity == 1
+    assert engine.trades[-1].quantity == 1
+
+
+def test_exit_order_line_caps_at_remaining_position_quantity() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+    engine.place_order_line(OrderLineType.EXIT, price=100.5, quantity=3)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is False
+    assert engine.trades[-1].quantity == 2
+
+
 def test_reverse_order_line_flips_position_direction() -> None:
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
     engine = ReviewEngine(session, sample_bars())
@@ -323,6 +395,21 @@ def test_reverse_order_line_flips_position_direction() -> None:
     assert engine.session.position.quantity == 1
     assert engine.actions[-2].action_type is ActionType.CLOSE
     assert engine.actions[-1].action_type is ActionType.OPEN_SHORT
+
+
+def test_partial_reverse_line_nets_position_without_dual_sided_holdings() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+    engine.place_order_line(OrderLineType.REVERSE, price=100.5, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is False
+    assert len(engine.trades) == 1
+    assert engine.trades[-1].quantity == 2
+    assert engine.actions[-1].action_type is ActionType.CLOSE
+    assert engine.actions[-1].extra["order_type"] == OrderLineType.REVERSE.value
 
 
 def test_flattening_order_lines_can_be_created_after_pending_entry_line() -> None:

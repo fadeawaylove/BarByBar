@@ -564,6 +564,32 @@ def test_get_drawings_normalizes_legacy_empty_style_json() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_get_drawings_skips_unknown_legacy_tool_type() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        repo.conn.execute(
+            "INSERT INTO drawings(session_id, tool_type, anchors_json, style_json) VALUES (?, ?, ?, ?)",
+            (session.id, "callout_text", '[{\"x\": 2.0, \"y\": 100.0}]', "{}"),
+        )
+        repo.conn.execute(
+            "INSERT INTO drawings(session_id, tool_type, anchors_json, style_json) VALUES (?, ?, ?, ?)",
+            (session.id, DrawingToolType.HORIZONTAL_LINE.value, '[{\"x\": 3.0, \"y\": 101.0}]', "{}"),
+        )
+        repo.conn.commit()
+
+        drawings = repo.get_drawings(session.id or 0, session.chart_timeframe)
+
+        assert len(drawings) == 1
+        assert drawings[0].tool_type is DrawingToolType.HORIZONTAL_LINE
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_delete_session_removes_actions_and_order_lines() -> None:
     temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
     temp_dir.mkdir(parents=True, exist_ok=True)
