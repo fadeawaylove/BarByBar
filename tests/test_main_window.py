@@ -13,7 +13,7 @@ from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
 from barbybar.data.tick_size import default_tick_size_for_symbol, format_average_price, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, WindowBars
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, TradeReviewItem, WindowBars
 from barbybar.performance_metrics import clear_metrics, recent_metrics, record_metric
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
@@ -2874,12 +2874,17 @@ def test_update_ui_populates_training_stats_and_trade_history(window: MainWindow
 
     window.open_trade_history_dialog()
 
-    assert window._trade_history_dialog is not None
-    assert window._trade_history_dialog.trade_history_list.count() == 1
-    assert window._trade_history_dialog.trade_history_list.item(0).data(Qt.ItemDataRole.UserRole) == 1
+    assert window.trade_review_sidebar is not None
+    assert window.trade_review_sidebar.isHidden() is False
+    assert window.trade_review_sidebar.trade_history_model.rowCount() == 1
+    assert window.trade_review_sidebar.trade_history_model.data(
+        window.trade_review_sidebar.trade_history_model.index(0, 0),
+        Qt.ItemDataRole.UserRole,
+    ) == 1
+    assert "交易 #1" in window.trade_review_sidebar.trade_detail.toPlainText()
 
 
-def test_trade_history_click_and_toggle_jump_between_entry_and_exit(window: MainWindow) -> None:
+def test_trade_history_selection_and_focus_controls_jump_between_entry_and_exit(window: MainWindow) -> None:
     _seed_engine(window)
     window.chart_widget.set_window_data(
         window.engine.bars,
@@ -2897,22 +2902,24 @@ def test_trade_history_click_and_toggle_jump_between_entry_and_exit(window: Main
     window._update_ui_from_engine()
     window.open_trade_history_dialog()
 
-    assert window._trade_history_dialog is not None
-    item = window._trade_history_dialog.trade_history_list.item(0)
-    window._trade_history_dialog._handle_item_clicked(item)
+    assert window.trade_review_sidebar is not None
+    item = window.trade_review_sidebar.trade_card_list.item(0)
+    window.trade_review_sidebar._handle_card_clicked(item)
+
+    assert window._selected_trade_number == 1
+    assert "交易 #1" in window.trade_review_sidebar.trade_detail.toPlainText()
 
     visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
     assert window.chart_widget._cursor == window.engine.session.current_index
     assert visible[-1][0] == exit_index
-    assert window.chart_widget._focused_trade_points is None
-    assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到入场"
+    assert window.trade_review_sidebar.exit_focus_button.isChecked()
 
-    window._trade_history_dialog._toggle_selected_trade_focus()
+    window.trade_review_sidebar.entry_focus_button.click()
 
     visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
     assert window.chart_widget._cursor == window.engine.session.current_index
     assert visible[-1][0] == entry_index
-    assert window._trade_history_dialog.trade_history_toggle_button.text() == "切换到出场"
+    assert window.trade_review_sidebar.entry_focus_button.isChecked()
 
 
 def test_trade_history_jump_outside_window_keeps_training_cursor(window: MainWindow, app: QApplication) -> None:
@@ -2947,14 +2954,150 @@ def test_trade_history_jump_outside_window_keeps_training_cursor(window: MainWin
     window._update_ui_from_engine()
     window.open_trade_history_dialog()
 
-    assert window._trade_history_dialog is not None
-    item = window._trade_history_dialog.trade_history_list.item(window._trade_history_dialog.trade_history_list.count() - 1)
-    window._trade_history_dialog._handle_item_clicked(item)
+    assert window.trade_review_sidebar is not None
+    item = window.trade_review_sidebar.trade_card_list.item(window.trade_review_sidebar.trade_card_list.count() - 1)
+    window.trade_review_sidebar._handle_card_clicked(item)
 
     visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
     assert window.engine.session.current_index == current_index
     assert window.chart_widget._cursor == current_index
     assert visible[-1][0] == exit_index
+
+
+def test_trade_history_filters_sorting_and_selection_preservation(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    window._trade_review_items = [
+        TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 98, -2, 1, 3, 2, "止损", True, True, False, False),
+        TradeReviewItem(2, start + timedelta(minutes=5), start + timedelta(minutes=10), "short", 1, 105, 101, 4, 5, 10, 5, "目标", True, False, False, True),
+    ]
+    window._trade_review_controller.select_trade(2)
+    window._selected_trade_number = 2
+    window.open_full_trade_history_dialog()
+
+    assert window._trade_history_dialog is not None
+    dialog = window._trade_history_dialog
+    assert dialog.trade_history_model.rowCount() == 2
+
+    dialog.direction_filter.setCurrentIndex(dialog.direction_filter.findData("long"))
+    dialog.outcome_filter.setCurrentIndex(dialog.outcome_filter.findData("loss"))
+
+    assert dialog.trade_history_model.rowCount() == 1
+    assert dialog.trade_history_model.data(dialog.trade_history_model.index(0, 0), Qt.ItemDataRole.UserRole) == 1
+    assert window._selected_trade_number == 2
+
+    dialog._handle_table_clicked(dialog.trade_history_model.index(0, 0))
+    assert window._selected_trade_number == 1
+
+    dialog.trade_history_sort.setCurrentIndex(dialog.trade_history_sort.findData("pnl_desc"))
+    assert window._selected_trade_number == 1
+
+    dialog._clear_filters()
+    assert dialog.trade_history_model.rowCount() == 2
+
+
+def test_trade_history_exit_reason_filter_displays_chinese_labels(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    window._trade_review_items = [
+        TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 98, -2, 1, 3, 2, "stop_loss", True, True, False, False),
+        TradeReviewItem(2, start + timedelta(minutes=5), start + timedelta(minutes=10), "short", 1, 105, 101, 4, 5, 10, 5, "manual_close", True, False, False, True),
+    ]
+    window.open_full_trade_history_dialog()
+
+    assert window._trade_history_dialog is not None
+    dialog = window._trade_history_dialog
+
+    stop_index = dialog.exit_reason_filter.findData("stop_loss")
+    manual_index = dialog.exit_reason_filter.findData("manual_close")
+    assert dialog.exit_reason_filter.itemText(stop_index) == "止损触发"
+    assert dialog.exit_reason_filter.itemText(manual_index) == "手动平仓"
+
+    dialog.exit_reason_filter.setCurrentIndex(stop_index)
+    assert dialog.trade_history_model.rowCount() == 1
+    assert dialog.trade_history_model.data(dialog.trade_history_model.index(0, 0), Qt.ItemDataRole.UserRole) == 1
+
+
+def test_trade_history_click_focuses_chart_using_active_focus_mode(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    window._trade_review_items = [
+        TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 102, 2, 1, 3, 2, "手动", True, False, False, True),
+    ]
+    focus_calls: list[str] = []
+    window._focus_selected_trade_view = lambda: focus_calls.append("focus")  # type: ignore[method-assign]
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    item = sidebar.trade_card_list.item(0)
+
+    sidebar._handle_card_clicked(item)
+    assert focus_calls == ["focus"]
+    assert "交易 #1" in sidebar.trade_detail.toPlainText()
+
+    item = sidebar.trade_card_list.item(0)
+    sidebar._handle_card_clicked(item)
+    assert focus_calls == ["focus", "focus"]
+
+
+def test_trade_history_sidebar_collapses_and_opens_full_table(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    window._trade_review_items = [
+        TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 102, 2, 1, 3, 2, "manual_close", True, False, False, True),
+    ]
+    window._trade_review_controller.select_trade(1)
+    window._selected_trade_number = 1
+
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    assert sidebar.isHidden() is False
+    assert sidebar.objectName() == "tradeReviewSidebar"
+    assert sidebar.trade_card_list.objectName() == "tradeReviewCardList"
+    assert sidebar.trade_card_list.count() == 1
+    assert "#1 多  PnL 2.00" in sidebar.trade_card_list.item(0).text()
+
+    window.open_trade_history_dialog()
+    assert sidebar.isHidden() is True
+    assert window._selected_trade_number == 1
+
+    window.open_trade_history_dialog()
+    assert sidebar.isHidden() is False
+    assert window._selected_trade_number == 1
+
+    sidebar.full_table_button.click()
+
+    assert window._trade_history_dialog is not None
+    assert window._trade_history_dialog.trade_history_model.rowCount() == 1
+    assert window._selected_trade_number == 1
+
+
+def test_trade_history_saves_entry_and_review_notes_to_actions(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=125.5, note="旧开仓想法")
+    window.engine.step_forward()
+    window.engine.step_forward()
+    window.engine.record_action(ActionType.CLOSE, quantity=1, price=128.5, note="旧复盘总结")
+    window._update_ui_from_engine()
+    save_triggers: list[str] = []
+    monkeypatch.setattr(window, "save_session", lambda *, trigger="manual": save_triggers.append(trigger))
+
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    assert sidebar.entry_note_edit.toPlainText() == "旧开仓想法"
+    assert sidebar.review_note_edit.toPlainText() == "旧复盘总结"
+
+    sidebar.entry_note_edit.setPlainText("突破回踩有效，准备跟随")
+    sidebar.review_note_edit.setPlainText("出场及时，但仓位可以更轻")
+    sidebar.save_trade_note_button.click()
+
+    assert window.engine.actions[0].note == "突破回踩有效，准备跟随"
+    assert window.engine.actions[1].note == "出场及时，但仓位可以更轻"
+    assert save_triggers == ["trade_note"]
+    assert window._selected_trade_number == 1
+    assert sidebar.entry_note_edit.toPlainText() == "突破回踩有效，准备跟随"
+    assert sidebar.review_note_edit.toPlainText() == "出场及时，但仓位可以更轻"
 
 
 def test_tick_size_change_snaps_price_input(window: MainWindow) -> None:

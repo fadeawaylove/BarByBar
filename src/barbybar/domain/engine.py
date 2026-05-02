@@ -360,8 +360,9 @@ class ReviewEngine:
         stop_set_bar_index: int | None = None
         had_adverse_add = False
         trade_index = 0
+        open_trade_action_index: int | None = None
 
-        for action in self.actions:
+        for action_index, action in enumerate(self.actions):
             price = float(action.price if action.price is not None else 0.0)
             quantity = max(float(action.quantity), 0.0)
 
@@ -373,6 +374,7 @@ class ReviewEngine:
                     average_price = price
                     open_trade_started_at = action.timestamp
                     open_trade_started_bar_index = action.bar_index
+                    open_trade_action_index = action_index
                     has_stop_protection = False
                     stop_set_bar_index = None
                     had_adverse_add = False
@@ -439,12 +441,17 @@ class ReviewEngine:
                     had_stop_protection=has_stop_protection,
                     had_adverse_add=had_adverse_add,
                     is_planned=is_planned,
+                    entry_action_index=open_trade_action_index,
+                    exit_action_index=action_index,
+                    entry_note=self.actions[open_trade_action_index].note if open_trade_action_index is not None else "",
+                    review_note=action.note,
                 )
             )
             position_quantity = remaining_quantity
             if position_quantity <= 0:
                 position_direction = None
                 average_price = 0.0
+                open_trade_action_index = None
                 has_stop_protection = False
                 stop_set_bar_index = None
                 had_adverse_add = False

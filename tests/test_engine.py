@@ -57,6 +57,22 @@ def test_stop_loss_auto_close() -> None:
     assert review_item.had_stop_protection is True
 
 
+def test_trade_review_items_include_entry_exit_action_indices_and_notes() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, note="突破后回踩确认")
+    engine.step_forward()
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=1, note="止盈后复盘：执行不错")
+
+    review_item = engine.trade_review_items()[0]
+
+    assert review_item.entry_action_index == 0
+    assert review_item.exit_action_index == 1
+    assert review_item.entry_note == "突破后回踩确认"
+    assert review_item.review_note == "止盈后复盘：执行不错"
+
+
 def test_step_back_restores_state() -> None:
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
     engine = ReviewEngine(session, sample_bars())

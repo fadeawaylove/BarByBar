@@ -466,6 +466,10 @@ class TradeReviewItem:
     had_stop_protection: bool
     had_adverse_add: bool
     is_planned: bool
+    entry_action_index: int | None = None
+    exit_action_index: int | None = None
+    entry_note: str = ""
+    review_note: str = ""
 
 
 @dataclass(slots=True)

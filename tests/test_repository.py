@@ -26,9 +26,11 @@ def test_repository_roundtrip() -> None:
         session.current_bar_time = bars[0].timestamp
         engine = ReviewEngine(session, bars)
         engine.record_action(ActionType.OPEN_LONG, quantity=1)
+        engine.actions[-1].note = "开仓想法"
         engine.place_order_line(OrderLineType.STOP_LOSS, price=bars[0].close - 10, quantity=1)
         engine.step_forward()
         engine.record_action(ActionType.CLOSE, quantity=1)
+        engine.actions[-1].note = "复盘总结"
         engine.set_notes("Breakout failed after resistance retest")
         engine.set_tags(["breakout", "morning"])
         drawings = [
@@ -49,6 +51,8 @@ def test_repository_roundtrip() -> None:
         assert saved.tick_size == default_tick_size_for_symbol("IF")
         assert saved.stats.total_trades == 1
         assert len(actions) == 2
+        assert actions[0].note == "开仓想法"
+        assert actions[1].note == "复盘总结"
         assert len(order_lines) == 1
         assert len(loaded_drawings) == 1
         assert dataset.display_name == "if_sample.csv"
