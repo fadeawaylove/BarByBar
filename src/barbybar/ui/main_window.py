@@ -3654,6 +3654,7 @@ class MainWindow(QMainWindow):
             engine._apply_action(action)
             engine.actions.append(action)
         engine.order_lines = list(order_lines)
+        engine._invalidate_trade_review_cache()
         engine._reconcile_state()
         if bars:
             engine.session.current_bar_time = anchor_time or engine.current_bar.timestamp

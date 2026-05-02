@@ -38,6 +38,10 @@ class SessionSnapshot:
     order_lines: list[OrderLine]
     notes: str
     tags: list[str]
+    stats: SessionStats
+    trade_review_items_cache: list[TradeReviewItem]
+    trade_review_dirty: bool
+    stats_dirty: bool
 
 
 class ReviewEngine:
@@ -59,6 +63,9 @@ class ReviewEngine:
         self.order_lines = list(order_lines or [])
         self.trades: list[Trade] = []
         self._history: list[SessionSnapshot] = []
+        self._trade_review_items_cache: list[TradeReviewItem] = []
+        self._trade_review_dirty = True
+        self._stats_dirty = True
         self.window_start_index = max(0, window_start_index)
         self.total_count = max(len(bars), total_count or len(bars))
         self.session.current_index = max(self.window_start_index, min(self.session.current_index, self.window_end_index))
@@ -152,6 +159,8 @@ class ReviewEngine:
             ).warning("event=step_forward_blocked_by_window_end")
             return False
         self._save_snapshot()
+        initial_actions = len(self.actions)
+        initial_trades = len(self.trades)
         if flatten_at_session_end and self._is_last_bar_of_session(self.current_bar, self.bars[self.local_current_index + 1]):
             self._close_position_for_session_end(self.current_bar)
         next_index = self.session.current_index + 1
@@ -163,7 +172,7 @@ class ReviewEngine:
                 self._apply_entry_order_lines(next_index, next_bar)
         self.session.current_index = next_index
         self.session.current_bar_time = next_bar.timestamp
-        self._refresh_stats()
+        self._refresh_stats_after_step(initial_actions=initial_actions, initial_trades=initial_trades)
         return True
 
     def jump_to(self, index: int, *, flatten_at_session_end: bool = False) -> None:
@@ -188,7 +197,10 @@ class ReviewEngine:
         self.order_lines = deepcopy(snap.order_lines)
         self.session.notes = snap.notes
         self.session.tags = list(snap.tags)
-        self._refresh_stats()
+        self.session.stats = deepcopy(snap.stats)
+        self._trade_review_items_cache = deepcopy(snap.trade_review_items_cache)
+        self._trade_review_dirty = snap.trade_review_dirty
+        self._stats_dirty = snap.stats_dirty
         return True
 
     def record_action(
@@ -215,6 +227,7 @@ class ReviewEngine:
         )
         self._apply_action(action)
         self.actions.append(action)
+        self._invalidate_trade_review_cache()
         self._refresh_stats()
         return action
 
@@ -237,7 +250,7 @@ class ReviewEngine:
         if order_type in {OrderLineType.STOP_LOSS, OrderLineType.TAKE_PROFIT}:
             line = self._create_protective_line(order_type, price, quantity, note)
             self._sync_position_from_lines()
-            self._refresh_stats()
+            self._sync_stats_max_drawdown()
             return line
         line = OrderLine(
             order_type=order_type,
@@ -252,7 +265,7 @@ class ReviewEngine:
             session_id=self.session.id,
         )
         self.order_lines.append(line)
-        self._refresh_stats()
+        self._sync_stats_max_drawdown()
         return line
 
     def update_order_line(self, order_id: int, price: float) -> OrderLine:
@@ -269,7 +282,7 @@ class ReviewEngine:
             line.trigger_mode = OrderTriggerMode.TOUCH
         if line.is_protective:
             self._sync_position_from_lines()
-        self._refresh_stats()
+        self._sync_stats_max_drawdown()
         return line
 
     def update_order_line_quantity(self, order_id: int, quantity: float) -> OrderLine:
@@ -284,7 +297,7 @@ class ReviewEngine:
         if line.is_entry:
             line.reference_price_at_creation = self.current_bar.close
             line.trigger_mode = OrderTriggerMode.TOUCH
-        self._refresh_stats()
+        self._sync_stats_max_drawdown()
         return line
 
     def cancel_order_line(self, order_id: int) -> None:
@@ -295,19 +308,19 @@ class ReviewEngine:
         self._cancel_line(line)
         if line.is_protective:
             self._sync_position_from_lines()
-        self._refresh_stats()
+        self._sync_stats_max_drawdown()
 
     def cancel_entry_order_lines(self) -> None:
         self._save_snapshot()
         for line in self.order_lines:
             if line.is_active and line.is_entry:
                 self._cancel_line(line)
-        self._refresh_stats()
+        self._sync_stats_max_drawdown()
 
     def clear_protective_lines(self) -> None:
         self._save_snapshot()
         self._remove_protective_lines()
-        self._refresh_stats()
+        self._sync_stats_max_drawdown()
 
     def move_stop_to_break_even(self) -> None:
         position = self.session.position
@@ -328,9 +341,15 @@ class ReviewEngine:
 
     def complete(self) -> None:
         self.session.status = SessionStatus.COMPLETED
-        self._refresh_stats()
+        self._sync_stats_max_drawdown()
 
     def trade_review_items(self) -> list[TradeReviewItem]:
+        if self._trade_review_dirty:
+            self._trade_review_items_cache = self._rebuild_trade_review_cache()
+            self._trade_review_dirty = False
+        return list(self._trade_review_items_cache)
+
+    def _rebuild_trade_review_cache(self) -> list[TradeReviewItem]:
         items: list[TradeReviewItem] = []
         position_direction: str | None = None
         position_quantity = 0.0
@@ -672,6 +691,9 @@ class ReviewEngine:
         position.max_drawdown = max(position.max_drawdown, drawdown)
 
     def _refresh_stats(self) -> None:
+        if not self._stats_dirty:
+            self._sync_stats_max_drawdown()
+            return
         total_trades = len(self.trades)
         wins = len([trade for trade in self.trades if trade.pnl > 0])
         losses = len([trade for trade in self.trades if trade.pnl < 0])
@@ -730,6 +752,21 @@ class ReviewEngine:
             auto_trades=auto_trades,
             planned_trades=planned_trades,
         )
+        self._stats_dirty = False
+
+    def _refresh_stats_after_step(self, *, initial_actions: int, initial_trades: int) -> None:
+        if len(self.actions) != initial_actions or len(self.trades) != initial_trades:
+            self._invalidate_trade_review_cache()
+            self._refresh_stats()
+            return
+        self._sync_stats_max_drawdown()
+
+    def _invalidate_trade_review_cache(self) -> None:
+        self._trade_review_dirty = True
+        self._stats_dirty = True
+
+    def _sync_stats_max_drawdown(self) -> None:
+        self.session.stats.max_drawdown = self.session.position.max_drawdown
 
     @staticmethod
     def _trade_exit_reason(action: SessionAction, remaining_quantity: float) -> str:
@@ -760,6 +797,10 @@ class ReviewEngine:
                 order_lines=deepcopy(self.order_lines),
                 notes=self.session.notes,
                 tags=list(self.session.tags),
+                stats=deepcopy(self.session.stats),
+                trade_review_items_cache=deepcopy(self._trade_review_items_cache),
+                trade_review_dirty=self._trade_review_dirty,
+                stats_dirty=self._stats_dirty,
             )
         )
 
@@ -814,6 +855,7 @@ class ReviewEngine:
             return False
         self._save_snapshot()
         self._close_position_for_session_end(self.current_bar)
+        self._invalidate_trade_review_cache()
         self._refresh_stats()
         return True
 

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, OrderLineType, ReviewSession
+from barbybar.domain.models import ActionType, Bar, OrderLineType, ReviewSession, TradeReviewItem
 
 
 def sample_bars() -> list[Bar]:
@@ -570,6 +570,79 @@ def test_refresh_stats_populates_training_metrics() -> None:
     assert stats.manual_trades == 2
     assert stats.auto_trades == 0
     assert stats.planned_trades == 2
+
+
+def test_trade_review_items_uses_cache_until_invalidated() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=1, price=101)
+
+    first = engine.trade_review_items()
+
+    def fail_rebuild() -> list[TradeReviewItem]:
+        raise AssertionError("trade review cache should have been reused")
+
+    engine._rebuild_trade_review_cache = fail_rebuild  # type: ignore[method-assign]
+
+    second = engine.trade_review_items()
+
+    assert first == second
+
+
+def test_trade_review_cache_rebuilds_after_new_action() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=1, price=101)
+    engine.trade_review_items()
+
+    calls = {"count": 0}
+    original = engine._rebuild_trade_review_cache
+
+    def wrapped_rebuild() -> list[TradeReviewItem]:
+        calls["count"] += 1
+        return original()
+
+    engine._rebuild_trade_review_cache = wrapped_rebuild  # type: ignore[method-assign]
+    engine.record_action(ActionType.OPEN_SHORT, quantity=1, price=101)
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=1, price=99)
+
+    items = engine.trade_review_items()
+    cached_items = engine.trade_review_items()
+
+    assert calls["count"] >= 1
+    assert len(items) == 2
+    assert items == cached_items
+
+
+def test_step_back_restores_trade_review_cache_and_stats() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=1, price=101)
+    assert len(engine.trade_review_items()) == 1
+    assert engine.session.stats.total_trades == 1
+
+    engine.record_action(ActionType.OPEN_SHORT, quantity=1, price=101)
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=1, price=99)
+    assert len(engine.trade_review_items()) == 2
+    assert engine.session.stats.total_trades == 2
+
+    engine.step_back()
+    engine.step_back()
+    engine.step_back()
+
+    items = engine.trade_review_items()
+
+    assert len(items) == 1
+    assert engine.session.stats.total_trades == 1
+    assert items[0].direction == "long"
 
 
 def test_trade_review_marks_adverse_add_only_when_adding_into_loss() -> None:
