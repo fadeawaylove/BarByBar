@@ -183,7 +183,8 @@ $tag = "v$nextVersion"
 $branch = (Get-GitOutput -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')).Trim()
 $remoteUrl = (Get-GitOutput -Arguments @('remote', 'get-url', 'origin')).Trim()
 $githubRepo = Get-GitHubRepositoryInfo -RemoteUrl $remoteUrl
-$existingTag = (Get-GitOutput -Arguments @('tag', '--list', $tag) | Select-Object -First 1).Trim()
+$existingTagOutput = Get-GitOutput -Arguments @('tag', '--list', $tag) | Select-Object -First 1
+$existingTag = if ($existingTagOutput) { $existingTagOutput.Trim() } else { '' }
 
 if ($branch -ne 'master') {
     throw "Release tags must be created from master. Current branch: $branch"
