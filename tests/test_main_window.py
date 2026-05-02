@@ -14,6 +14,7 @@ from barbybar.data.csv_importer import MissingColumnsError
 from barbybar.data.tick_size import default_tick_size_for_symbol, format_average_price, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, WindowBars
+from barbybar.performance_metrics import clear_metrics, recent_metrics, record_metric
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
 import barbybar.ui.main_window as main_window_module
@@ -730,7 +731,7 @@ def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWi
 
         assert categories == ["图表显示", "复盘交易", "日志与诊断"]
         assert {"显示K线序号", "隐藏画线", "显示成交点", "显示交易连线", "不过夜"} <= checkboxes
-        assert {"查看日志", "打开日志目录", "复制日志目录路径"} <= buttons
+        assert {"查看日志", "打开日志目录", "复制日志目录路径", "刷新性能指标"} <= buttons
         assert dialog.default_order_quantity_spin.value() == window.quantity_spin.value()
         assert dialog.default_draw_order_quantity_spin.value() == window.draw_quantity_spin.value()
         assert dialog.trade_marker_alpha_slider.value() == 45
@@ -746,6 +747,22 @@ def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWi
         label_texts = {label.text() for label in dialog.findChildren(QLabel)}
         assert "Alt + 左键拖拽" in label_texts
         assert "悬停 K 线时显示开盘时间和收盘时间" in label_texts
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_settings_dialog_shows_recent_performance_metrics(window: MainWindow) -> None:
+    clear_metrics()
+    record_metric("chart", "viewport_apply", 2.5, bars_in_view=120)
+
+    dialog = SettingsDialog(window)
+    try:
+        dialog.refresh_performance_metrics()
+
+        text = dialog.performance_metrics_text.toPlainText()
+        assert "chart.viewport_apply" in text
+        assert "bars_in_view=120" in text
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -1805,18 +1822,14 @@ def test_viewport_change_extends_backward_window_from_left_edge(window: MainWind
     _seed_engine(window)
     assert window.engine is not None
     window.engine.replace_window(window.engine.bars, window_start_index=200, total_count=1000)
-    captured: list[tuple[int, bool]] = []
+    captured: list[int] = []
 
     monkeypatch.setattr(window.chart_widget, "current_x_range", lambda: (205.0, 260.0))
-    monkeypatch.setattr(
-        window,
-        "_ensure_window_contains_index",
-        lambda target_index, *, preserve_viewport=False: captured.append((target_index, preserve_viewport)) or True,
-    )
+    monkeypatch.setattr(window, "_queue_viewport_window_extension", lambda target_index: captured.append(target_index))
 
     window._handle_chart_viewport_changed()
 
-    assert captured == [(55, True)]
+    assert captured == [55]
 
 
 def test_viewport_change_does_not_extend_forward_window(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1825,7 +1838,7 @@ def test_viewport_change_does_not_extend_forward_window(window: MainWindow, monk
     window.engine.replace_window(window.engine.bars, window_start_index=200, total_count=1000)
 
     monkeypatch.setattr(window.chart_widget, "current_x_range", lambda: (260.0, 999.0))
-    monkeypatch.setattr(window, "_ensure_window_contains_index", lambda *args, **kwargs: True)
+    monkeypatch.setattr(window, "_queue_viewport_window_extension", lambda target_index: (_ for _ in ()).throw(AssertionError("backward extension should not run")))
     monkeypatch.setattr(
         window,
         "_ensure_window_for_forward",
@@ -1835,26 +1848,61 @@ def test_viewport_change_does_not_extend_forward_window(window: MainWindow, monk
     window._handle_chart_viewport_changed()
 
 
-def test_viewport_change_respects_backward_extension_cooldown(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_viewport_change_does_not_call_repo_get_chart_window_synchronously(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_engine(window)
     assert window.engine is not None
     window.engine.replace_window(window.engine.bars, window_start_index=200, total_count=1000)
     monkeypatch.setattr(window.chart_widget, "current_x_range", lambda: (205.0, 260.0))
-
-    captured: list[tuple[int, bool]] = []
     monkeypatch.setattr(
-        window,
-        "_ensure_window_contains_index",
-        lambda target_index, *, preserve_viewport=False: captured.append((target_index, preserve_viewport)) or True,
+        window.repo,
+        "get_chart_window",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("repo.get_chart_window should not run synchronously")),
     )
-    times = iter([10.0, 10.0, 10.01, 10.25, 10.25])
-    monkeypatch.setattr(main_window_module, "perf_counter", lambda: next(times))
+    queued: list[int] = []
+    monkeypatch.setattr(window, "_start_viewport_window_extension", lambda request_id, target_index: queued.append(target_index))
 
     window._handle_chart_viewport_changed()
-    window._handle_chart_viewport_changed()
-    window._handle_chart_viewport_changed()
 
-    assert captured == [(55, True), (55, True)]
+    assert queued == [55]
+
+
+def test_step_workflows_record_performance_metrics(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_metrics()
+    _seed_engine(window)
+    monkeypatch.setattr(window, "save_session", lambda *args, **kwargs: None)
+
+    window.step_forward()
+    window.step_back()
+
+    operations = {(metric.category, metric.operation) for metric in recent_metrics(20)}
+    assert ("workflow", "step_forward") in operations
+    assert ("workflow", "step_back") in operations
+
+
+def test_viewport_extension_queue_keeps_only_latest_pending_request(window: MainWindow) -> None:
+    _seed_engine(window)
+
+    class _FakeThread:
+        @staticmethod
+        def isRunning() -> bool:
+            return True
+
+        @staticmethod
+        def quit() -> None:
+            return None
+
+        @staticmethod
+        def wait(_timeout: int) -> None:
+            return None
+
+    window._active_viewport_extension_thread = _FakeThread()
+
+    window._queue_viewport_window_extension(55)
+    first_request_id = window._active_viewport_extension_request_id
+    window._queue_viewport_window_extension(40)
+
+    assert window._pending_viewport_extension_request == (first_request_id + 1, 40)
+    window._active_viewport_extension_thread = None
 
 
 def test_trade_marker_visibility_toggle_updates_chart_widget(window: MainWindow) -> None:

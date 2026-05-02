@@ -8,12 +8,14 @@ from PySide6.QtWidgets import QApplication
 
 from barbybar.data.tick_size import format_price
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction
+from barbybar.performance_metrics import clear_metrics, recent_metrics
 from barbybar.ui.chart_widget import (
     AVERAGE_PRICE_LINE_COLOR,
     BAR_SLOT_HALF_WIDTH,
     BrowseMode,
     CANDLE_BODY_BORDER_WIDTH,
     CANDLE_WICK_WIDTH,
+    ChartLayer,
     ChartWidget,
     DRAWING_SNAP_DISTANCE_PX,
     DOWN_CANDLE_COLOR,
@@ -120,6 +122,53 @@ def test_zoom_and_anchor_stability(widget: ChartWidget) -> None:
     assert widget.viewport_state.follow_latest is False
 
 
+def test_chart_interactions_record_performance_metrics(widget: ChartWidget) -> None:
+    clear_metrics()
+    widget.resize(900, 600)
+    widget.set_full_data(_bars())
+    widget.set_cursor(120)
+
+    widget.pan_x(-20)
+    widget._finish_interactive_viewport()
+
+    operations = {(metric.category, metric.operation) for metric in recent_metrics(20)}
+
+    assert ("chart", "candles_rebuild") in operations
+    assert ("chart", "viewport_apply") in operations
+    assert ("chart", "y_range") in operations
+    assert ("chart", "overlay_refresh") in operations
+
+
+def test_chart_tracks_layer_dirty_state(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(30)
+
+    widget.set_trade_markers_visible(False)
+
+    assert ChartLayer.TRADE_MARKERS not in widget.dirty_chart_layers
+
+    widget.set_window_data(_bars(80), cursor=40, total_count=100, global_start_index=0, preserve_viewport=True)
+
+    assert ChartLayer.CANDLES not in widget.dirty_chart_layers
+    assert ChartLayer.INDICATORS not in widget.dirty_chart_layers
+    assert ChartLayer.SESSION_MARKERS in widget.dirty_chart_layers
+    assert ChartLayer.ORDER_LINES in widget.dirty_chart_layers
+
+
+def test_y_range_uses_cache_for_repeated_viewport(widget: ChartWidget) -> None:
+    clear_metrics()
+    widget.set_full_data(_bars())
+    widget.set_cursor(120)
+    left, right = widget.current_x_range()
+
+    widget._apply_y_range(left, right)
+    widget._apply_y_range(left, right)
+
+    y_range_metrics = [metric for metric in recent_metrics(10) if metric.operation == "y_range"]
+
+    assert y_range_metrics[0].context_dict()["cache_hit"] is True
+
+
 def test_zoom_uses_rightmost_visible_bar_instead_of_cursor(widget: ChartWidget) -> None:
     widget.set_full_data(_bars())
     widget.set_cursor(199)
@@ -186,6 +235,70 @@ def test_pan_disables_follow_latest_and_cursor_update_keeps_view(widget: ChartWi
     widget.set_cursor(151)
 
     assert widget.viewport_state.right_edge_index == panned_right
+
+
+def test_interactive_pan_and_zoom_defer_heavy_overlay_rebuilds(
+    widget: ChartWidget,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(80)
+    widget.set_order_lines(
+        [
+            OrderLine(
+                id=1,
+                order_type=OrderLineType.ENTRY_LONG,
+                price=101.0,
+                quantity=1,
+                created_bar_index=10,
+                active_from_bar_index=11,
+                created_at=datetime(2025, 1, 1, 9, 10),
+            )
+        ]
+    )
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 20, datetime(2025, 1, 1, 9, 20), price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 24, datetime(2025, 1, 1, 9, 24), price=103.0, quantity=1),
+        ]
+    )
+    app.processEvents()
+
+    counts = {"trade_geometry": 0, "trade_items": 0, "order_items": 0}
+    original_rebuild_trade_geometry = widget._rebuild_trade_geometry
+    original_rebuild_trade_marker_items = widget._rebuild_trade_marker_items
+    original_rebuild_order_line_items = widget._rebuild_order_line_items
+
+    def _count_trade_geometry(trades):
+        counts["trade_geometry"] += 1
+        return original_rebuild_trade_geometry(trades)
+
+    def _count_trade_items():
+        counts["trade_items"] += 1
+        return original_rebuild_trade_marker_items()
+
+    def _count_order_items():
+        counts["order_items"] += 1
+        return original_rebuild_order_line_items()
+
+    monkeypatch.setattr(widget, "_rebuild_trade_geometry", _count_trade_geometry)
+    monkeypatch.setattr(widget, "_rebuild_trade_marker_items", _count_trade_items)
+    monkeypatch.setattr(widget, "_rebuild_order_line_items", _count_order_items)
+
+    widget.pan_x(-20)
+    widget.zoom_x(anchor_x=40, scale=0.85)
+
+    assert counts == {"trade_geometry": 0, "trade_items": 0, "order_items": 0}
+
+    widget._finish_interactive_viewport()
+    app.processEvents()
+
+    assert counts["trade_geometry"] >= 1
+    assert counts["trade_items"] >= 1
+    assert counts["order_items"] >= 1
 
 
 def test_reset_viewport_restores_follow_latest(widget: ChartWidget) -> None:

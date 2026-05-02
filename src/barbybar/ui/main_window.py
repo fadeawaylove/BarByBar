@@ -77,7 +77,9 @@ from barbybar.domain.models import (
 from barbybar.logging_config import log_dir
 from barbybar.logging_config import register_fatal_error_handler, unregister_fatal_error_handler
 from barbybar.paths import default_drawing_templates_path, default_ui_settings_path, default_updates_dir
+from barbybar.performance_metrics import performance_summary_lines, record_metric
 from barbybar.storage.repository import Repository
+from barbybar.ui.async_tasks import AsyncTaskCoordinator
 from barbybar.ui.chart_widget import (
     ChartWidget,
     DEFAULT_CANDLE_DOWN_BODY_COLOR,
@@ -423,9 +425,23 @@ class SessionLoadWorker(QObject):
                 INITIAL_WINDOW_BEFORE,
                 INITIAL_WINDOW_AFTER,
             )
+            window_elapsed_ms = (perf_counter() - window_step) * 1000
+            record_metric(
+                "data_window",
+                "session_load_window",
+                window_elapsed_ms,
+                after_count=INITIAL_WINDOW_AFTER,
+                before_count=INITIAL_WINDOW_BEFORE,
+                bars=len(window.bars),
+                chart_timeframe=timeframe,
+                session_id=self.session_id,
+                start=window.global_start_index,
+                thread="worker",
+                total=window.total_count,
+            )
             log.bind(chart_timeframe=timeframe).debug(
                 "event=get_chart_window elapsed_ms={elapsed_ms:.3f} bars={bars} start={start} end={end} total={total}",
-                elapsed_ms=(perf_counter() - window_step) * 1000,
+                elapsed_ms=window_elapsed_ms,
                 bars=len(window.bars),
                 start=window.global_start_index,
                 end=window.global_end_index,
@@ -451,6 +467,75 @@ class SessionLoadWorker(QObject):
         except Exception as exc:  # noqa: BLE001
             log.exception("event=session_load_failed error={error}", error=str(exc))
             self.failed.emit(self.load_id, str(exc))
+
+
+class ViewportWindowExtensionWorker(QObject):
+    finished = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(
+        self,
+        db_path: str | Path | None,
+        session_id: int,
+        chart_timeframe: str,
+        anchor_time,
+        before_count: int,
+        after_count: int,
+        request_id: int,
+    ) -> None:
+        super().__init__()
+        self.db_path = db_path
+        self.session_id = session_id
+        self.chart_timeframe = chart_timeframe
+        self.anchor_time = anchor_time
+        self.before_count = before_count
+        self.after_count = after_count
+        self.request_id = request_id
+
+    def run(self) -> None:
+        log = logger.bind(
+            component="viewport_window_extension_worker",
+            session_id=self.session_id,
+            chart_timeframe=self.chart_timeframe,
+            request_id=self.request_id,
+            thread_id=_thread_id(),
+        )
+        started = perf_counter()
+        try:
+            repo = Repository(self.db_path)
+            window = repo.get_chart_window(
+                self.session_id,
+                self.chart_timeframe,
+                self.anchor_time,
+                self.before_count,
+                self.after_count,
+            )
+            elapsed_ms = (perf_counter() - started) * 1000
+            record_metric(
+                "data_window",
+                "viewport_extension_window",
+                elapsed_ms,
+                after_count=self.after_count,
+                before_count=self.before_count,
+                bars=len(window.bars),
+                chart_timeframe=self.chart_timeframe,
+                session_id=self.session_id,
+                start=window.global_start_index,
+                thread="worker",
+                total=window.total_count,
+            )
+            log.debug(
+                "event=get_chart_window elapsed_ms={elapsed_ms:.3f} bars={bars} start={start} end={end} total={total}",
+                elapsed_ms=elapsed_ms,
+                bars=len(window.bars),
+                start=window.global_start_index,
+                end=window.global_end_index,
+                total=window.total_count,
+            )
+            self.finished.emit(self.request_id, window)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("event=viewport_window_extension_failed error={error}", error=str(exc))
+            self.failed.emit(self.request_id, str(exc))
 
 
 class UpdateCheckWorker(QObject):
@@ -1744,8 +1829,36 @@ class SettingsDialog(QDialog):
         log_layout.addWidget(QLabel("error.log"))
         log_layout.addWidget(self.error_log_label)
         layout.addWidget(log_group)
+        performance_group = QGroupBox("性能指标")
+        performance_layout = QVBoxLayout(performance_group)
+        performance_layout.setContentsMargins(10, 14, 10, 10)
+        performance_layout.setSpacing(8)
+        performance_toolbar = QHBoxLayout()
+        performance_toolbar.setSpacing(6)
+        self.refresh_performance_button = QPushButton("刷新性能指标")
+        self.refresh_performance_button.clicked.connect(self.refresh_performance_metrics)
+        performance_toolbar.addWidget(self.refresh_performance_button)
+        performance_toolbar.addStretch(1)
+        performance_layout.addLayout(performance_toolbar)
+        self.performance_metrics_text = QTextEdit()
+        self.performance_metrics_text.setReadOnly(True)
+        self.performance_metrics_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.performance_metrics_text.setMinimumHeight(150)
+        performance_layout.addWidget(self.performance_metrics_text)
+        layout.addWidget(performance_group)
+        self.performance_metrics_timer = QTimer(self)
+        self.performance_metrics_timer.setInterval(1000)
+        self.performance_metrics_timer.timeout.connect(self.refresh_performance_metrics)
+        self.performance_metrics_timer.start()
+        self.refresh_performance_metrics()
         layout.addStretch(1)
         return page
+
+    def refresh_performance_metrics(self) -> None:
+        if not hasattr(self, "performance_metrics_text"):
+            return
+        lines = performance_summary_lines(24)
+        self.performance_metrics_text.setPlainText("\n".join(lines) if lines else "暂无性能指标")
 
     def _build_alpha_slider(self) -> tuple[QSlider, QLabel]:
         slider = QSlider(Qt.Orientation.Horizontal)
@@ -1825,6 +1938,11 @@ class SettingsDialog(QDialog):
         for key, button in color_buttons.items():
             self._apply_color_button(button, color_settings[key])
 
+    def closeEvent(self, event) -> None:  # noqa: ANN001
+        if hasattr(self, "performance_metrics_timer"):
+            self.performance_metrics_timer.stop()
+        super().closeEvent(event)
+
 
 class MainWindow(QMainWindow):
     _DRAWING_TOOL_ICON_SIZE = QSize(26, 20)
@@ -1849,6 +1967,7 @@ class MainWindow(QMainWindow):
         self._busy_cursor_active = False
         self._active_loader_thread: QThread | None = None
         self._active_loader_worker: SessionLoadWorker | None = None
+        self._session_load_tasks = AsyncTaskCoordinator(self, component="session_load")
         self._active_loader_token = 0
         self._active_batch_import_thread: QThread | None = None
         self._active_batch_import_worker: BatchImportWorker | None = None
@@ -1878,6 +1997,11 @@ class MainWindow(QMainWindow):
         self._session_dirty = False
         self._viewport_window_extension_active = False
         self._last_viewport_window_extension_at = 0.0
+        self._active_viewport_extension_thread: QThread | None = None
+        self._active_viewport_extension_worker: ViewportWindowExtensionWorker | None = None
+        self._viewport_extension_tasks = AsyncTaskCoordinator(self, component="chart_window")
+        self._active_viewport_extension_request_id = 0
+        self._pending_viewport_extension_request: tuple[int, int] | None = None
         self._trade_action_buttons: dict[str, QPushButton] = {}
         self._draw_order_buttons: dict[OrderLineType, QPushButton] = {}
         self._drawing_tool_buttons: dict[DrawingToolType, QPushButton] = {}
@@ -3373,12 +3497,27 @@ class MainWindow(QMainWindow):
         else:
             after_count = max(after_count, target_index - current_index + INITIAL_WINDOW_AFTER)
         anchor_time = self.engine.session.current_bar_time or self.engine.current_bar.timestamp
+        window_step = perf_counter()
         window = self.repo.get_chart_window(
             self.current_session_id,
             self.engine.session.chart_timeframe,
             anchor_time,
             before_count,
             after_count,
+        )
+        record_metric(
+            "data_window",
+            "ensure_contains_window",
+            (perf_counter() - window_step) * 1000,
+            after_count=after_count,
+            before_count=before_count,
+            bars=len(window.bars),
+            chart_timeframe=self.engine.session.chart_timeframe,
+            session_id=self.current_session_id,
+            start=window.global_start_index,
+            target_index=target_index,
+            thread="ui",
+            total=window.total_count,
         )
         self.engine.replace_window(window.bars, window.global_start_index, window.total_count)
         self.chart_widget.set_window_data(
@@ -3392,7 +3531,64 @@ class MainWindow(QMainWindow):
         self._update_ui_from_engine()
         return self.engine.window_start_index <= target_index <= self.engine.window_end_index
 
+    def _viewport_extension_window_counts(self, target_index: int) -> tuple[int, int]:
+        assert self.engine is not None
+        current_index = self.engine.session.current_index
+        before_count = INITIAL_WINDOW_BEFORE
+        after_count = INITIAL_WINDOW_AFTER
+        if target_index < current_index:
+            before_count = max(before_count, current_index - target_index + INITIAL_WINDOW_BEFORE)
+        else:
+            after_count = max(after_count, target_index - current_index + INITIAL_WINDOW_AFTER)
+        return before_count, after_count
+
+    def _queue_viewport_window_extension(self, target_index: int) -> None:
+        if not self.engine or not self.current_session_id:
+            return
+        self._active_viewport_extension_request_id += 1
+        request_id = self._active_viewport_extension_request_id
+        if (
+            self._active_viewport_extension_thread is not None
+            and self._active_viewport_extension_thread.isRunning()
+        ):
+            self._pending_viewport_extension_request = (request_id, target_index)
+            return
+        self._start_viewport_window_extension(request_id, target_index)
+
+    def _start_viewport_window_extension(self, request_id: int, target_index: int) -> None:
+        if not self.engine or not self.current_session_id:
+            return
+        anchor_time = self.engine.session.current_bar_time or self.engine.current_bar.timestamp
+        before_count, after_count = self._viewport_extension_window_counts(target_index)
+        worker = ViewportWindowExtensionWorker(
+            self.repo.db_path,
+            self.current_session_id,
+            self.engine.session.chart_timeframe,
+            anchor_time,
+            before_count,
+            after_count,
+            request_id,
+        )
+        thread = self._viewport_extension_tasks.start(
+            worker,
+            finished_slot=self._handle_viewport_window_extension_loaded,
+            failed_slot=self._handle_viewport_window_extension_failed,
+            thread_finished_slot=self._handle_viewport_window_extension_thread_finished,
+        )
+        self._active_viewport_extension_thread = thread
+        self._active_viewport_extension_worker = worker
+        self._viewport_window_extension_active = True
+
+    def _start_pending_viewport_window_extension(self) -> None:
+        pending = self._pending_viewport_extension_request
+        self._pending_viewport_extension_request = None
+        if pending is None:
+            return
+        request_id, target_index = pending
+        self._start_viewport_window_extension(request_id, target_index)
+
     def step_forward(self) -> None:
+        started = perf_counter()
         if not self.engine:
             logger.bind(component="step_forward", trigger="button", session_id=self.current_session_id).warning(
                 "event=step_forward_ignored_no_engine"
@@ -3431,14 +3627,31 @@ class MainWindow(QMainWindow):
             current_index=self.engine.session.current_index,
             total_count=self.engine.total_count,
         ).debug("event=step_forward_applied")
+        record_metric(
+            "workflow",
+            "step_forward",
+            (perf_counter() - started) * 1000,
+            current_index=self.engine.session.current_index,
+            session_id=self.current_session_id,
+            total_count=self.engine.total_count,
+        )
 
     def step_back(self) -> None:
+        started = perf_counter()
         if not self.engine:
             return
         self._ensure_window_for_backward()
         self.engine.step_back()
         self._update_ui_from_engine()
         self.save_session(trigger="step_back")
+        record_metric(
+            "workflow",
+            "step_back",
+            (perf_counter() - started) * 1000,
+            current_index=self.engine.session.current_index,
+            session_id=self.current_session_id,
+            total_count=self.engine.total_count,
+        )
 
     def jump_to_bar(self, index: int) -> None:
         if not self.engine:
@@ -4010,21 +4223,17 @@ class MainWindow(QMainWindow):
         ).info("event=start_load title={title}", title=title)
         self.show_busy_overlay(title, detail)
 
-        thread = QThread(self)
+        if self._session_load_tasks.is_running():
+            self._session_load_tasks.shutdown()
         worker = SessionLoadWorker(self.repo.db_path, session_id, chart_timeframe, anchor_time, token)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._handle_loaded_session, Qt.ConnectionType.QueuedConnection)
-        worker.failed.connect(self._handle_load_failed, Qt.ConnectionType.QueuedConnection)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._handle_loader_thread_finished)
-        thread.finished.connect(thread.deleteLater)
+        thread = self._session_load_tasks.start(
+            worker,
+            finished_slot=self._handle_loaded_session,
+            failed_slot=self._handle_load_failed,
+            thread_finished_slot=self._handle_loader_thread_finished,
+        )
         self._active_loader_thread = thread
         self._active_loader_worker = worker
-        thread.start()
 
     @Slot(int, object)
     def _handle_loaded_session(self, token: int, payload: object) -> None:
@@ -4115,12 +4324,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _handle_loader_thread_finished(self) -> None:
-        finished_thread = self.sender()
-        if self._active_loader_thread is not None and finished_thread is not self._active_loader_thread:
-            logger.bind(component="session_load", thread_id=_thread_id()).debug("event=ignore_stale_loader_thread_finished")
-            return
-        self._active_loader_thread = None
-        self._active_loader_worker = None
+        self._active_loader_thread = self._session_load_tasks.active_thread
+        self._active_loader_worker = self._session_load_tasks.active_worker
         logger.bind(component="session_load", thread_id=_thread_id()).debug("event=loader_thread_finished")
 
     def _setup_session_save_worker(self) -> None:
@@ -4249,9 +4454,9 @@ class MainWindow(QMainWindow):
             self._active_batch_import_thread.quit()
             self._active_batch_import_thread.wait(3000)
         if self._active_loader_thread and self._active_loader_thread.isRunning():
-            logger.bind(component="session_load").warning("event=close_waiting_for_loader_thread")
-            self._active_loader_thread.quit()
-            self._active_loader_thread.wait(2000)
+            self._session_load_tasks.shutdown()
+        if self._active_viewport_extension_thread and self._active_viewport_extension_thread.isRunning():
+            self._viewport_extension_tasks.shutdown()
         if self._active_update_check_thread and self._active_update_check_thread.isRunning():
             logger.bind(component="update_check").warning("event=close_waiting_for_update_check_thread")
             self._active_update_check_thread.quit()
@@ -4309,12 +4514,26 @@ class MainWindow(QMainWindow):
             session_id=self.current_session_id,
             chart_timeframe=self.engine.session.chart_timeframe,
         ).debug("event=extend_forward_window current_index={} buffer={}", self.engine.session.current_index, self.engine.forward_buffer)
+        window_step = perf_counter()
         window = self.repo.get_chart_window(
             self.current_session_id,
             self.engine.session.chart_timeframe,
             self.engine.current_bar.timestamp,
             EXTEND_WINDOW_BEFORE,
             EXTEND_WINDOW_AFTER,
+        )
+        record_metric(
+            "data_window",
+            "forward_extension_window",
+            (perf_counter() - window_step) * 1000,
+            after_count=EXTEND_WINDOW_AFTER,
+            before_count=EXTEND_WINDOW_BEFORE,
+            bars=len(window.bars),
+            chart_timeframe=self.engine.session.chart_timeframe,
+            session_id=self.current_session_id,
+            start=window.global_start_index,
+            thread="ui",
+            total=window.total_count,
         )
         self.engine.replace_window(window.bars, window.global_start_index, window.total_count)
         self.chart_widget.set_window_data(
@@ -4346,19 +4565,8 @@ class MainWindow(QMainWindow):
     def _handle_chart_viewport_changed(self) -> None:
         if (
             not self.engine
-            or self._viewport_window_extension_active
             or self._active_loader_thread is not None
         ):
-            return
-        now = perf_counter()
-        cooldown_s = VIEWPORT_EXTENSION_COOLDOWN_MS / 1000.0
-        if now - self._last_viewport_window_extension_at < cooldown_s:
-            logger.bind(
-                component="chart_window",
-                session_id=self.current_session_id,
-                chart_timeframe=self.engine.session.chart_timeframe,
-                cooldown_ms=VIEWPORT_EXTENSION_COOLDOWN_MS,
-            ).debug("event=skip_viewport_backward_extension_cooldown")
             return
         left, _right = self.chart_widget.current_x_range()
         left_threshold = float(self.engine.window_start_index) + VIEWPORT_EXTENSION_THRESHOLD_BARS
@@ -4368,23 +4576,51 @@ class MainWindow(QMainWindow):
         target_index = max(0, min(self.engine.total_count - 1, int(floor(left)) - EXTEND_WINDOW_BEFORE))
         if target_index >= self.engine.window_start_index:
             target_index = max(0, self.engine.window_start_index - EXTEND_WINDOW_BEFORE)
-        self._viewport_window_extension_active = True
-        started = now
-        try:
-            self._last_viewport_window_extension_at = now
-            self._ensure_window_contains_index(target_index, preserve_viewport=True)
-        finally:
-            self._viewport_window_extension_active = False
         logger.bind(
             component="chart_window",
             session_id=self.current_session_id,
             chart_timeframe=self.engine.session.chart_timeframe,
             left=round(float(left), 3),
             target_index=target_index,
-        ).debug(
-            "event=viewport_backward_extension elapsed_ms={elapsed_ms:.3f}",
-            elapsed_ms=(perf_counter() - started) * 1000,
+        ).debug("event=queue_viewport_backward_extension")
+        self._queue_viewport_window_extension(target_index)
+
+    @Slot(int, object)
+    def _handle_viewport_window_extension_loaded(self, request_id: int, payload: object) -> None:
+        if not self.engine:
+            return
+        has_newer_pending = (
+            self._pending_viewport_extension_request is not None
+            and self._pending_viewport_extension_request[0] > request_id
         )
+        if has_newer_pending:
+            logger.bind(component="chart_window", request_id=request_id).debug("event=discard_stale_viewport_extension_result")
+            return
+        assert isinstance(payload, WindowBars)
+        self.engine.replace_window(payload.bars, payload.global_start_index, payload.total_count)
+        self.chart_widget.set_window_data(
+            self.engine.bars,
+            self.engine.session.current_index,
+            self.engine.total_count,
+            self.engine.window_start_index,
+            preserve_viewport=True,
+            timeframe=self.engine.session.chart_timeframe,
+        )
+        self._update_ui_from_engine(defer_heavy=True)
+
+    @Slot(int, str)
+    def _handle_viewport_window_extension_failed(self, request_id: int, message: str) -> None:
+        logger.bind(component="chart_window", request_id=request_id).warning(
+            "event=viewport_backward_extension_failed message={message}",
+            message=message,
+        )
+
+    @Slot()
+    def _handle_viewport_window_extension_thread_finished(self) -> None:
+        self._active_viewport_extension_thread = self._viewport_extension_tasks.active_thread
+        self._active_viewport_extension_worker = self._viewport_extension_tasks.active_worker
+        self._viewport_window_extension_active = False
+        self._start_pending_viewport_window_extension()
 
     def _schedule_auto_save(self, reason: str) -> None:
         if not self.engine:
