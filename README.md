@@ -59,7 +59,7 @@ BarByBar publishes a Windows portable ZIP and a Windows setup installer to GitHu
 Then it automatically:
 
 - bumps `src\barbybar\__init__.py` to the next semantic version
-- creates a `Release vX.Y.Z` commit
+- creates a `Release vX.Y.Z` commit when the version file needs a bump
 - pushes `master`
 - creates and pushes the matching tag
 

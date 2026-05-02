@@ -183,21 +183,39 @@ $tag = "v$nextVersion"
 $branch = (Get-GitOutput -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')).Trim()
 $remoteUrl = (Get-GitOutput -Arguments @('remote', 'get-url', 'origin')).Trim()
 $githubRepo = Get-GitHubRepositoryInfo -RemoteUrl $remoteUrl
+$existingTag = (Get-GitOutput -Arguments @('tag', '--list', $tag) | Select-Object -First 1).Trim()
 
 if ($branch -ne 'master') {
     throw "Release tags must be created from master. Current branch: $branch"
 }
 
-$updatedContent = [regex]::Replace(
-    $versionFileContent,
-    '__version__\s*=\s*"[^"]+"',
-    "__version__ = `"$nextVersion`"",
-    1
-)
-Set-Content -Path $versionFile -Value $updatedContent -NoNewline
+if ($existingTag) {
+    throw "Release tag $tag already exists locally."
+}
+
+if ($currentVersion -ne $nextVersion) {
+    $updatedContent = [regex]::Replace(
+        $versionFileContent,
+        '__version__\s*=\s*"[^"]+"',
+        "__version__ = `"$nextVersion`"",
+        1
+    )
+    Set-Content -Path $versionFile -Value $updatedContent -NoNewline
+}
 
 Invoke-Git -Arguments @('add', $versionFile)
-Invoke-Git -Arguments @('commit', '-m', "Release $tag")
+$null = & git diff --cached --quiet
+$diffExitCode = $LASTEXITCODE
+if ($diffExitCode -eq 1) {
+    Invoke-Git -Arguments @('commit', '-m', "Release $tag")
+} elseif ($diffExitCode -eq 0) {
+    if ($currentVersion -ne $nextVersion) {
+        throw "No version changes were staged for $tag."
+    }
+    Write-Output "Version file is already at $nextVersion; reusing current HEAD for $tag."
+} else {
+    throw "git diff --cached --quiet failed with exit code $diffExitCode."
+}
 
 Invoke-Git -Arguments @('push', 'origin', $branch)
 Invoke-Git -Arguments @('tag', $tag)
