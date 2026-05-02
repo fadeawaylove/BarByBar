@@ -424,6 +424,52 @@ def test_session_end_markers_do_not_accumulate_on_rebuild(widget: ChartWidget) -
     assert len(markers) == 2
 
 
+def test_set_cursor_fast_does_not_rebuild_session_markers_immediately(widget: ChartWidget, monkeypatch: pytest.MonkeyPatch) -> None:
+    widget.set_full_data(_bars())
+    calls: list[str] = []
+    monkeypatch.setattr(widget, "_rebuild_session_markers", lambda: calls.append("session"))
+
+    widget.set_cursor_fast(50)
+
+    assert calls == []
+    assert widget._session_markers_dirty is True
+
+
+def test_set_order_lines_skips_rebuild_when_signature_unchanged(widget: ChartWidget, monkeypatch: pytest.MonkeyPatch) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    calls: list[str] = []
+    monkeypatch.setattr(widget, "_rebuild_order_line_items", lambda: calls.append("order"))
+    line = OrderLine(
+        order_type=OrderLineType.ENTRY_LONG,
+        price=101.5,
+        quantity=1,
+        created_bar_index=10,
+        active_from_bar_index=11,
+        created_at=datetime(2025, 1, 1, 9, 10),
+        id=1,
+    )
+
+    widget.set_order_lines([line])
+    widget.set_order_lines([line])
+
+    assert calls == ["order"]
+
+
+def test_set_trade_actions_skips_rebuild_when_signature_unchanged(widget: ChartWidget, monkeypatch: pytest.MonkeyPatch) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    calls: list[str] = []
+    monkeypatch.setattr(widget, "_rebuild_trade_geometry", lambda trades=None: calls.append("geometry"))
+    monkeypatch.setattr(widget, "_rebuild_trade_marker_items", lambda: calls.append("markers"))
+    actions = [SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1)]
+
+    widget.set_trade_actions(actions)
+    widget.set_trade_actions(actions)
+
+    assert calls == ["geometry", "markers"]
+
+
 def test_daily_bars_do_not_render_intraday_session_markers(widget: ChartWidget) -> None:
     bars = [
         Bar(timestamp=datetime(2025, 1, 2, 14, 59), open=100, high=102, low=99, close=101, volume=1),

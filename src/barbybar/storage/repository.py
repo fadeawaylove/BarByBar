@@ -284,6 +284,16 @@ class Repository:
         order_lines: list[OrderLine] | None = None,
         drawings: list[ChartDrawing] | None = None,
     ) -> ReviewSession:
+        self.save_session_state(session, actions, order_lines, drawings)
+        return self.get_session(session.id)
+
+    def save_session_state(
+        self,
+        session: ReviewSession,
+        actions: list[SessionAction],
+        order_lines: list[OrderLine] | None = None,
+        drawings: list[ChartDrawing] | None = None,
+    ) -> None:
         if session.id is None:
             raise ValueError("Session must have an id before it can be saved.")
         self.conn.execute(
@@ -428,7 +438,6 @@ class Repository:
                     (drawing_timeframe, drawing.tool_type.value, anchors_json, style_json, drawing.id, session.id, drawing_timeframe),
                 )
         self.conn.commit()
-        return self.get_session(session.id)
 
     def get_session(self, session_id: int) -> ReviewSession:
         row = self.conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()

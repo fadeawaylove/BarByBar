@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+from copy import deepcopy
 import json
 from math import floor
 import re
@@ -61,9 +63,11 @@ from barbybar.domain.models import (
     DrawingTemplate,
     DrawingToolType,
     DataSet,
+    OrderLine,
     OrderLineType,
     PositionState,
     ReviewSession,
+    SessionAction,
     SessionStats,
     SessionStatus,
     TradeReviewItem,
@@ -149,6 +153,70 @@ class BatchImportProgress:
     imported_count: int
     skipped_count: int
     failed_count: int
+
+
+@dataclass(slots=True)
+class SessionSaveRequest:
+    generation: int
+    trigger: str
+    session: ReviewSession
+    actions: list[SessionAction]
+    order_lines: list[OrderLine]
+    drawings: list[ChartDrawing]
+
+
+class SessionSaveWorker(QObject):
+    finished = Signal(int, bool)
+    failed = Signal(int, str)
+
+    def __init__(self, db_path: str | Path | None) -> None:
+        super().__init__()
+        self.db_path = db_path
+        self._repo: Repository | None = None
+        self._queue: deque[SessionSaveRequest] = deque()
+        self._latest_generation = 0
+        self._processing = False
+        self._drain_scheduled = False
+
+    @Slot(object)
+    def enqueue_save(self, request: object) -> None:
+        if not isinstance(request, SessionSaveRequest):
+            raise TypeError("SessionSaveWorker.enqueue_save expected SessionSaveRequest")
+        self._queue.append(request)
+        self._latest_generation = max(self._latest_generation, request.generation)
+        if self._processing or self._drain_scheduled:
+            return
+        self._drain_scheduled = True
+        QTimer.singleShot(0, self._drain_queue)
+
+    @Slot()
+    def _drain_queue(self) -> None:
+        self._drain_scheduled = False
+        if self._processing:
+            return
+        self._processing = True
+        try:
+            while self._queue:
+                request = self._queue.popleft()
+                if request.generation < self._latest_generation:
+                    self.finished.emit(request.generation, False)
+                    continue
+                try:
+                    self._save_request(request)
+                except Exception as exc:  # noqa: BLE001
+                    self.failed.emit(request.generation, str(exc))
+                    continue
+                self.finished.emit(request.generation, True)
+        finally:
+            self._processing = False
+            if self._queue and not self._drain_scheduled:
+                self._drain_scheduled = True
+                QTimer.singleShot(0, self._drain_queue)
+
+    def _save_request(self, request: SessionSaveRequest) -> None:
+        if self._repo is None:
+            self._repo = Repository(self.db_path)
+        self._repo.save_session_state(request.session, request.actions, request.order_lines, request.drawings)
 
 
 def _thread_id() -> int:
@@ -1761,6 +1829,7 @@ class SettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     _DRAWING_TOOL_ICON_SIZE = QSize(26, 20)
     _DRAWING_TOOL_BUTTON_SIZE = QSize(48, 36)
+    _step_forward_save_requested = Signal(object)
 
     def __init__(self, repo: Repository) -> None:
         super().__init__()
@@ -1790,11 +1859,22 @@ class MainWindow(QMainWindow):
         self._active_update_download_thread: QThread | None = None
         self._active_update_download_worker: UpdateDownloadWorker | None = None
         self._active_update_download_token = 0
+        self._active_session_save_thread: QThread | None = None
+        self._active_session_save_worker: SessionSaveWorker | None = None
+        self._step_forward_save_generation = 0
+        self._latest_step_forward_save_generation = 0
+        self._last_completed_step_forward_save_generation = 0
+        self._failed_step_forward_save_generation = 0
+        self._step_forward_save_in_flight = False
         self._pending_download_update_info: UpdateInfo | None = None
         self._updates_dir = default_updates_dir()
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._perform_auto_save)
+        self._deferred_step_ui_timer = QTimer(self)
+        self._deferred_step_ui_timer.setSingleShot(True)
+        self._deferred_step_ui_timer.timeout.connect(self._flush_deferred_step_ui_refresh)
+        self._deferred_step_ui_pending = False
         self._session_dirty = False
         self._viewport_window_extension_active = False
         self._last_viewport_window_extension_at = 0.0
@@ -1826,6 +1906,7 @@ class MainWindow(QMainWindow):
         self._drawing_toolbar_group: QWidget | None = None
         self._transient_message_timer = QTimer(self)
         self._transient_message_timer.setSingleShot(True)
+        self._setup_session_save_worker()
         self._transient_message_timer.timeout.connect(self._restore_progress_label)
         self._transient_message_active = False
         self.step_forward_shortcut: QShortcut | None = None
@@ -3090,7 +3171,19 @@ class MainWindow(QMainWindow):
             payload[tool.value] = normalized
         return payload
 
-    def _update_ui_from_engine(self) -> None:
+    def _update_ui_from_engine(self, *, defer_heavy: bool = False) -> None:
+        if not self.engine:
+            return
+        self._update_ui_from_engine_sync(fast_cursor=defer_heavy)
+        if defer_heavy:
+            self._schedule_deferred_step_ui_refresh()
+            return
+        if self._deferred_step_ui_timer.isActive():
+            self._deferred_step_ui_timer.stop()
+        self._deferred_step_ui_pending = False
+        self._update_ui_from_engine_deferred()
+
+    def _update_ui_from_engine_sync(self, *, fast_cursor: bool = False) -> None:
         if not self.engine:
             return
         current = self.engine.session.current_index
@@ -3099,12 +3192,11 @@ class MainWindow(QMainWindow):
         self.chart_widget.set_right_padding(DEFAULT_RIGHT_PADDING)
         self.chart_widget.set_tick_size(self.engine.session.tick_size)
         self.chart_widget.set_position_direction(self.engine.session.position.direction)
-        self.chart_widget.set_cursor(current)
+        if fast_cursor:
+            self.chart_widget.set_cursor_fast(current)
+        else:
+            self.chart_widget.set_cursor(current)
         self.chart_widget.set_order_lines(self.engine.display_order_lines())
-        self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
-        self.chart_widget.set_trade_markers_visible(self._trade_markers_visible)
-        self.chart_widget.set_trade_links_visible(self._trade_links_visible)
-        self._trade_review_items = self.engine.trade_review_items()
         if not self._transient_message_active:
             self.progress_label.setText(f"{current + 1}/{total} | {bar.timestamp:%Y-%m-%d %H:%M}")
         self.jump_spin.blockSignals(True)
@@ -3131,11 +3223,31 @@ class MainWindow(QMainWindow):
         self.tick_size_spin.blockSignals(True)
         self.tick_size_spin.setValue(self.engine.session.tick_size)
         self.tick_size_spin.blockSignals(False)
+
+    def _update_ui_from_engine_deferred(self) -> None:
+        if not self.engine:
+            return
+        self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
+        self.chart_widget.refresh_cursor_dependent_overlays()
+        self._trade_review_items = self.engine.trade_review_items()
         self._update_training_stats()
         self._sync_selected_trade_focus()
         self.open_trade_history_button.setEnabled(bool(self._trade_review_items))
         if self._trade_history_dialog is not None:
             self._trade_history_dialog.refresh_items()
+
+    def _schedule_deferred_step_ui_refresh(self) -> None:
+        self._deferred_step_ui_pending = True
+        if self._deferred_step_ui_timer.isActive():
+            return
+        self._deferred_step_ui_timer.start(0)
+
+    @Slot()
+    def _flush_deferred_step_ui_refresh(self) -> None:
+        if not self._deferred_step_ui_pending:
+            return
+        self._deferred_step_ui_pending = False
+        self._update_ui_from_engine_deferred()
 
     def _handle_trade_markers_toggled(self, checked: bool) -> None:
         if self.show_trade_markers_check.isChecked() != bool(checked):
@@ -3295,6 +3407,8 @@ class MainWindow(QMainWindow):
             window_end_index=self.engine.window_end_index,
             forward_buffer=self.engine.forward_buffer,
         ).debug("event=step_forward_requested")
+        if self._session_dirty or self._auto_save_timer.isActive():
+            self._flush_pending_auto_save("step_forward_preflight")
         self._ensure_window_for_forward()
         if not self.engine.step_forward(flatten_at_session_end=self._flatten_at_session_end_enabled()):
             logger.bind(
@@ -3308,8 +3422,8 @@ class MainWindow(QMainWindow):
                 forward_buffer=self.engine.forward_buffer,
             ).warning("event=step_forward_noop")
             return
-        self._update_ui_from_engine()
-        self.save_session(trigger="step_forward")
+        self._update_ui_from_engine(defer_heavy=True)
+        self._enqueue_step_forward_save("step_forward")
         logger.bind(
             component="step_forward",
             trigger="button",
@@ -3330,6 +3444,7 @@ class MainWindow(QMainWindow):
         if not self.engine:
             return
         if index < self.engine.window_start_index or index > self.engine.window_end_index:
+            self._flush_deferred_step_ui_refresh()
             if not self.current_session_id:
                 return
             self._flush_pending_auto_save("jump_to_remote_bar")
@@ -3418,9 +3533,17 @@ class MainWindow(QMainWindow):
         self._update_ui_from_engine()
         self.save_session(trigger="move_stop_to_break_even")
 
-    def save_session(self, *, trigger: str = "manual", persist_drawings: bool = True) -> None:
+    def save_session(
+        self,
+        *,
+        trigger: str = "manual",
+        persist_drawings: bool = True,
+        flush_step_forward_pending: bool = True,
+    ) -> None:
         if not self.engine:
             return
+        if flush_step_forward_pending:
+            self._flush_pending_step_forward_save(trigger)
         self._auto_save_timer.stop()
         self.engine.session.drawing_style_presets = self._serialize_drawing_style_presets()
         self.engine.session.current_bar_time = self.engine.current_bar.timestamp
@@ -3452,6 +3575,7 @@ class MainWindow(QMainWindow):
     def change_chart_timeframe(self, timeframe: str) -> None:
         if not self.engine or not self.current_session_id or not timeframe:
             return
+        self._flush_deferred_step_ui_refresh()
         normalized = normalize_timeframe(timeframe)
         if normalized not in self.timeframe_buttons:
             logger.bind(component="chart", session_id=self.current_session_id, requested_timeframe=normalized).warning(
@@ -3870,8 +3994,10 @@ class MainWindow(QMainWindow):
         title: str,
         detail: str = "",
     ) -> None:
+        self._flush_deferred_step_ui_refresh()
         self._flush_pending_auto_save("start_session_load")
         self.current_session_id = session_id
+        self.engine = None
         self._active_loader_token += 1
         token = self._active_loader_token
         logger.bind(
@@ -3988,11 +4114,130 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _handle_loader_thread_finished(self) -> None:
+        finished_thread = self.sender()
+        if self._active_loader_thread is not None and finished_thread is not self._active_loader_thread:
+            logger.bind(component="session_load", thread_id=_thread_id()).debug("event=ignore_stale_loader_thread_finished")
+            return
         self._active_loader_thread = None
         self._active_loader_worker = None
         logger.bind(component="session_load", thread_id=_thread_id()).debug("event=loader_thread_finished")
 
+    def _setup_session_save_worker(self) -> None:
+        thread = QThread(self)
+        worker = SessionSaveWorker(self.repo.db_path)
+        worker.moveToThread(thread)
+        self._step_forward_save_requested.connect(worker.enqueue_save, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._handle_async_save_finished, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(self._handle_async_save_failed, Qt.ConnectionType.QueuedConnection)
+        thread.finished.connect(self._handle_session_save_thread_finished)
+        thread.start()
+        self._active_session_save_thread = thread
+        self._active_session_save_worker = worker
+
+    def _has_pending_step_forward_save(self) -> bool:
+        return self._latest_step_forward_save_generation > self._last_completed_step_forward_save_generation
+
+    def _build_step_forward_save_request(self, trigger: str) -> SessionSaveRequest | None:
+        if not self.engine:
+            return None
+        session = deepcopy(self.engine.session)
+        session.drawing_style_presets = self._serialize_drawing_style_presets()
+        session.current_bar_time = self.engine.current_bar.timestamp
+        return SessionSaveRequest(
+            generation=self._step_forward_save_generation + 1,
+            trigger=trigger,
+            session=session,
+            actions=deepcopy(self.engine.actions),
+            order_lines=deepcopy(self.engine.order_lines),
+            drawings=deepcopy(self.chart_widget.drawings()),
+        )
+
+    def _enqueue_step_forward_save(self, trigger: str = "step_forward") -> None:
+        request = self._build_step_forward_save_request(trigger)
+        if request is None:
+            return
+        self._step_forward_save_generation = request.generation
+        self._latest_step_forward_save_generation = request.generation
+        self._step_forward_save_in_flight = True
+        logger.bind(
+            component="session_save_async",
+            session_id=request.session.id,
+            generation=request.generation,
+            trigger=trigger,
+        ).debug("event=enqueue_step_forward_save")
+        self._step_forward_save_requested.emit(request)
+
+    def _flush_pending_step_forward_save(self, reason: str) -> None:
+        if not self._has_pending_step_forward_save():
+            return
+        logger.bind(
+            component="session_save_async",
+            session_id=self.current_session_id,
+            reason=reason,
+            latest_generation=self._latest_step_forward_save_generation,
+            completed_generation=self._last_completed_step_forward_save_generation,
+        ).info("event=flush_pending_step_forward_save")
+        app = QApplication.instance()
+        started = perf_counter()
+        while self._has_pending_step_forward_save() and (
+            self._failed_step_forward_save_generation < self._latest_step_forward_save_generation
+        ):
+            if app is not None:
+                app.processEvents()
+            if perf_counter() - started >= 3.0:
+                break
+        if self._has_pending_step_forward_save():
+            logger.bind(
+                component="session_save_async",
+                session_id=self.current_session_id,
+                reason=reason,
+                latest_generation=self._latest_step_forward_save_generation,
+            ).warning("event=flush_pending_step_forward_save_fallback_sync")
+            self.save_session(trigger=f"async_flush:{reason}", flush_step_forward_pending=False)
+            self._last_completed_step_forward_save_generation = self._latest_step_forward_save_generation
+            self._failed_step_forward_save_generation = 0
+            self._step_forward_save_in_flight = False
+
+    @Slot(int, bool)
+    def _handle_async_save_finished(self, generation: int, persisted: bool) -> None:
+        self._log_ui_thread("handle_async_save_finished")
+        self._step_forward_save_in_flight = generation < self._latest_step_forward_save_generation
+        if persisted:
+            logger.bind(
+                component="session_save_async",
+                session_id=self.current_session_id,
+                generation=generation,
+            ).debug("event=step_forward_save_finished")
+        else:
+            logger.bind(
+                component="session_save_async",
+                session_id=self.current_session_id,
+                generation=generation,
+            ).debug("event=step_forward_save_skipped_stale")
+        if generation >= self._latest_step_forward_save_generation:
+            self._last_completed_step_forward_save_generation = generation
+            self._failed_step_forward_save_generation = 0
+
+    @Slot(int, str)
+    def _handle_async_save_failed(self, generation: int, message: str) -> None:
+        self._log_ui_thread("handle_async_save_failed")
+        self._failed_step_forward_save_generation = max(self._failed_step_forward_save_generation, generation)
+        self._step_forward_save_in_flight = generation < self._latest_step_forward_save_generation
+        logger.bind(
+            component="session_save_async",
+            session_id=self.current_session_id,
+            generation=generation,
+        ).warning("event=step_forward_save_failed message={message}", message=message)
+        self._show_error("保存失败", "未能保存当前复盘进度", "程序会在下一次强制刷新时重试保存。", message)
+
+    @Slot()
+    def _handle_session_save_thread_finished(self) -> None:
+        self._active_session_save_thread = None
+        self._active_session_save_worker = None
+        logger.bind(component="session_save_async", thread_id=_thread_id()).debug("event=session_save_thread_finished")
+
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._flush_deferred_step_ui_refresh()
         self._flush_pending_auto_save("close_event")
         self.hide_busy_overlay()
         unregister_fatal_error_handler(self.show_fatal_error)
@@ -4014,6 +4259,10 @@ class MainWindow(QMainWindow):
             logger.bind(component="update_download").warning("event=close_waiting_for_update_download_thread")
             self._active_update_download_thread.quit()
             self._active_update_download_thread.wait(2000)
+        if self._active_session_save_thread and self._active_session_save_thread.isRunning():
+            logger.bind(component="session_save_async").warning("event=close_waiting_for_session_save_thread")
+            self._active_session_save_thread.quit()
+            self._active_session_save_thread.wait(2000)
         super().closeEvent(event)
 
     def _log_ui_thread(self, operation: str) -> None:
@@ -4119,7 +4368,7 @@ class MainWindow(QMainWindow):
         if target_index >= self.engine.window_start_index:
             target_index = max(0, self.engine.window_start_index - EXTEND_WINDOW_BEFORE)
         self._viewport_window_extension_active = True
-        started = perf_counter()
+        started = now
         try:
             self._last_viewport_window_extension_at = now
             self._ensure_window_contains_index(target_index, preserve_viewport=True)
@@ -4149,6 +4398,7 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.start(AUTO_SAVE_DELAY_MS)
 
     def _flush_pending_auto_save(self, reason: str) -> None:
+        self._flush_pending_step_forward_save(reason)
         if self._auto_save_timer.isActive():
             self._auto_save_timer.stop()
         if self._session_dirty:

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import perf_counter
@@ -28,6 +29,8 @@ from barbybar.ui.main_window import (
     LogViewerDialog,
     MainWindow,
     ReadOnlyTextPanel,
+    SessionSaveRequest,
+    SessionSaveWorker,
     SessionLibraryDialog,
     SettingsDialog,
     UpdateActionDialog,
@@ -137,6 +140,15 @@ def _wait_for_batch_import(app: QApplication, window: MainWindow, timeout_s: flo
         if thread is None or not thread.isRunning():
             return
     raise AssertionError("batch import did not finish in time")
+
+
+def _wait_until(app: QApplication, predicate, timeout_s: float = 3.0) -> None:
+    started = perf_counter()
+    while perf_counter() - started < timeout_s:
+        app.processEvents()
+        if predicate():
+            return
+    raise AssertionError("condition did not become true in time")
 
 
 def test_main_window_uses_timeframe_shortcut_buttons(window: MainWindow) -> None:
@@ -2958,24 +2970,73 @@ def test_busy_overlay_show_and_hide(window: MainWindow) -> None:
     assert QApplication.overrideCursor() is None
 
 
-def test_navigation_saves_session_immediately(window: MainWindow, monkeypatch) -> None:
+def test_step_forward_enqueues_async_save(window: MainWindow, monkeypatch) -> None:
     _seed_engine(window)
-    calls: list[str] = []
+    captured: list[tuple[str, int]] = []
 
-    def fake_save_session(*, trigger: str = "manual") -> None:
-        calls.append(trigger)
-        window._session_dirty = False
-        window._auto_save_timer.stop()
+    def fake_enqueue(trigger: str = "step_forward") -> None:
+        assert window.engine is not None
+        captured.append((trigger, window.engine.session.current_index))
 
-    monkeypatch.setattr(window, "save_session", fake_save_session)
+    monkeypatch.setattr(window, "_enqueue_step_forward_save", fake_enqueue)
 
     window.step_forward()
 
-    assert calls == ["step_forward"]
-    assert window._session_dirty is False
+    assert captured == [("step_forward", 26)]
     assert window._auto_save_timer.isActive() is False
-    window._auto_save_timer.stop()
-    window._session_dirty = False
+
+
+def test_step_forward_updates_progress_immediately_and_defers_heavy_refresh(
+    window: MainWindow,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_engine(window)
+    deferred_calls: list[int] = []
+    monkeypatch.setattr(window, "_enqueue_step_forward_save", lambda trigger="step_forward": None)
+
+    original_deferred = window._update_ui_from_engine_deferred
+
+    def wrapped_deferred() -> None:
+        assert window.engine is not None
+        deferred_calls.append(window.engine.session.current_index)
+        original_deferred()
+
+    monkeypatch.setattr(window, "_update_ui_from_engine_deferred", wrapped_deferred)
+    window._transient_message_active = False
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
+
+    window.step_forward()
+
+    assert window.progress_label.text().startswith("27/")
+    assert window.chart_widget._cursor == 26
+    assert window._deferred_step_ui_pending is True
+    assert deferred_calls == []
+
+    app.processEvents()
+
+    assert deferred_calls == [26]
+    assert window._deferred_step_ui_pending is False
+
+
+def test_deferred_step_ui_refresh_coalesces(window: MainWindow, app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    calls: list[int] = []
+
+    monkeypatch.setattr(window, "_update_ui_from_engine_deferred", lambda: calls.append(window.engine.session.current_index if window.engine else -1))
+
+    window._schedule_deferred_step_ui_refresh()
+    window._schedule_deferred_step_ui_refresh()
+
+    app.processEvents()
+
+    assert calls == [25]
+    assert window._deferred_step_ui_pending is False
 
 
 def test_jump_to_visible_bar_saves_session_immediately(window: MainWindow, monkeypatch) -> None:
@@ -2999,7 +3060,7 @@ def test_jump_to_visible_bar_saves_session_immediately(window: MainWindow, monke
 def test_step_forward_keeps_zoom_when_forward_window_extends(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_engine(window)
     assert window.engine is not None
-    monkeypatch.setattr(window, "save_session", lambda *, trigger="manual": None)
+    monkeypatch.setattr(window, "_enqueue_step_forward_save", lambda trigger="step_forward": None)
 
     extended_bars = [
         Bar(
@@ -3044,7 +3105,7 @@ def test_step_forward_keeps_zoom_when_forward_window_extends(window: MainWindow,
 def test_space_shortcut_steps_forward_when_focus_allows(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_engine(window)
     start_index = window.engine.session.current_index
-    monkeypatch.setattr(window, "save_session", lambda *, trigger="manual": None)
+    monkeypatch.setattr(window, "_enqueue_step_forward_save", lambda trigger="step_forward": None)
 
     monkeypatch.setattr(QApplication, "focusWidget", staticmethod(lambda: window.chart_widget))
     window._handle_step_forward_shortcut()
@@ -3121,6 +3182,94 @@ def test_flush_pending_auto_save_persists_session(window: MainWindow, monkeypatc
 
     assert calls == ["auto_flush:change_chart_timeframe"]
     assert not window._auto_save_timer.isActive()
+
+
+def test_flush_pending_auto_save_waits_for_async_step_forward_save(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    window._latest_step_forward_save_generation = 3
+    window._last_completed_step_forward_save_generation = 1
+    calls: list[str] = []
+    monkeypatch.setattr(window, "_log_ui_thread", lambda operation: None)
+
+    def fake_process_events() -> None:
+        window._handle_async_save_finished(3, True)
+
+    monkeypatch.setattr(QApplication, "instance", staticmethod(lambda: type("App", (), {"processEvents": staticmethod(fake_process_events)})()))
+    monkeypatch.setattr(window, "save_session", lambda **kwargs: calls.append(kwargs["trigger"]))
+
+    window._flush_pending_auto_save("change_chart_timeframe")
+
+    assert window._last_completed_step_forward_save_generation == 3
+    assert calls == []
+
+
+def test_async_save_failure_keeps_pending_state(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    errors: list[tuple[str, str, str, str]] = []
+    monkeypatch.setattr(window, "_show_error", lambda title, heading, detail, message: errors.append((title, heading, detail, message)))
+    window._latest_step_forward_save_generation = 4
+
+    window._handle_async_save_failed(4, "boom")
+
+    assert window._failed_step_forward_save_generation == 4
+    assert window._has_pending_step_forward_save() is True
+    assert errors == [("保存失败", "未能保存当前复盘进度", "程序会在下一次强制刷新时重试保存。", "boom")]
+    window._latest_step_forward_save_generation = 0
+    window._last_completed_step_forward_save_generation = 0
+    window._failed_step_forward_save_generation = 0
+
+
+def test_session_save_worker_skips_stale_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _app()
+    saved_generations: list[int] = []
+    opened_db_paths: list[Path | None] = []
+
+    class FakeRepo:
+        def __init__(self, db_path) -> None:
+            opened_db_paths.append(Path(db_path) if db_path is not None else None)
+
+        def save_session_state(self, session, actions, order_lines, drawings) -> None:
+            saved_generations.append(session.current_index)
+
+    monkeypatch.setattr(main_window_module, "Repository", FakeRepo)
+    worker = SessionSaveWorker(Path("C:/tmp/test-worker.db"))
+    finished: list[tuple[int, bool]] = []
+    worker.finished.connect(lambda generation, persisted: finished.append((generation, persisted)))
+
+    session = ReviewSession(
+        id=1,
+        dataset_id=1,
+        symbol="IF",
+        timeframe="1m",
+        chart_timeframe="1m",
+        start_index=0,
+        current_index=10,
+        current_bar_time=datetime(2025, 1, 1, 9, 10),
+        status=SessionStatus.ACTIVE,
+        title="Worker",
+        notes="",
+        tags=[],
+        position=PositionState(),
+        stats=SessionStats(),
+        created_at=datetime(2025, 1, 1, 9, 0),
+        updated_at=datetime(2025, 1, 1, 9, 0),
+    )
+    first = SessionSaveRequest(1, "step_forward", session, [], [], [])
+    second = SessionSaveRequest(
+        2,
+        "step_forward",
+        replace(session, current_index=11, current_bar_time=datetime(2025, 1, 1, 9, 11)),
+        [],
+        [],
+        [],
+    )
+
+    worker.enqueue_save(first)
+    worker.enqueue_save(second)
+    _wait_until(app, lambda: finished == [(1, False), (2, True)])
+
+    assert opened_db_paths == [Path("C:/tmp/test-worker.db")]
+    assert saved_generations == [11]
 
 
 def test_order_line_context_price_edit_snaps_value(window: MainWindow, monkeypatch) -> None:
