@@ -1714,17 +1714,17 @@ class TradeHistoryDialog(QDialog):
         self._refresh_detail()
 
     def _handle_table_clicked(self, index: QModelIndex) -> None:
-        trade_number = self.trade_history_model.trade_number_at(index.row())
-        if trade_number is None:
+        item = self.trade_history_model.trade_item_at(index)
+        if item is None:
             return
-        self.owner.select_trade_history_item(trade_number, focus_view=self.owner._selected_trade_view, focus_chart=True)
+        self.owner.select_trade_review_item(item, focus_view=self.owner._selected_trade_view, focus_chart=True)
         self.refresh_items()
 
     def _handle_table_activated(self, index: QModelIndex) -> None:
-        trade_number = self.trade_history_model.trade_number_at(index.row())
-        if trade_number is None:
+        item = self.trade_history_model.trade_item_at(index)
+        if item is None:
             return
-        self.owner.select_trade_history_item(trade_number, focus_view=self.owner._selected_trade_view, focus_chart=True)
+        self.owner.select_trade_review_item(item, focus_view=self.owner._selected_trade_view, focus_chart=True)
         self.refresh_items()
 
     def _toggle_selected_trade_focus(self) -> None:
@@ -3937,6 +3937,24 @@ class MainWindow(QMainWindow):
         if focus_chart:
             self._focus_selected_trade_view()
 
+    def select_trade_review_item(
+        self,
+        item: TradeReviewItem,
+        *,
+        focus_view: TradeFocusMode | None = None,
+        focus_chart: bool = True,
+    ) -> None:
+        mode = focus_view or self._trade_review_controller.focus_mode
+        self._trade_review_controller.select_trade(item.trade_number, focus_mode=mode)
+        self._selected_trade_number = item.trade_number
+        self._selected_trade_view = mode
+        self.chart_widget.set_trade_focus(
+            item.trade_number,
+            (item.entry_bar_index, item.entry_price, item.exit_bar_index, item.exit_price),
+        )
+        if focus_chart:
+            self._focus_selected_trade_view(item)
+
     def set_trade_history_focus(self, focus_view: TradeFocusMode, *, focus_chart: bool = True) -> None:
         self._trade_review_controller.set_focus_mode(focus_view)
         self._selected_trade_view = focus_view
@@ -3969,8 +3987,8 @@ class MainWindow(QMainWindow):
         self._sync_selected_trade_focus()
         self._focus_selected_trade_view()
 
-    def _focus_selected_trade_view(self) -> None:
-        item = self._selected_trade_review_item()
+    def _focus_selected_trade_view(self, item: TradeReviewItem | None = None) -> None:
+        item = item or self._selected_trade_review_item()
         if item is None:
             return
         if not self.engine:

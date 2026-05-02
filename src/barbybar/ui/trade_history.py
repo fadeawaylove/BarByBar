@@ -295,6 +295,11 @@ class TradeHistoryTableModel(QAbstractTableModel):
             return None
         return self._rows[row_index].trade_number
 
+    def trade_item_at(self, index: QModelIndex) -> TradeReviewItem | None:
+        if not index.isValid() or not 0 <= index.row() < len(self._rows):
+            return None
+        return self._rows[index.row()].item
+
     def _filtered_rows(self, rows: list[TradeHistoryRow]) -> list[TradeHistoryRow]:
         filters = self._filters
         return [row for row in rows if _matches_filters(row, filters)]

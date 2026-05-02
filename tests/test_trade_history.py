@@ -69,6 +69,18 @@ def test_trade_history_model_normalizes_rows_for_table_and_detail() -> None:
     assert model.rows()[0].review_note == "复盘记录"
 
 
+def test_trade_history_model_returns_item_for_clicked_index() -> None:
+    first = _trade(1)
+    second = _trade(2)
+    model = TradeHistoryTableModel([first, second])
+
+    item = model.trade_item_at(model.index(0, 0))
+
+    assert item is second
+    assert item.exit_bar_index == second.exit_bar_index
+    assert model.trade_item_at(model.index(-1, 0)) is None
+
+
 def test_trade_history_exit_reason_formats_engine_codes_as_chinese() -> None:
     model = TradeHistoryTableModel([
         _trade(1, exit_reason="stop_loss"),

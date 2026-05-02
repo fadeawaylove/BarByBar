@@ -2995,6 +2995,28 @@ def test_trade_history_filters_sorting_and_selection_preservation(window: MainWi
     assert dialog.trade_history_model.rowCount() == 2
 
 
+def test_trade_history_table_click_uses_clicked_item_bar_indices(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    first = TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 101, 1, 10, 12, 2, "manual_close", True, False, False, True)
+    last = TradeReviewItem(2, start + timedelta(minutes=5), start + timedelta(minutes=10), "long", 1, 105, 108, 3, 20, 25, 5, "manual_close", True, False, False, True)
+    window._trade_review_items = [first, last]
+    focus_calls: list[tuple[int, tuple[int, float, int, float]]] = []
+    chart_focus_calls: list[str] = []
+    window.chart_widget.set_trade_focus = lambda trade_number, points: focus_calls.append((trade_number, points))  # type: ignore[method-assign]
+    window._focus_selected_trade_view = lambda item=None: chart_focus_calls.append(f"{item.trade_number}:{item.exit_bar_index}")  # type: ignore[method-assign]
+    window.open_full_trade_history_dialog()
+
+    assert window._trade_history_dialog is not None
+    dialog = window._trade_history_dialog
+    monkeypatch.setattr(dialog.trade_history_model, "trade_number_at", lambda _row: 1)
+
+    dialog._handle_table_clicked(dialog.trade_history_model.index(0, 0))
+
+    assert window._selected_trade_number == 2
+    assert focus_calls == [(2, (20, 105, 25, 108))]
+    assert chart_focus_calls == ["2:25"]
+
+
 def test_trade_history_exit_reason_filter_displays_chinese_labels(window: MainWindow) -> None:
     start = datetime(2025, 1, 1, 9, 0)
     window._trade_review_items = [
