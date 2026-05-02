@@ -9,6 +9,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$script:Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = $script:Utf8NoBom
+[Console]::OutputEncoding = $script:Utf8NoBom
 
 function Show-Usage {
     Write-Host 'Usage: .\scripts\publish_release.ps1 major|minor|patch [-Preview] [-Yes] [-VerifyRelease]' -ForegroundColor Yellow

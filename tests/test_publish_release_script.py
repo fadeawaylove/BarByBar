@@ -8,6 +8,8 @@ def _script_text() -> str:
 def test_publish_release_script_exposes_safe_publish_modes() -> None:
     text = _script_text()
 
+    assert "[Console]::OutputEncoding = $script:Utf8NoBom" in text
+    assert "$OutputEncoding = $script:Utf8NoBom" in text
     assert "[switch]$Preview" in text
     assert "[switch]$Yes" in text
     assert "[switch]$VerifyRelease" in text
