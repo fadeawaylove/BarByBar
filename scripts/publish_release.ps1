@@ -1,13 +1,21 @@
 param(
     [Parameter(Position = 0)]
-    [string]$BumpPart
+    [string]$BumpPart,
+    [switch]$Preview,
+    [switch]$Yes,
+    [switch]$VerifyRelease,
+    [int]$VerifyTimeoutSeconds = 600,
+    [int]$VerifyPollSeconds = 15
 )
 
 $ErrorActionPreference = 'Stop'
 
 function Show-Usage {
-    Write-Host 'Usage: .\\scripts\\publish_release.ps1 major|minor|patch' -ForegroundColor Yellow
-    Write-Host 'Example: .\\scripts\\publish_release.ps1 patch' -ForegroundColor DarkGray
+    Write-Host 'Usage: .\scripts\publish_release.ps1 major|minor|patch [-Preview] [-Yes] [-VerifyRelease]' -ForegroundColor Yellow
+    Write-Host 'Examples:' -ForegroundColor DarkGray
+    Write-Host '  .\scripts\publish_release.ps1 patch -Preview' -ForegroundColor DarkGray
+    Write-Host '  .\scripts\publish_release.ps1 patch' -ForegroundColor DarkGray
+    Write-Host '  .\scripts\publish_release.ps1 patch -Yes -VerifyRelease' -ForegroundColor DarkGray
 }
 
 if ([string]::IsNullOrWhiteSpace($BumpPart)) {
@@ -44,6 +52,23 @@ function Get-GitOutput {
         throw "git $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
     return $output
+}
+
+function Test-GitRefExists {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $output = & git @Arguments 2>$null
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        return -not [string]::IsNullOrWhiteSpace(($output | Select-Object -First 1))
+    }
+    if ($exitCode -eq 2) {
+        return $false
+    }
+    throw "git $($Arguments -join ' ') failed with exit code $exitCode."
 }
 
 function Get-IncrementedVersion {
@@ -99,6 +124,146 @@ function Get-GitHubRepositoryInfo {
         Slug    = $slug
         BaseUrl = "https://github.com/$slug"
     }
+}
+
+function Get-PythonCommand {
+    $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
+    if (Test-Path $venvPython) {
+        return $venvPython
+    }
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCommand) {
+        return $pythonCommand.Source
+    }
+    throw 'python was not found. Run uv sync first or ensure python is on PATH.'
+}
+
+function New-ReleaseNotesPreview {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Tag,
+        [Parameter(Mandatory = $true)]
+        [string]$PreviousTag,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoUrl
+    )
+
+    $python = Get-PythonCommand
+    $arguments = @(
+        (Join-Path $repoRoot 'scripts\generate_release_notes.py'),
+        '--tag', $Tag,
+        '--repo-url', $RepoUrl,
+        '--output', '-',
+        '--previous-tag', $PreviousTag,
+        '--head-ref', 'HEAD'
+    )
+    $output = & $python @arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Release notes preview failed with exit code $LASTEXITCODE."
+    }
+    return ($output -join [Environment]::NewLine)
+}
+
+function Confirm-ReleasePublish {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Tag
+    )
+
+    if ($Yes) {
+        return
+    }
+    $answer = Read-Host "Publish $Tag now? Type 'yes' to push master and the release tag"
+    if ($answer -ne 'yes') {
+        throw 'Release publishing cancelled before pushing refs.'
+    }
+}
+
+function Test-ReleaseAssetNames {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Assets,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ExpectedNames
+    )
+
+    $assetNames = @($Assets | ForEach-Object { $_.name })
+    foreach ($expected in $ExpectedNames) {
+        if ($assetNames -notcontains $expected) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-GitHubRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Tag,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ExpectedAssets
+    )
+
+    $json = & gh release view $Tag --json url,body,assets 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($json)) {
+        return $null
+    }
+    $release = $json | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($release.body)) {
+        return $null
+    }
+    if (-not (Test-ReleaseAssetNames -Assets @($release.assets) -ExpectedNames $ExpectedAssets)) {
+        return $null
+    }
+    return $release
+}
+
+function Wait-GitHubRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Tag,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ExpectedAssets,
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$GitHubRepo
+    )
+
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        Write-Warning 'gh was not found on PATH; skipping GitHub Release verification.'
+        Write-Output "Release page: $($GitHubRepo.BaseUrl)/releases/tag/$Tag"
+        Write-Output "Workflow page: $($GitHubRepo.BaseUrl)/actions/workflows/release.yml"
+        return
+    }
+
+    $null = & gh auth status 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning 'gh is not authenticated; skipping GitHub Release verification.'
+        Write-Output "Release page: $($GitHubRepo.BaseUrl)/releases/tag/$Tag"
+        Write-Output "Workflow page: $($GitHubRepo.BaseUrl)/actions/workflows/release.yml"
+        return
+    }
+
+    $deadline = (Get-Date).AddSeconds([Math]::Max($VerifyTimeoutSeconds, 1))
+    $pollSeconds = [Math]::Max($VerifyPollSeconds, 1)
+    while ((Get-Date) -lt $deadline) {
+        $release = Test-GitHubRelease -Tag $Tag -ExpectedAssets $ExpectedAssets
+        if ($null -ne $release) {
+            Write-Output ''
+            Write-Output 'Verified GitHub Release'
+            Write-Output "Release page: $($release.url)"
+            foreach ($asset in $release.assets) {
+                if ($ExpectedAssets -contains $asset.name) {
+                    Write-Output "Asset: $($asset.name) -> $($asset.url)"
+                }
+            }
+            return
+        }
+        Start-Sleep -Seconds $pollSeconds
+    }
+
+    Write-Warning "Timed out waiting for GitHub Release $Tag to contain notes and expected assets."
+    Write-Output "Release page: $($GitHubRepo.BaseUrl)/releases/tag/$Tag"
+    Write-Output "Workflow page: $($GitHubRepo.BaseUrl)/actions/workflows/release.yml"
 }
 
 function Write-ReleaseSummary {
@@ -176,6 +341,7 @@ if (-not $versionMatch.Success) {
 }
 
 $currentVersion = $versionMatch.Groups['version'].Value
+Invoke-Git -Arguments @('fetch', '--tags', 'origin')
 $latestTag = (Get-GitOutput -Arguments @('tag', '--list', 'v*', '--sort=-version:refname') | Select-Object -First 1).Trim()
 $latestVersion = if ($latestTag) { $latestTag.TrimStart('v') } else { $currentVersion }
 $nextVersion = Get-IncrementedVersion -Version $latestVersion -Part $normalizedPart
@@ -185,6 +351,7 @@ $remoteUrl = (Get-GitOutput -Arguments @('remote', 'get-url', 'origin')).Trim()
 $githubRepo = Get-GitHubRepositoryInfo -RemoteUrl $remoteUrl
 $existingTagOutput = Get-GitOutput -Arguments @('tag', '--list', $tag) | Select-Object -First 1
 $existingTag = if ($existingTagOutput) { $existingTagOutput.Trim() } else { '' }
+$remoteTagExists = Test-GitRefExists -Arguments @('ls-remote', '--exit-code', '--tags', 'origin', $tag)
 
 if ($branch -ne 'master') {
     throw "Release tags must be created from master. Current branch: $branch"
@@ -193,6 +360,28 @@ if ($branch -ne 'master') {
 if ($existingTag) {
     throw "Release tag $tag already exists locally."
 }
+
+if ($remoteTagExists) {
+    throw "Release tag $tag already exists on origin."
+}
+
+$repoUrl = if ($null -ne $githubRepo) { $githubRepo.BaseUrl } else { 'https://github.com/local/BarByBar' }
+$releaseNotesPreview = New-ReleaseNotesPreview -Tag $tag -PreviousTag $latestTag -RepoUrl $repoUrl
+
+Write-Output ''
+Write-Output 'Release preview'
+Write-Output "Version: $currentVersion -> $nextVersion"
+Write-Output "Previous tag: $(if ($latestTag) { $latestTag } else { 'none' })"
+Write-Output "Target tag: $tag"
+Write-Output ''
+Write-Output $releaseNotesPreview
+
+if ($Preview) {
+    Write-Output 'Preview complete; no files, commits, pushes, or tags were changed.'
+    exit 0
+}
+
+Confirm-ReleasePublish -Tag $tag
 
 if ($currentVersion -ne $nextVersion) {
     $updatedContent = [regex]::Replace(
@@ -224,3 +413,12 @@ Invoke-Git -Arguments @('push', 'origin', $tag)
 
 $commitSha = (Get-GitOutput -Arguments @('rev-parse', '--short', 'HEAD')).Trim()
 Write-ReleaseSummary -CurrentVersion $currentVersion -NextVersion $nextVersion -Branch $branch -Tag $tag -CommitSha $commitSha -GitHubRepo $githubRepo
+
+if ($VerifyRelease) {
+    if ($null -eq $githubRepo) {
+        Write-Warning 'GitHub Release verification requires a recognized GitHub origin remote.'
+    } else {
+        $expectedAssets = @("BarByBar-$tag-windows-x64.zip", "BarByBar-$tag-windows-x64-setup.exe")
+        Wait-GitHubRelease -Tag $tag -ExpectedAssets $expectedAssets -GitHubRepo $githubRepo
+    }
+}

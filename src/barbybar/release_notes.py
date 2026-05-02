@@ -14,7 +14,7 @@ class CommitEntry:
 _RELEASE_SUBJECT = re.compile(r"^Release v\d+\.\d+\.\d+$", re.IGNORECASE)
 
 _CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("发布与安装", ("release", "installer", "setup", "workflow", "github", "note", "package", "wizard")),
+    ("发布与安装", ("release", "installer", "setup", "github", "package", "wizard")),
     ("会话与数据", ("session", "database", "migration", "repository", "search", "dataset", "case", "legacy")),
     ("图表与交互", ("hover", "chart", "zoom", "shortcut", "bar", "trade", "crosshair", "drawing")),
     ("修复与兼容", ("fix", "error", "compat", "crash", "regression")),

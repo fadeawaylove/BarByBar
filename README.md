@@ -47,7 +47,10 @@ BarByBar publishes a Windows portable ZIP and a Windows setup installer to GitHu
 
 ```powershell
 # 1. make sure the feature commits you want to release are already on master
-# 2. run the publish script to bump the version, create the release commit, and push the tag
+# 2. preview the GitHub Release notes that users will see
+.\scripts\publish_release.ps1 patch -Preview
+
+# 3. publish after reviewing the generated notes
 .\scripts\publish_release.ps1 patch
 ```
 
@@ -55,20 +58,26 @@ BarByBar publishes a Windows portable ZIP and a Windows setup installer to GitHu
 
 - the working tree is clean
 - the current branch is `master`
+- local tags are refreshed from `origin`
+- the target release tag does not already exist locally or on `origin`
 
 Then it automatically:
 
+- previews the generated Chinese release notes before publishing
+- asks for confirmation before pushing commits or tags
 - bumps `src\barbybar\__init__.py` to the next semantic version
 - creates a `Release vX.Y.Z` commit when the version file needs a bump
 - pushes `master`
 - creates and pushes the matching tag
 
-The release workflow summarizes the commits between the previous tag and the current tag into Chinese release notes automatically, and filters out the release bump commit from the summary.
+Use `-Yes` to skip the confirmation prompt in trusted non-interactive usage. Use `-VerifyRelease` to ask the script to verify the GitHub Release page after the tag push when `gh` is installed and authenticated.
+
+The release workflow summarizes the commits between the previous tag and the current tag into Chinese release notes automatically, and filters out the release bump commit from the summary. The local preview uses the same generator so the reviewed notes match the GitHub Release body.
 
 The GitHub Actions workflows are:
 
 - `Package`: manual-only packaging validation, uploads workflow artifacts only
-- `Release`: tag-triggered publication, and it fails if the tagged commit is not in `master`
+- `Release`: tag-triggered publication, and it fails if the tagged commit is not in `master`. Manual dispatch requires an explicit `vX.Y.Z` tag.
 
 The release artifacts are:
 

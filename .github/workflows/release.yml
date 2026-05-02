@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v0.5.14"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -20,6 +25,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve release tag
+        id: release_tag
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            "${{ inputs.tag }}"
+          } else {
+            "${{ github.ref_name }}"
+          }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Release workflow requires a vX.Y.Z tag. Received '$tag'."
+          }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -31,15 +51,21 @@ jobs:
       - name: Verify tagged commit is on master
         shell: pwsh
         run: |
+          $tag = "$env:RELEASE_TAG"
           if ((git rev-parse --is-shallow-repository).Trim() -eq "true") {
             git fetch --force --tags --unshallow origin
           } else {
             git fetch --force --tags origin
           }
-          git fetch --force origin +refs/heads/master:refs/remotes/origin/master
-          git merge-base --is-ancestor $env:GITHUB_SHA origin/master
+          git rev-parse --verify "refs/tags/$tag"
           if ($LASTEXITCODE -ne 0) {
-            throw "Tagged commit $env:GITHUB_SHA is not contained in origin/master."
+            throw "Release tag $tag does not exist."
+          }
+          git fetch --force origin +refs/heads/master:refs/remotes/origin/master
+          $tagSha = (git rev-list -n 1 $tag).Trim()
+          git merge-base --is-ancestor $tagSha origin/master
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tagged commit $tagSha is not contained in origin/master."
           }
 
       - name: Sync release dependencies
@@ -68,12 +94,12 @@ jobs:
 
       - name: Build release artifacts
         shell: pwsh
-        run: .\scripts\build_installer.ps1 -Tag "${{ github.ref_name }}"
+        run: .\scripts\build_installer.ps1 -Tag "$env:RELEASE_TAG"
 
       - name: Generate release notes
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = "$env:RELEASE_TAG"
           $repoUrl = "https://github.com/${{ github.repository }}"
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
           python .\scripts\generate_release_notes.py --tag $tag --repo-url $repoUrl --output $notesPath --verbose
@@ -82,24 +108,24 @@ jobs:
       - name: Upload release notes artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-notes-${{ github.ref_name }}
+          name: release-notes-${{ steps.release_tag.outputs.tag }}
           path: ${{ env.RELEASE_NOTES_PATH }}
           if-no-files-found: error
 
       - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.release_tag.outputs.tag }}
           body_path: ${{ env.RELEASE_NOTES_PATH }}
           files: |
-            dist/BarByBar-${{ github.ref_name }}-windows-x64.zip
-            dist/BarByBar-${{ github.ref_name }}-windows-x64-setup.exe
+            dist/BarByBar-${{ steps.release_tag.outputs.tag }}-windows-x64.zip
+            dist/BarByBar-${{ steps.release_tag.outputs.tag }}-windows-x64-setup.exe
 
       - name: Force overwrite release body
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = "$env:RELEASE_TAG"
           $notesPath = "${{ env.RELEASE_NOTES_PATH }}"
           gh release edit $tag --notes-file $notesPath
