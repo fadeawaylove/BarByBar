@@ -58,7 +58,13 @@ from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QIcon, QKeySequ
 from barbybar import __version__
 from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
 from barbybar.data.tick_size import format_average_price, format_price, price_decimals_for_tick, snap_price
-from barbybar.data.timeframe import SUPPORTED_REPLAY_TIMEFRAMES, default_chart_timeframe, normalize_timeframe, supported_replay_timeframes
+from barbybar.data.timeframe import (
+    SUPPORTED_REPLAY_TIMEFRAMES,
+    default_chart_timeframe,
+    find_bar_index_for_timestamp,
+    normalize_timeframe,
+    supported_replay_timeframes,
+)
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import (
     ActionType,
@@ -4099,10 +4105,15 @@ class MainWindow(QMainWindow):
             return
         if not self.engine:
             return
-        target_index = item.entry_bar_index if self._selected_trade_view == "entry" else item.exit_bar_index
-        if target_index < self.engine.window_start_index or target_index > self.engine.window_end_index:
-            if not self._ensure_window_contains_index(target_index):
+        target_time = item.entry_time if self._selected_trade_view == "entry" else item.exit_time
+        fallback_index = item.entry_bar_index if self._selected_trade_view == "entry" else item.exit_bar_index
+        target_index = self._chart_index_for_trade_time(target_time, fallback_index)
+        if target_index is None:
+            if not self._ensure_window_contains_trade_time(target_time, fallback_index):
                 return
+            target_index = self._chart_index_for_trade_time(target_time, fallback_index)
+        if target_index is None:
+            target_index = fallback_index
         viewport = self.chart_widget.viewport_state
         viewport.follow_latest = False
         self.chart_widget.set_right_padding(0.0)
@@ -4112,6 +4123,69 @@ class MainWindow(QMainWindow):
         if 0 <= local_index < len(self.engine.bars):
             timestamp = self.engine.bars[local_index].timestamp
             self.progress_label.setText(f"查看交易 #{item.trade_number} | Bar {target_index + 1} | {timestamp:%Y-%m-%d %H:%M}")
+
+    def _chart_index_for_trade_time(self, target_time, fallback_index: int) -> int | None:  # noqa: ANN001
+        if not self.engine or not self.engine.bars:
+            return None
+        local_index = find_bar_index_for_timestamp(self.engine.bars, target_time)
+        candidate_indices = [index for index in (local_index - 1, local_index, local_index + 1) if 0 <= index < len(self.engine.bars)]
+        for candidate_index in candidate_indices:
+            if self.engine.bars[candidate_index].timestamp == target_time:
+                return self.engine.window_start_index + candidate_index
+        if not any(self._bar_contains_time(self.engine.bars[candidate_index], target_time) for candidate_index in candidate_indices):
+            return None
+        if self.engine.window_start_index <= fallback_index <= self.engine.window_end_index:
+            return fallback_index
+        return self.engine.window_start_index + local_index
+
+    @staticmethod
+    def _bar_contains_time(bar, target_time) -> bool:  # noqa: ANN001
+        open_time = bar.open_timestamp or bar.timestamp
+        return bar.timestamp == target_time or open_time <= target_time <= bar.timestamp
+
+    def _ensure_window_contains_trade_time(self, target_time, fallback_index: int) -> bool:  # noqa: ANN001
+        if not self.engine or not self.current_session_id:
+            return False
+        current_index = self.engine.session.current_index
+        before_count = INITIAL_WINDOW_BEFORE
+        after_count = INITIAL_WINDOW_AFTER
+        if fallback_index < current_index:
+            after_count = max(after_count, current_index - fallback_index + INITIAL_WINDOW_AFTER)
+        else:
+            before_count = max(before_count, fallback_index - current_index + INITIAL_WINDOW_BEFORE)
+        window_step = perf_counter()
+        window = self.repo.get_chart_window(
+            self.current_session_id,
+            self.engine.session.chart_timeframe,
+            target_time,
+            before_count,
+            after_count,
+        )
+        record_metric(
+            "data_window",
+            "ensure_contains_trade_time_window",
+            (perf_counter() - window_step) * 1000,
+            after_count=after_count,
+            before_count=before_count,
+            bars=len(window.bars),
+            chart_timeframe=self.engine.session.chart_timeframe,
+            session_id=self.current_session_id,
+            start=window.global_start_index,
+            target_index=fallback_index,
+            thread="ui",
+            total=window.total_count,
+        )
+        self.engine.replace_window(window.bars, window.global_start_index, window.total_count)
+        self.chart_widget.set_window_data(
+            self.engine.bars,
+            self.engine.session.current_index,
+            self.engine.total_count,
+            self.engine.window_start_index,
+            timeframe=self.engine.session.chart_timeframe,
+        )
+        self._update_ui_from_engine()
+        target_index = self._chart_index_for_trade_time(target_time, fallback_index)
+        return target_index is not None and self.engine.window_start_index <= target_index <= self.engine.window_end_index
 
     def _ensure_window_contains_index(self, target_index: int, *, preserve_viewport: bool = False) -> bool:
         if not self.engine or not self.current_session_id:

@@ -3098,6 +3098,41 @@ def test_trade_history_card_click_uses_active_entry_or_exit_bar(window: MainWind
     assert window._selected_trade_number == 42
 
 
+def test_trade_history_focus_resolves_chart_index_from_trade_time(window: MainWindow) -> None:
+    _seed_engine(window)
+    window.chart_widget.set_window_data(
+        window.engine.bars,
+        window.engine.session.current_index,
+        window.engine.total_count,
+        window.engine.window_start_index,
+    )
+    target_time = window.engine.bars[10].timestamp
+    trade = TradeReviewItem(
+        375,
+        target_time,
+        window.engine.bars[12].timestamp,
+        "long",
+        1,
+        4904,
+        4915,
+        11,
+        40,
+        41,
+        2,
+        "take_profit",
+        False,
+        False,
+        False,
+        False,
+    )
+
+    window.select_trade_review_item(trade, focus_view="entry", focus_chart=True)
+
+    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
+    assert visible[-1][0] == 10
+    assert "交易 #375" in window.progress_label.text()
+
+
 def test_trade_history_exit_reason_filter_displays_chinese_labels(window: MainWindow) -> None:
     start = datetime(2025, 1, 1, 9, 0)
     window._trade_review_items = [
