@@ -7,7 +7,7 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
 from barbybar.data.tick_size import format_price
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade
 from barbybar.performance_metrics import clear_metrics, recent_metrics
 from barbybar.ui.chart_widget import (
     AVERAGE_PRICE_LINE_COLOR,
@@ -933,6 +933,40 @@ def test_trade_actions_render_marker_items(widget: ChartWidget) -> None:
     assert widget._trade_markers[1].size == pytest.approx(widget._scaled_trade_triangle_size())
     assert widget._trade_links[0].direction == "long"
     assert widget._trade_links[0].outcome == "win"
+
+
+def test_trade_exit_markers_are_limited_to_actual_trades(widget: ChartWidget) -> None:
+    bars = _bars()
+    entry_time = bars[5].timestamp
+    duplicate_exit_time = bars[7].timestamp
+    actual_exit_time = bars[8].timestamp
+    widget.set_full_data(bars)
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, entry_time, price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 7, duplicate_exit_time, price=103.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 8, actual_exit_time, price=103.0, quantity=1),
+        ],
+        [
+            Trade(
+                entry_time=entry_time,
+                exit_time=actual_exit_time,
+                direction="long",
+                quantity=1,
+                entry_price=101.0,
+                exit_price=103.0,
+                pnl=2.0,
+            )
+        ],
+    )
+
+    exit_markers = [marker for marker in widget._trade_markers if marker.role == "exit"]
+
+    assert len(exit_markers) == 1
+    assert exit_markers[0].action.bar_index == 8
+    assert len(widget._trade_links) == 1
+    assert widget._trade_links[0].x2 == pytest.approx(8.0)
 
 
 def test_trade_marker_hover_returns_action_details(widget: ChartWidget, app: QApplication) -> None:

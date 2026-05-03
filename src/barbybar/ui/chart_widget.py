@@ -420,6 +420,7 @@ class ChartWidget(QWidget):
         self._order_line_items: dict[int, pg.InfiniteLine] = {}
         self._order_line_labels: dict[int, pg.TextItem] = {}
         self._trade_actions: list[SessionAction] = []
+        self._trades: list[Trade] | None = None
         self._trade_links: list[TradeLink] = []
         self._trade_markers: list[TradeMarker] = []
         self._trade_markers_visible = True
@@ -813,6 +814,7 @@ class ChartWidget(QWidget):
         if signature == self._trade_actions_signature:
             return
         self._trade_actions = list(actions)
+        self._trades = list(trades) if trades is not None else None
         self._trade_actions_signature = signature
         self._trade_geometry_dirty = True
         self._trade_marker_items_dirty = True
@@ -1680,7 +1682,7 @@ class ChartWidget(QWidget):
             else:
                 self._relayout_order_line_labels()
         if viewport_changed or self._trade_geometry_dirty:
-            self._rebuild_trade_geometry(None)
+            self._rebuild_trade_geometry(self._trades)
             geometry_rebuilt = True
         if viewport_changed or geometry_rebuilt or self._trade_marker_items_dirty:
             self._rebuild_trade_marker_items()
@@ -3705,8 +3707,15 @@ class ChartWidget(QWidget):
         offset_unit = y_span * 0.018
         marker_offsets: dict[int, int] = {}
         markers: list[TradeMarker] = []
+        marker_actions: list[SessionAction] = []
         active_direction = "flat"
+        matched_trades: set[int] = set()
         for action in visible_actions:
+            if trades is not None and action.action_type in {ActionType.CLOSE, ActionType.REDUCE}:
+                trade_index = self._matching_trade_exit_index(action, trades, matched_trades)
+                if trade_index is None:
+                    continue
+                matched_trades.add(trade_index)
             local_index = action.bar_index - self._global_start_index
             if not (0 <= local_index < len(self._bars)):
                 continue
@@ -3734,8 +3743,9 @@ class ChartWidget(QWidget):
                     detail_lines=[],
                 )
             )
+            marker_actions.append(action)
             active_direction = self._next_trade_direction(action, active_direction)
-        links = self._trade_link_segments(visible_actions, markers)
+        links = self._trade_link_segments(marker_actions, markers)
         for marker in markers:
             marker.symbol, marker.brush, marker.size = self._trade_marker_visual(marker.role, marker.direction, marker.outcome)
             marker.detail_lines = self._trade_action_detail_lines(marker)
@@ -3743,6 +3753,23 @@ class ChartWidget(QWidget):
         self._trade_links = links
         self._trade_geometry_dirty = False
         self._clear_chart_layers_dirty(ChartLayer.TRADE_GEOMETRY)
+
+    @staticmethod
+    def _matching_trade_exit_index(action: SessionAction, trades: list[Trade], matched_indices: set[int]) -> int | None:
+        action_price = action.price
+        if action_price is None:
+            return None
+        for index, trade in enumerate(trades):
+            if index in matched_indices:
+                continue
+            if trade.exit_time != action.timestamp:
+                continue
+            if abs(float(trade.exit_price) - float(action_price)) > 0.0001:
+                continue
+            if abs(float(trade.quantity) - float(action.quantity)) > 0.0001:
+                continue
+            return index
+        return None
 
     @staticmethod
     def _trade_marker_role(action: SessionAction, active_direction: str) -> tuple[str, str]:

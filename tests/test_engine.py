@@ -204,6 +204,27 @@ def test_long_take_profit_gap_up_triggers_at_open_price() -> None:
     assert engine.trades[-1].exit_price == 105
 
 
+def test_long_take_profit_records_single_exit_on_trigger_bar() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 2), open=100, high=103, low=99, close=102, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=1)
+
+    engine.step_forward()
+    engine.step_forward()
+
+    assert engine.session.position.is_open is False
+    assert len(engine.trades) == 1
+    assert engine.actions[-1].action_type is ActionType.CLOSE
+    assert engine.actions[-1].bar_index == 2
+    assert engine.trades[-1].exit_time == bars[2].timestamp
+
+
 def test_entry_order_line_prefers_gap_open_over_intrabar_price() -> None:
     bars = [
         Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
