@@ -20,6 +20,8 @@ def _git_output(*args: str) -> list[str]:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return result.stdout.splitlines()
 

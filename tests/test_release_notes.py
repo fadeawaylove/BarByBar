@@ -122,6 +122,24 @@ def test_generate_release_notes_supports_future_tag_preview(monkeypatch) -> None
     assert git_calls
 
 
+def test_generate_release_notes_reads_git_output_as_utf8(monkeypatch) -> None:
+    module = _load_generate_release_notes_module()
+    calls: list[dict[str, object]] = []
+
+    class Result:
+        stdout = "290b39c\t修复历史交易定位k线图不准\n"
+
+    def fake_run(*args, **kwargs):  # noqa: ANN001
+        calls.append(kwargs)
+        return Result()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module._git_output("log", "HEAD", r"--pretty=format:%h%x09%s") == ["290b39c\t修复历史交易定位k线图不准"]
+    assert calls[0]["encoding"] == "utf-8"
+    assert calls[0]["errors"] == "replace"
+
+
 def test_generate_release_notes_preserves_existing_tag_based_behavior(monkeypatch) -> None:
     module = _load_generate_release_notes_module()
 
