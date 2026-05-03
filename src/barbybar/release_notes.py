@@ -72,6 +72,10 @@ def build_full_commit_lines(commits: list[CommitEntry]) -> list[str]:
     return [f"- {commit.subject} (`{commit.sha}`)" for commit in filtered]
 
 
+def _displayable_commits(commits: list[CommitEntry]) -> list[CommitEntry]:
+    return [commit for commit in commits if not is_release_commit(commit.subject)]
+
+
 def build_release_notes(
     *,
     tag: str,
@@ -81,8 +85,10 @@ def build_release_notes(
 ) -> str:
     lines: list[str] = ["## 本次改动", ""]
     lines.extend(build_summary_lines(commits))
-    lines.extend(["", "## 完整提交", ""])
-    lines.extend(build_full_commit_lines(commits))
+    displayable_commits = _displayable_commits(commits)
+    if len(displayable_commits) != 1:
+        lines.extend(["", "## 完整提交", ""])
+        lines.extend(build_full_commit_lines(commits))
     lines.extend(["", "## 版本信息", "", f"- 版本标签：{tag}"])
     if compare_url:
         lines.append(f"- 对比范围：[{compare_label}]({compare_url})")

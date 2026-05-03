@@ -66,6 +66,42 @@ def test_release_notes_use_fallback_when_only_release_commit_exists() -> None:
     assert "无可展示的独立功能提交" in notes
 
 
+def test_release_notes_omit_full_commit_section_for_single_feature_commit() -> None:
+    commits = parse_commit_lines(["290b39c\t修复历史交易定位k线图不准"])
+
+    notes = build_release_notes(
+        tag="v0.5.20",
+        compare_label="v0.5.19...v0.5.20",
+        compare_url="https://github.com/example/repo/compare/v0.5.19...v0.5.20",
+        commits=commits,
+    )
+
+    assert "## 本次改动" in notes
+    assert "修复历史交易定位k线图不准" in notes
+    assert "## 完整提交" not in notes
+    assert "(`290b39c`)" not in notes
+
+
+def test_release_notes_keep_full_commit_section_for_multiple_feature_commits() -> None:
+    commits = parse_commit_lines(
+        [
+            "1111111\tFix release notes script import path",
+            "2222222\tImprove trade history review workflow",
+        ]
+    )
+
+    notes = build_release_notes(
+        tag="v0.5.20",
+        compare_label="v0.5.19...v0.5.20",
+        compare_url=None,
+        commits=commits,
+    )
+
+    assert "## 完整提交" in notes
+    assert "- Fix release notes script import path (`1111111`)" in notes
+    assert "- Improve trade history review workflow (`2222222`)" in notes
+
+
 def test_release_notes_debug_payload_is_json_serializable() -> None:
     commits = parse_commit_lines(
         [
