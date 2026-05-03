@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QCheckBox, QDialog, QGroupBox, QLabel, QLineEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QAbstractSpinBox, QCheckBox, QDialog, QGroupBox, QLabel, QLineEdit, QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
@@ -3015,7 +3015,7 @@ def test_trade_history_filters_sorting_and_selection_preservation(window: MainWi
     assert sidebar.trade_history_model.rowCount() == 2
     assert window._selected_trade_number == 2
 
-    first_item = sidebar.trade_card_list.item(1)
+    first_item = sidebar.trade_card_list.item(0)
     sidebar._handle_card_clicked(first_item)
     assert window._selected_trade_number == 1
 
@@ -3041,9 +3041,61 @@ def test_trade_history_table_click_uses_clicked_item_bar_indices(window: MainWin
 
     sidebar._handle_card_clicked(sidebar.trade_card_list.item(0))
 
-    assert window._selected_trade_number == 2
-    assert focus_calls == [(2, (20, 105, 25, 108))]
-    assert chart_focus_calls == ["2:focus"]
+    assert window._selected_trade_number == 1
+    assert focus_calls == [(1, (10, 100, 12, 101))]
+    assert chart_focus_calls == ["1:focus"]
+
+
+def test_trade_history_card_click_focuses_bound_trade_object_when_number_lookup_drifted(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    clicked = TradeReviewItem(7, start + timedelta(minutes=12), start + timedelta(minutes=16), "long", 1, 210, 214, 4, 90, 99, 9, "manual_close", True, False, False, True)
+    older = TradeReviewItem(101, start, start + timedelta(minutes=4), "short", 1, 120, 118, 2, 10, 18, 8, "take_profit", True, False, False, True)
+    window._trade_review_items = [older, clicked]
+    focus_calls: list[tuple[int, tuple[int, float, int, float]]] = []
+    chart_focus_calls: list[tuple[int, int]] = []
+    window.chart_widget.set_trade_focus = lambda trade_number, points: focus_calls.append((trade_number, points))  # type: ignore[method-assign]
+    window._focus_selected_trade_view = lambda item=None: chart_focus_calls.append((item.trade_number, item.exit_bar_index))  # type: ignore[method-assign]
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    assert sidebar.trade_history_model.trade_numbers() == [7, 101]
+    clicked_card = sidebar.trade_card_list.item(0)
+
+    drifted_lookup_item = TradeReviewItem(7, start + timedelta(minutes=30), start + timedelta(minutes=35), "long", 1, 310, 318, 8, 300, 350, 50, "manual_close", True, False, False, True)
+    window._trade_review_items = [older, drifted_lookup_item]
+
+    sidebar._handle_card_clicked(clicked_card)
+
+    assert window._selected_trade_number == 7
+    assert focus_calls == [(7, (90, 210, 99, 214))]
+    assert chart_focus_calls == [(7, 99)]
+
+
+def test_trade_history_card_click_uses_active_entry_or_exit_bar(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    trade = TradeReviewItem(42, start, start + timedelta(minutes=8), "long", 1, 150, 155, 5, 44, 88, 44, "manual_close", True, False, False, True)
+    window._trade_review_items = [trade]
+    chart_targets: list[int] = []
+
+    def record_chart_target(item: TradeReviewItem | None = None) -> None:
+        selected = item or trade
+        chart_targets.append(selected.entry_bar_index if window._selected_trade_view == "entry" else selected.exit_bar_index)
+
+    window._focus_selected_trade_view = record_chart_target  # type: ignore[method-assign]
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    card = sidebar.trade_card_list.item(0)
+
+    sidebar._handle_card_clicked(card)
+    sidebar.entry_focus_button.click()
+    card = sidebar.trade_card_list.item(0)
+    sidebar._handle_card_clicked(card)
+
+    assert chart_targets == [88, 44, 44]
+    assert window._selected_trade_number == 42
 
 
 def test_trade_history_exit_reason_filter_displays_chinese_labels(window: MainWindow) -> None:
@@ -3058,8 +3110,8 @@ def test_trade_history_exit_reason_filter_displays_chinese_labels(window: MainWi
     assert window.trade_review_sidebar is not None
     sidebar = window.trade_review_sidebar
 
-    assert "止损触发" in sidebar.trade_card_list.item(1).text()
-    assert "手动平仓" in sidebar.trade_card_list.item(0).text()
+    assert "止损触发" in sidebar.trade_card_list.item(0).text()
+    assert "手动平仓" in sidebar.trade_card_list.item(1).text()
     assert sidebar.trade_history_model.rowCount() == 2
 
 
@@ -3069,7 +3121,7 @@ def test_trade_history_click_focuses_chart_using_active_focus_mode(window: MainW
         TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 102, 2, 1, 3, 2, "手动", True, False, False, True),
     ]
     focus_calls: list[str] = []
-    window._focus_selected_trade_view = lambda: focus_calls.append("focus")  # type: ignore[method-assign]
+    window._focus_selected_trade_view = lambda item=None: focus_calls.append("focus")  # type: ignore[method-assign]
     window.open_trade_history_dialog()
 
     assert window.trade_review_sidebar is not None
@@ -3141,14 +3193,14 @@ def test_trade_history_previous_next_navigation_updates_selection_and_readout(wi
         TradeReviewItem(2, start + timedelta(minutes=5), start + timedelta(minutes=8), "short", 1, 105, 103, 2, 5, 8, 3, "manual_close", True, False, False, True),
         TradeReviewItem(3, start + timedelta(minutes=10), start + timedelta(minutes=14), "long", 1, 110, 113, 3, 10, 14, 4, "take_profit", True, False, False, True),
     ]
-    focus_calls: list[str] = []
-    window._focus_selected_trade_view = lambda: focus_calls.append(f"{window._selected_trade_number}:{window._selected_trade_view}")  # type: ignore[method-assign]
+    focus_calls: list[tuple[int, int, int]] = []
+    window._focus_selected_trade_view = lambda item=None: focus_calls.append((item.trade_number, item.entry_bar_index, item.exit_bar_index))  # type: ignore[method-assign]
     window.open_trade_history_dialog()
 
     assert window.trade_review_sidebar is not None
     sidebar = window.trade_review_sidebar
-    assert sidebar.trade_history_model.trade_numbers() == [3, 2, 1]
-    assert window._selected_trade_number == 3
+    assert sidebar.trade_history_model.trade_numbers() == [1, 2, 3]
+    assert window._selected_trade_number == 1
     assert sidebar.trade_position_label.text() == "1 / 3"
     assert sidebar.previous_trade_button.isEnabled() is False
     assert sidebar.next_trade_button.isEnabled() is True
@@ -3160,16 +3212,16 @@ def test_trade_history_previous_next_navigation_updates_selection_and_readout(wi
     assert sidebar.previous_trade_button.isEnabled() is True
     assert sidebar.next_trade_button.isEnabled() is True
     assert sidebar.trade_card_list.currentItem().data(Qt.ItemDataRole.UserRole) == 2
-    assert focus_calls[-1] == "2:exit"
+    assert focus_calls[-1] == (2, 5, 8)
 
     sidebar.previous_trade_button.click()
 
-    assert window._selected_trade_number == 3
+    assert window._selected_trade_number == 1
     assert sidebar.trade_position_label.text() == "1 / 3"
     assert sidebar.previous_trade_button.isEnabled() is False
     assert sidebar.next_trade_button.isEnabled() is True
-    assert sidebar.trade_card_list.currentItem().data(Qt.ItemDataRole.UserRole) == 3
-    assert focus_calls[-1] == "3:exit"
+    assert sidebar.trade_card_list.currentItem().data(Qt.ItemDataRole.UserRole) == 1
+    assert focus_calls[-1] == (1, 1, 3)
 
 
 def test_trade_history_navigation_disables_at_last_visible_trade(window: MainWindow) -> None:
@@ -3184,10 +3236,37 @@ def test_trade_history_navigation_disables_at_last_visible_trade(window: MainWin
     sidebar = window.trade_review_sidebar
     sidebar.next_trade_button.click()
 
-    assert window._selected_trade_number == 1
+    assert window._selected_trade_number == 2
     assert sidebar.trade_position_label.text() == "2 / 2"
     assert sidebar.previous_trade_button.isEnabled() is True
     assert sidebar.next_trade_button.isEnabled() is False
+
+
+def test_trade_history_navigation_scrolls_selected_card_into_view(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    window._trade_review_items = [
+        TradeReviewItem(number, start + timedelta(minutes=number), start + timedelta(minutes=number + 1), "long", 1, 100 + number, 101 + number, 1, number * 10, number * 10 + 2, 2, "manual_close", True, False, False, True)
+        for number in range(1, 9)
+    ]
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    scrolled_numbers: list[int] = []
+    original_scroll_to_item = sidebar.trade_card_list.scrollToItem
+
+    def record_scroll_to_item(item: QListWidgetItem, hint=QAbstractItemView.ScrollHint.EnsureVisible) -> None:  # noqa: ANN001
+        scrolled_numbers.append(item.data(Qt.ItemDataRole.UserRole))
+        original_scroll_to_item(item, hint)
+
+    sidebar.trade_card_list.scrollToItem = record_scroll_to_item  # type: ignore[method-assign]
+
+    sidebar.next_trade_button.click()
+    sidebar.next_trade_button.click()
+
+    assert window._selected_trade_number == 3
+    assert sidebar.trade_card_list.currentItem().data(Qt.ItemDataRole.UserRole) == 3
+    assert scrolled_numbers[-1] == 3
 
 
 def test_trade_history_navigation_empty_state_disables_controls(window: MainWindow) -> None:
@@ -3209,8 +3288,13 @@ def test_trade_history_previous_next_preserves_entry_focus_mode(window: MainWind
         TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 101, 1, 1, 3, 2, "manual_close", True, False, False, True),
         TradeReviewItem(2, start + timedelta(minutes=5), start + timedelta(minutes=8), "short", 1, 105, 103, 2, 5, 8, 3, "manual_close", True, False, False, True),
     ]
-    focus_calls: list[str] = []
-    window._focus_selected_trade_view = lambda: focus_calls.append(f"{window._selected_trade_number}:{window._selected_trade_view}")  # type: ignore[method-assign]
+    focus_calls: list[tuple[int, str, int]] = []
+
+    def record_entry_focus(item: TradeReviewItem | None = None) -> None:
+        selected = item or next(review for review in window._trade_review_items if review.trade_number == window._selected_trade_number)
+        focus_calls.append((selected.trade_number, window._selected_trade_view, selected.entry_bar_index))
+
+    window._focus_selected_trade_view = record_entry_focus  # type: ignore[method-assign]
     window.open_trade_history_dialog()
 
     assert window.trade_review_sidebar is not None
@@ -3218,10 +3302,10 @@ def test_trade_history_previous_next_preserves_entry_focus_mode(window: MainWind
     sidebar.entry_focus_button.click()
     sidebar.next_trade_button.click()
 
-    assert window._selected_trade_number == 1
+    assert window._selected_trade_number == 2
     assert window._selected_trade_view == "entry"
     assert sidebar.entry_focus_button.isChecked() is True
-    assert focus_calls[-1] == "1:entry"
+    assert focus_calls[-1] == (2, "entry", 5)
 
 
 def test_trade_history_saves_entry_and_review_notes_to_actions(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:

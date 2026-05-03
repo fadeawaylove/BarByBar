@@ -17,6 +17,7 @@ from PySide6.QtCore import QModelIndex, QObject, QPointF, QRectF, QSize, QThread
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractButton,
+    QAbstractItemView,
     QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
@@ -116,6 +117,8 @@ from barbybar.ui.trade_history import (
     format_exit_reason,
 )
 from barbybar.update_service import UpdateInfo, check_for_update, download_installer
+
+TRADE_REVIEW_ITEM_ROLE = Qt.ItemDataRole.UserRole + 1
 
 REQUIRED_IMPORT_FIELDS = ["datetime", "open", "high", "low", "close", "volume"]
 INITIAL_WINDOW_BEFORE = 150
@@ -1948,7 +1951,7 @@ class TradeReviewSidebar(QWidget):
     def refresh_items(self) -> None:
         selected_trade_number = self.owner._selected_trade_number
         self.trade_history_model.set_items(self.owner._trade_review_items)
-        self.trade_history_model.set_sort_key("time_desc")
+        self.trade_history_model.set_sort_key("trade_asc")
         visible_numbers = self.trade_history_model.trade_numbers()
         all_numbers = [row.trade_number for row in self.trade_history_model.all_rows()]
         self.owner._trade_review_controller.refresh_selection(visible_numbers, all_numbers)
@@ -1964,15 +1967,20 @@ class TradeReviewSidebar(QWidget):
     def _refresh_cards(self) -> None:
         selected_trade_number = self.owner._selected_trade_number
         previous_scroll = self.trade_card_list.verticalScrollBar().value()
+        current_item: QListWidgetItem | None = None
         self.trade_card_list.clear()
         for row in self.trade_history_model.rows():
             item = QListWidgetItem(self._card_text(row))
             item.setData(Qt.ItemDataRole.UserRole, row.trade_number)
+            item.setData(TRADE_REVIEW_ITEM_ROLE, row.item)
             item.setToolTip(row.detail_text)
             self.trade_card_list.addItem(item)
             if row.trade_number == selected_trade_number:
                 self.trade_card_list.setCurrentItem(item)
+                current_item = item
         self.trade_card_list.verticalScrollBar().setValue(previous_scroll)
+        if current_item is not None:
+            self.trade_card_list.scrollToItem(current_item, QAbstractItemView.ScrollHint.EnsureVisible)
         has_trades = self.trade_card_list.count() > 0
         self.empty_label.setVisible(not has_trades)
         self.trade_card_list.setVisible(has_trades)
@@ -1986,10 +1994,10 @@ class TradeReviewSidebar(QWidget):
         )
 
     def _handle_card_clicked(self, item: QListWidgetItem) -> None:
-        trade_number = item.data(Qt.ItemDataRole.UserRole)
-        if trade_number is None:
+        trade_item = item.data(TRADE_REVIEW_ITEM_ROLE)
+        if not isinstance(trade_item, TradeReviewItem):
             return
-        self.owner.select_trade_history_item(int(trade_number), focus_view=self.owner._selected_trade_view, focus_chart=True)
+        self.owner.select_trade_review_item(trade_item, focus_view=self.owner._selected_trade_view, focus_chart=True)
         self.refresh_items()
 
     def _navigate_to_previous_trade(self) -> None:
@@ -2006,8 +2014,11 @@ class TradeReviewSidebar(QWidget):
         target_index = numbers.index(selected_trade_number) + offset
         if not 0 <= target_index < len(numbers):
             return
-        self.owner.select_trade_history_item(
-            numbers[target_index],
+        row = self.trade_history_model.row_for_trade(numbers[target_index])
+        if row is None:
+            return
+        self.owner.select_trade_review_item(
+            row.item,
             focus_view=self.owner._selected_trade_view,
             focus_chart=True,
         )
