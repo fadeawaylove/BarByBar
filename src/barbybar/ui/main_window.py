@@ -132,6 +132,8 @@ INITIAL_WINDOW_AFTER = 30
 EXTEND_WINDOW_BEFORE = 150
 EXTEND_WINDOW_AFTER = 150
 WINDOW_BUFFER_THRESHOLD = 20
+TRADE_HISTORY_FOCUS_TARGET_RATIO = 0.70
+TRADE_HISTORY_FOCUS_MIN_RIGHT_CONTEXT = 12
 AUTO_SAVE_DELAY_MS = 800
 MAX_DRAWING_TEMPLATE_SHORTCUTS = 8
 VIEWPORT_EXTENSION_THRESHOLD_BARS = 10.0
@@ -4116,13 +4118,55 @@ class MainWindow(QMainWindow):
             target_index = fallback_index
         viewport = self.chart_widget.viewport_state
         viewport.follow_latest = False
-        self.chart_widget.set_right_padding(0.0)
-        viewport.right_edge_index = max(float(target_index) + 1.0, 0.0)
+        self.chart_widget.set_right_padding(DEFAULT_RIGHT_PADDING)
+        viewport.right_edge_index = self._trade_history_focus_right_edge(
+            target_index=target_index,
+            entry_index=item.entry_bar_index,
+            exit_index=item.exit_bar_index,
+            bars_in_view=viewport.bars_in_view,
+            total_count=self.engine.total_count,
+        )
         self.chart_widget._apply_viewport()
         local_index = target_index - self.engine.window_start_index
         if 0 <= local_index < len(self.engine.bars):
             timestamp = self.engine.bars[local_index].timestamp
             self.progress_label.setText(f"查看交易 #{item.trade_number} | Bar {target_index + 1} | {timestamp:%Y-%m-%d %H:%M}")
+
+    @staticmethod
+    def _trade_history_focus_right_edge(
+        *,
+        target_index: int,
+        entry_index: int,
+        exit_index: int,
+        bars_in_view: int,
+        total_count: int,
+    ) -> float:
+        visible_bars = max(1, int(bars_in_view))
+        normalized_target = max(0, int(target_index))
+        desired_right_context = max(
+            TRADE_HISTORY_FOCUS_MIN_RIGHT_CONTEXT,
+            int(round(visible_bars * (1.0 - TRADE_HISTORY_FOCUS_TARGET_RATIO))),
+        )
+        single_focus_right = float(normalized_target + desired_right_context + 1)
+
+        span_start = max(0, min(int(entry_index), int(exit_index)))
+        span_end = max(0, max(int(entry_index), int(exit_index)))
+        span_width = span_end - span_start + 1
+        desired_right = single_focus_right
+        if span_width <= max(1, visible_bars - desired_right_context - TRADE_HISTORY_FOCUS_MIN_RIGHT_CONTEXT):
+            span_focus_right = float(
+                max(
+                    normalized_target + desired_right_context + 1,
+                    span_end + TRADE_HISTORY_FOCUS_MIN_RIGHT_CONTEXT + 1,
+                )
+            )
+            span_left = (floor(span_focus_right - 1e-9) + 0.5) - float(visible_bars)
+            if span_left <= float(span_start):
+                desired_right = span_focus_right
+
+        max_right = float(max(total_count, normalized_target + 1, 1))
+        min_right = min(float(visible_bars), max_right)
+        return min(max(desired_right, min_right), max_right)
 
     def _chart_index_for_trade_time(self, target_time, fallback_index: int) -> int | None:  # noqa: ANN001
         if not self.engine or not self.engine.bars:

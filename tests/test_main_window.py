@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta
+from math import floor
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -141,6 +142,15 @@ def _wait_for_batch_import(app: QApplication, window: MainWindow, timeout_s: flo
         if thread is None or not thread.isRunning():
             return
     raise AssertionError("batch import did not finish in time")
+
+
+def _viewport_right_context(window: MainWindow, target_index: int) -> int:
+    return floor(window.chart_widget.viewport_state.right_edge_index - 1e-9) - target_index
+
+
+def _assert_revealed_index_visible(window: MainWindow, target_index: int) -> None:
+    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
+    assert any(index == target_index for index, _bar in visible)
 
 
 def _wait_until(app: QApplication, predicate, timeout_s: float = 3.0) -> None:
@@ -2956,6 +2966,50 @@ def test_trade_action_price_defaults_to_latest_close(window: MainWindow) -> None
     assert window.price_spin.value() == 126.0
 
 
+def test_trade_history_focus_right_edge_places_target_away_from_right_axis() -> None:
+    right_edge = MainWindow._trade_history_focus_right_edge(
+        target_index=150,
+        entry_index=120,
+        exit_index=150,
+        bars_in_view=120,
+        total_count=300,
+    )
+    left = (floor(right_edge - 1e-9) + 0.5) - 120
+
+    assert floor(right_edge - 1e-9) - 150 >= 12
+    assert (150 - left) / 120 == pytest.approx(0.70, abs=0.02)
+
+
+def test_trade_history_focus_right_edge_keeps_short_trade_span_visible() -> None:
+    right_edge = MainWindow._trade_history_focus_right_edge(
+        target_index=100,
+        entry_index=100,
+        exit_index=108,
+        bars_in_view=120,
+        total_count=300,
+    )
+    left = (floor(right_edge - 1e-9) + 0.5) - 120
+    visible_right = floor(right_edge - 1e-9) + 0.5
+
+    assert left <= 100
+    assert visible_right >= 108
+    assert floor(right_edge - 1e-9) - 100 >= 12
+
+
+def test_trade_history_focus_right_edge_clamps_near_data_end() -> None:
+    right_edge = MainWindow._trade_history_focus_right_edge(
+        target_index=238,
+        entry_index=220,
+        exit_index=238,
+        bars_in_view=120,
+        total_count=240,
+    )
+    left = (floor(right_edge - 1e-9) + 0.5) - 120
+
+    assert right_edge == pytest.approx(240)
+    assert left <= 238 <= floor(right_edge - 1e-9) + 0.5
+
+
 def test_update_ui_populates_training_stats_and_trade_history(window: MainWindow) -> None:
     _seed_engine(window)
     window.chart_widget.set_window_data(
@@ -3023,16 +3077,16 @@ def test_trade_history_selection_and_focus_controls_jump_between_entry_and_exit(
     assert window._selected_trade_number == 1
     assert "交易 #1" in window.trade_review_sidebar.trade_detail.toPlainText()
 
-    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
     assert window.chart_widget._cursor == window.engine.session.current_index
-    assert visible[-1][0] == exit_index
+    _assert_revealed_index_visible(window, exit_index)
+    assert _viewport_right_context(window, exit_index) >= 12
     assert window.trade_review_sidebar.exit_focus_button.isChecked()
 
     window.trade_review_sidebar.entry_focus_button.click()
 
-    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
     assert window.chart_widget._cursor == window.engine.session.current_index
-    assert visible[-1][0] == entry_index
+    _assert_revealed_index_visible(window, entry_index)
+    assert _viewport_right_context(window, entry_index) >= 12
     assert window.trade_review_sidebar.entry_focus_button.isChecked()
 
 
@@ -3072,10 +3126,10 @@ def test_trade_history_jump_outside_window_keeps_training_cursor(window: MainWin
     item = window.trade_review_sidebar.trade_card_list.item(window.trade_review_sidebar.trade_card_list.count() - 1)
     window.trade_review_sidebar._handle_card_clicked(item)
 
-    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
     assert window.engine.session.current_index == current_index
     assert window.chart_widget._cursor == current_index
-    assert visible[-1][0] == exit_index
+    _assert_revealed_index_visible(window, exit_index)
+    assert _viewport_right_context(window, exit_index) >= 12
 
 
 def test_trade_history_filters_sorting_and_selection_preservation(window: MainWindow) -> None:
@@ -3211,8 +3265,8 @@ def test_trade_history_focus_resolves_chart_index_from_trade_time(window: MainWi
 
     window.select_trade_review_item(trade, focus_view="entry", focus_chart=True)
 
-    visible = window.chart_widget._revealed_window_bars(*window.chart_widget.current_x_range())
-    assert visible[-1][0] == 10
+    _assert_revealed_index_visible(window, 10)
+    assert _viewport_right_context(window, 10) >= 12
     assert "交易 #375" in window.progress_label.text()
 
 
