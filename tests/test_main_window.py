@@ -255,7 +255,10 @@ def test_main_window_applies_professional_light_theme(window: MainWindow) -> Non
     assert window.progress_label.property("role") == "statusReadout"
     assert window.stats_label.property("role") == "positionReadout"
     assert window.training_stats_label.property("role") == "trainingStats"
-    assert window.open_trade_history_button.property("role") == "utility"
+    assert window.training_sidebar_tab_button is not None
+    assert window.trade_history_sidebar_tab_button is not None
+    assert window.training_sidebar_tab_button.property("role") == "sidebarTab"
+    assert window.trade_history_sidebar_tab_button.property("role") == "sidebarTab"
     assert window.splitter.widget(1).objectName() == "rightPanel"
 
 
@@ -383,10 +386,36 @@ def test_right_panel_display_section_collects_low_priority_chart_toggles(window:
     display_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "显示")
     button_texts = [button.text() for button in display_group.findChildren(QPushButton)]
 
-    assert button_texts[:4] == ["历史交易", "K线序号", "隐藏画线", "不过夜"]
+    assert button_texts[:3] == ["K线序号", "隐藏画线", "不过夜"]
+    assert "历史交易" not in button_texts
     assert window.bar_count_toggle_button.parentWidget() is display_group
     assert window.hide_drawings_toggle_button.parentWidget() is display_group
     assert window.flatten_at_session_end_toggle_button.parentWidget() is display_group
+
+
+def test_right_panel_uses_training_and_history_tabs(window: MainWindow) -> None:
+    assert window.right_sidebar_stack is not None
+    assert window.replay_sidebar_panel is not None
+    assert window.trade_review_sidebar is not None
+    assert window.training_sidebar_tab_button is not None
+    assert window.trade_history_sidebar_tab_button is not None
+    assert window.training_sidebar_tab_button.text() == "训练"
+    assert window.trade_history_sidebar_tab_button.text() == "历史交易"
+    assert window.training_sidebar_tab_button.isChecked() is True
+    assert window.trade_history_sidebar_tab_button.isChecked() is False
+    assert window.right_sidebar_stack.currentWidget() is window.replay_sidebar_panel
+
+    window.trade_history_sidebar_tab_button.click()
+
+    assert window.training_sidebar_tab_button.isChecked() is False
+    assert window.trade_history_sidebar_tab_button.isChecked() is True
+    assert window.right_sidebar_stack.currentWidget() is window.trade_review_sidebar
+
+    window.training_sidebar_tab_button.click()
+
+    assert window.training_sidebar_tab_button.isChecked() is True
+    assert window.trade_history_sidebar_tab_button.isChecked() is False
+    assert window.right_sidebar_stack.currentWidget() is window.replay_sidebar_panel
 
 
 def test_training_stats_default_to_brief_two_line_summary(window: MainWindow) -> None:
@@ -2870,11 +2899,13 @@ def test_update_ui_populates_training_stats_and_trade_history(window: MainWindow
     assert "多 1 / 空 0" in window.training_stats_meta.text()
     assert "手动" in window.training_stats_meta.text()
     assert "止损覆盖" in window.training_stats_meta.text()
-    assert window.open_trade_history_button.isEnabled() is True
+    assert window.trade_history_sidebar_tab_button is not None
+    assert window.trade_history_sidebar_tab_button.isEnabled() is True
 
     window.open_trade_history_dialog()
 
     assert window.trade_review_sidebar is not None
+    assert window.trade_history_sidebar_tab_button.isChecked() is True
     assert window.trade_review_sidebar.isHidden() is False
     assert window.trade_review_sidebar.trade_history_model.rowCount() == 1
     assert window.trade_review_sidebar.trade_history_model.data(
@@ -2974,25 +3005,23 @@ def test_trade_history_filters_sorting_and_selection_preservation(window: MainWi
     window._selected_trade_number = 2
     window.open_full_trade_history_dialog()
 
-    assert window._trade_history_dialog is not None
-    dialog = window._trade_history_dialog
-    assert dialog.trade_history_model.rowCount() == 2
-
-    dialog.direction_filter.setCurrentIndex(dialog.direction_filter.findData("long"))
-    dialog.outcome_filter.setCurrentIndex(dialog.outcome_filter.findData("loss"))
-
-    assert dialog.trade_history_model.rowCount() == 1
-    assert dialog.trade_history_model.data(dialog.trade_history_model.index(0, 0), Qt.ItemDataRole.UserRole) == 1
+    assert window._trade_history_dialog is None
+    assert window.right_sidebar_stack is not None
+    assert window.trade_history_sidebar_tab_button is not None
+    assert window.trade_review_sidebar is not None
+    assert window.right_sidebar_stack.currentWidget() is window.trade_review_sidebar
+    assert window.trade_history_sidebar_tab_button.isChecked() is True
+    sidebar = window.trade_review_sidebar
+    assert sidebar.trade_history_model.rowCount() == 2
     assert window._selected_trade_number == 2
 
-    dialog._handle_table_clicked(dialog.trade_history_model.index(0, 0))
+    first_item = sidebar.trade_card_list.item(1)
+    sidebar._handle_card_clicked(first_item)
     assert window._selected_trade_number == 1
 
-    dialog.trade_history_sort.setCurrentIndex(dialog.trade_history_sort.findData("pnl_desc"))
+    sidebar.refresh_items()
+    assert sidebar.trade_history_model.rowCount() == 2
     assert window._selected_trade_number == 1
-
-    dialog._clear_filters()
-    assert dialog.trade_history_model.rowCount() == 2
 
 
 def test_trade_history_table_click_uses_clicked_item_bar_indices(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3003,18 +3032,18 @@ def test_trade_history_table_click_uses_clicked_item_bar_indices(window: MainWin
     focus_calls: list[tuple[int, tuple[int, float, int, float]]] = []
     chart_focus_calls: list[str] = []
     window.chart_widget.set_trade_focus = lambda trade_number, points: focus_calls.append((trade_number, points))  # type: ignore[method-assign]
-    window._focus_selected_trade_view = lambda item=None: chart_focus_calls.append(f"{item.trade_number}:{item.exit_bar_index}")  # type: ignore[method-assign]
+    window._focus_selected_trade_view = lambda item=None: chart_focus_calls.append(f"{window._selected_trade_number}:focus")  # type: ignore[method-assign]
     window.open_full_trade_history_dialog()
 
-    assert window._trade_history_dialog is not None
-    dialog = window._trade_history_dialog
-    monkeypatch.setattr(dialog.trade_history_model, "trade_number_at", lambda _row: 1)
+    assert window._trade_history_dialog is None
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
 
-    dialog._handle_table_clicked(dialog.trade_history_model.index(0, 0))
+    sidebar._handle_card_clicked(sidebar.trade_card_list.item(0))
 
     assert window._selected_trade_number == 2
     assert focus_calls == [(2, (20, 105, 25, 108))]
-    assert chart_focus_calls == ["2:25"]
+    assert chart_focus_calls == ["2:focus"]
 
 
 def test_trade_history_exit_reason_filter_displays_chinese_labels(window: MainWindow) -> None:
@@ -3025,17 +3054,13 @@ def test_trade_history_exit_reason_filter_displays_chinese_labels(window: MainWi
     ]
     window.open_full_trade_history_dialog()
 
-    assert window._trade_history_dialog is not None
-    dialog = window._trade_history_dialog
+    assert window._trade_history_dialog is None
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
 
-    stop_index = dialog.exit_reason_filter.findData("stop_loss")
-    manual_index = dialog.exit_reason_filter.findData("manual_close")
-    assert dialog.exit_reason_filter.itemText(stop_index) == "止损触发"
-    assert dialog.exit_reason_filter.itemText(manual_index) == "手动平仓"
-
-    dialog.exit_reason_filter.setCurrentIndex(stop_index)
-    assert dialog.trade_history_model.rowCount() == 1
-    assert dialog.trade_history_model.data(dialog.trade_history_model.index(0, 0), Qt.ItemDataRole.UserRole) == 1
+    assert "止损触发" in sidebar.trade_card_list.item(1).text()
+    assert "手动平仓" in sidebar.trade_card_list.item(0).text()
+    assert sidebar.trade_history_model.rowCount() == 2
 
 
 def test_trade_history_click_focuses_chart_using_active_focus_mode(window: MainWindow) -> None:
@@ -3060,7 +3085,7 @@ def test_trade_history_click_focuses_chart_using_active_focus_mode(window: MainW
     assert focus_calls == ["focus", "focus"]
 
 
-def test_trade_history_sidebar_collapses_and_opens_full_table(window: MainWindow) -> None:
+def test_trade_history_sidebar_uses_right_panel_tabs(window: MainWindow) -> None:
     start = datetime(2025, 1, 1, 9, 0)
     window._trade_review_items = [
         TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 102, 2, 1, 3, 2, "manual_close", True, False, False, True),
@@ -3071,26 +3096,132 @@ def test_trade_history_sidebar_collapses_and_opens_full_table(window: MainWindow
     window.open_trade_history_dialog()
 
     assert window.trade_review_sidebar is not None
+    assert window.trade_history_sidebar_tab_button is not None
+    assert window.training_sidebar_tab_button is not None
     sidebar = window.trade_review_sidebar
     assert sidebar.isHidden() is False
     assert sidebar.objectName() == "tradeReviewSidebar"
     assert sidebar.trade_card_list.objectName() == "tradeReviewCardList"
     assert sidebar.trade_card_list.count() == 1
     assert "#1 多  PnL 2.00" in sidebar.trade_card_list.item(0).text()
+    header_buttons = [button.text() for button in sidebar.findChildren(QPushButton)]
+    assert "上一笔" in header_buttons
+    assert "下一笔" in header_buttons
+    assert "刷新" not in header_buttons
+    assert "复盘" not in header_buttons
 
     window.open_trade_history_dialog()
-    assert sidebar.isHidden() is True
+    assert window.right_sidebar_stack is not None
+    assert window.replay_sidebar_panel is not None
+    assert window.right_sidebar_stack.currentWidget() is sidebar
+    assert window.trade_history_sidebar_tab_button.isChecked() is True
     assert window._selected_trade_number == 1
+
+    window.training_sidebar_tab_button.click()
+    assert window.right_sidebar_stack.currentWidget() is window.replay_sidebar_panel
+    assert window.training_sidebar_tab_button.isChecked() is True
 
     window.open_trade_history_dialog()
-    assert sidebar.isHidden() is False
+    assert window.right_sidebar_stack.currentWidget() is sidebar
+    assert window.trade_history_sidebar_tab_button.isChecked() is True
     assert window._selected_trade_number == 1
 
-    sidebar.full_table_button.click()
+    window.open_full_trade_history_dialog()
 
-    assert window._trade_history_dialog is not None
-    assert window._trade_history_dialog.trade_history_model.rowCount() == 1
+    assert window._trade_history_dialog is None
+    assert window.right_sidebar_stack.currentWidget() is sidebar
+    assert sidebar.trade_history_model.rowCount() == 1
     assert window._selected_trade_number == 1
+
+
+def test_trade_history_previous_next_navigation_updates_selection_and_readout(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    window._trade_review_items = [
+        TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 101, 1, 1, 3, 2, "manual_close", True, False, False, True),
+        TradeReviewItem(2, start + timedelta(minutes=5), start + timedelta(minutes=8), "short", 1, 105, 103, 2, 5, 8, 3, "manual_close", True, False, False, True),
+        TradeReviewItem(3, start + timedelta(minutes=10), start + timedelta(minutes=14), "long", 1, 110, 113, 3, 10, 14, 4, "take_profit", True, False, False, True),
+    ]
+    focus_calls: list[str] = []
+    window._focus_selected_trade_view = lambda: focus_calls.append(f"{window._selected_trade_number}:{window._selected_trade_view}")  # type: ignore[method-assign]
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    assert sidebar.trade_history_model.trade_numbers() == [3, 2, 1]
+    assert window._selected_trade_number == 3
+    assert sidebar.trade_position_label.text() == "1 / 3"
+    assert sidebar.previous_trade_button.isEnabled() is False
+    assert sidebar.next_trade_button.isEnabled() is True
+
+    sidebar.next_trade_button.click()
+
+    assert window._selected_trade_number == 2
+    assert sidebar.trade_position_label.text() == "2 / 3"
+    assert sidebar.previous_trade_button.isEnabled() is True
+    assert sidebar.next_trade_button.isEnabled() is True
+    assert sidebar.trade_card_list.currentItem().data(Qt.ItemDataRole.UserRole) == 2
+    assert focus_calls[-1] == "2:exit"
+
+    sidebar.previous_trade_button.click()
+
+    assert window._selected_trade_number == 3
+    assert sidebar.trade_position_label.text() == "1 / 3"
+    assert sidebar.previous_trade_button.isEnabled() is False
+    assert sidebar.next_trade_button.isEnabled() is True
+    assert sidebar.trade_card_list.currentItem().data(Qt.ItemDataRole.UserRole) == 3
+    assert focus_calls[-1] == "3:exit"
+
+
+def test_trade_history_navigation_disables_at_last_visible_trade(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    window._trade_review_items = [
+        TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 101, 1, 1, 3, 2, "manual_close", True, False, False, True),
+        TradeReviewItem(2, start + timedelta(minutes=5), start + timedelta(minutes=8), "short", 1, 105, 103, 2, 5, 8, 3, "manual_close", True, False, False, True),
+    ]
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    sidebar.next_trade_button.click()
+
+    assert window._selected_trade_number == 1
+    assert sidebar.trade_position_label.text() == "2 / 2"
+    assert sidebar.previous_trade_button.isEnabled() is True
+    assert sidebar.next_trade_button.isEnabled() is False
+
+
+def test_trade_history_navigation_empty_state_disables_controls(window: MainWindow) -> None:
+    window._trade_review_items = []
+    window._selected_trade_number = None
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    assert sidebar.trade_card_list.count() == 0
+    assert sidebar.trade_position_label.text() == "0 / 0"
+    assert sidebar.previous_trade_button.isEnabled() is False
+    assert sidebar.next_trade_button.isEnabled() is False
+
+
+def test_trade_history_previous_next_preserves_entry_focus_mode(window: MainWindow) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    window._trade_review_items = [
+        TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 101, 1, 1, 3, 2, "manual_close", True, False, False, True),
+        TradeReviewItem(2, start + timedelta(minutes=5), start + timedelta(minutes=8), "short", 1, 105, 103, 2, 5, 8, 3, "manual_close", True, False, False, True),
+    ]
+    focus_calls: list[str] = []
+    window._focus_selected_trade_view = lambda: focus_calls.append(f"{window._selected_trade_number}:{window._selected_trade_view}")  # type: ignore[method-assign]
+    window.open_trade_history_dialog()
+
+    assert window.trade_review_sidebar is not None
+    sidebar = window.trade_review_sidebar
+    sidebar.entry_focus_button.click()
+    sidebar.next_trade_button.click()
+
+    assert window._selected_trade_number == 1
+    assert window._selected_trade_view == "entry"
+    assert sidebar.entry_focus_button.isChecked() is True
+    assert focus_calls[-1] == "1:entry"
 
 
 def test_trade_history_saves_entry_and_review_notes_to_actions(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:

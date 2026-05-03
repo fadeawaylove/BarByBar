@@ -129,6 +129,7 @@ QWidget#replayControlBar {{
 QWidget#workspaceTools,
 QWidget#workspaceActions,
 QWidget#replayUtilityActions,
+QWidget#rightSidebarTabs,
 QWidget#positionSummaryCard,
 QWidget#trainingSummaryCard {{
     background: transparent;
@@ -410,6 +411,25 @@ QPushButton[role='toggle']:checked {{
     border-color: {AppTheme.primary};
     color: {AppTheme.primary};
     font-weight: 800;
+}}
+QPushButton[role='sidebarTab'] {{
+    background: transparent;
+    border-color: transparent;
+    border-radius: {AppTheme.toolbar_button_radius}px;
+    color: {AppTheme.text_muted};
+    font-weight: 800;
+    padding: 0px 8px;
+    min-height: 24px;
+}}
+QPushButton[role='sidebarTab']:hover {{
+    background: {rgba(AppTheme.surface_elevated, 210)};
+    color: {AppTheme.text};
+}}
+QPushButton[role='sidebarTab']:checked {{
+    background: {AppTheme.primary_tint};
+    border-color: {rgba(AppTheme.primary, 120)};
+    color: {AppTheme.primary};
+    font-weight: 900;
 }}
 QPushButton[compactAction='true']:hover {{
     border-color: {AppTheme.primary};

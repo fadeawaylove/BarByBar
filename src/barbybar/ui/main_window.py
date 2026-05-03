@@ -1860,8 +1860,7 @@ class TradeReviewSidebar(QWidget):
         self.owner = owner
         self.setObjectName("tradeReviewSidebar")
         self.setProperty("card", True)
-        self.setMinimumWidth(340)
-        self.setMaximumWidth(460)
+        self.setFixedWidth(AppTheme.sidebar_width)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         layout = QVBoxLayout(self)
@@ -1869,20 +1868,10 @@ class TradeReviewSidebar(QWidget):
         layout.setSpacing(8)
 
         header = QHBoxLayout()
-        title = QLabel("交易复盘")
+        title = QLabel("历史交易")
         title.setProperty("section", "title")
         header.addWidget(title)
         header.addStretch(1)
-
-        self.full_table_button = QPushButton("完整表格")
-        self.full_table_button.setFixedHeight(26)
-        self.full_table_button.clicked.connect(self._open_full_table)
-        header.addWidget(self.full_table_button)
-
-        self.collapse_button = QPushButton("收起")
-        self.collapse_button.setFixedHeight(26)
-        self.collapse_button.clicked.connect(self.owner.toggle_trade_review_sidebar)
-        header.addWidget(self.collapse_button)
         layout.addLayout(header)
 
         self.empty_label = QLabel("暂无历史交易。\n完成一笔交易后，这里会显示复盘卡片。")
@@ -1895,6 +1884,26 @@ class TradeReviewSidebar(QWidget):
         self.trade_card_list.setObjectName("tradeReviewCardList")
         self.trade_card_list.itemClicked.connect(self._handle_card_clicked)
         layout.addWidget(self.trade_card_list, 2)
+
+        navigation_layout = QHBoxLayout()
+        navigation_layout.setSpacing(6)
+        self.previous_trade_button = QPushButton("上一笔")
+        self.previous_trade_button.setFixedHeight(26)
+        self.previous_trade_button.setProperty("role", "quiet")
+        self.previous_trade_button.clicked.connect(self._navigate_to_previous_trade)
+        navigation_layout.addWidget(self.previous_trade_button)
+
+        self.trade_position_label = QLabel("0 / 0")
+        self.trade_position_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.trade_position_label.setProperty("role", "statusMuted")
+        navigation_layout.addWidget(self.trade_position_label, 1)
+
+        self.next_trade_button = QPushButton("下一笔")
+        self.next_trade_button.setFixedHeight(26)
+        self.next_trade_button.setProperty("role", "quiet")
+        self.next_trade_button.clicked.connect(self._navigate_to_next_trade)
+        navigation_layout.addWidget(self.next_trade_button)
+        layout.addLayout(navigation_layout)
 
         focus_layout = QHBoxLayout()
         self.entry_focus_button = QPushButton("看入场")
@@ -1949,6 +1958,7 @@ class TradeReviewSidebar(QWidget):
         self.owner._selected_trade_view = self.owner._trade_review_controller.focus_mode
         self._refresh_cards()
         self._refresh_focus_buttons()
+        self._refresh_navigation_controls()
         self._refresh_detail()
 
     def _refresh_cards(self) -> None:
@@ -1982,6 +1992,27 @@ class TradeReviewSidebar(QWidget):
         self.owner.select_trade_history_item(int(trade_number), focus_view=self.owner._selected_trade_view, focus_chart=True)
         self.refresh_items()
 
+    def _navigate_to_previous_trade(self) -> None:
+        self._navigate_trade(-1)
+
+    def _navigate_to_next_trade(self) -> None:
+        self._navigate_trade(1)
+
+    def _navigate_trade(self, offset: int) -> None:
+        numbers = self.trade_history_model.trade_numbers()
+        selected_trade_number = self.owner._selected_trade_number
+        if selected_trade_number not in numbers:
+            return
+        target_index = numbers.index(selected_trade_number) + offset
+        if not 0 <= target_index < len(numbers):
+            return
+        self.owner.select_trade_history_item(
+            numbers[target_index],
+            focus_view=self.owner._selected_trade_view,
+            focus_chart=True,
+        )
+        self.refresh_items()
+
     def _handle_focus_button_clicked(self) -> None:
         button = self.sender()
         if not isinstance(button, QPushButton):
@@ -1992,10 +2023,23 @@ class TradeReviewSidebar(QWidget):
         self.owner.set_trade_history_focus(mode, focus_chart=True)
         self.refresh_items()
 
+    def _refresh_navigation_controls(self) -> None:
+        numbers = self.trade_history_model.trade_numbers()
+        selected_trade_number = self.owner._selected_trade_number
+        if not numbers or selected_trade_number not in numbers:
+            self.trade_position_label.setText("0 / 0")
+            self.previous_trade_button.setEnabled(False)
+            self.next_trade_button.setEnabled(False)
+            return
+        selected_index = numbers.index(selected_trade_number)
+        self.trade_position_label.setText(f"{selected_index + 1} / {len(numbers)}")
+        self.previous_trade_button.setEnabled(selected_index > 0)
+        self.next_trade_button.setEnabled(selected_index < len(numbers) - 1)
+
     def _refresh_focus_buttons(self) -> None:
         has_selection = self.owner._selected_trade_number is not None
-        for button in (self.entry_focus_button, self.exit_focus_button, self.save_trade_note_button, self.full_table_button):
-            button.setEnabled(has_selection or button is self.full_table_button)
+        for button in (self.entry_focus_button, self.exit_focus_button, self.save_trade_note_button):
+            button.setEnabled(has_selection)
         mode = self.owner._selected_trade_view
         self.entry_focus_button.setChecked(mode == "entry")
         self.exit_focus_button.setChecked(mode == "exit")
@@ -2032,10 +2076,6 @@ class TradeReviewSidebar(QWidget):
             review_note=self.review_note_edit.toPlainText(),
         )
         self.refresh_items()
-
-    def _open_full_table(self) -> None:
-        self.owner.open_full_trade_history_dialog()
-
 
 class LogViewerDialog(QDialog):
     def __init__(self, parent: QWidget | None = None, logs_path: Path | None = None) -> None:
@@ -2469,6 +2509,11 @@ class MainWindow(QMainWindow):
         self._selected_trade_number: int | None = None
         self._selected_trade_view: TradeFocusMode = "exit"
         self._trade_history_dialog: TradeHistoryDialog | None = None
+        self.right_sidebar_stack: QStackedWidget | None = None
+        self.right_sidebar_tab_group: QButtonGroup | None = None
+        self.training_sidebar_tab_button: QPushButton | None = None
+        self.trade_history_sidebar_tab_button: QPushButton | None = None
+        self.replay_sidebar_panel: QWidget | None = None
         self.trade_review_sidebar: TradeReviewSidebar | None = None
         self._log_viewer_dialog: LogViewerDialog | None = None
         self._settings_dialog: SettingsDialog | None = None
@@ -2526,18 +2571,13 @@ class MainWindow(QMainWindow):
 
         self.splitter = QSplitter()
         self.splitter.addWidget(self._build_center_panel())
-        self.trade_review_sidebar = TradeReviewSidebar(self, self)
-        self.trade_review_sidebar.hide()
-        self.splitter.addWidget(self.trade_review_sidebar)
         self.splitter.addWidget(self._build_right_panel())
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(0)
         self.splitter.setStretchFactor(0, 2)
         self.splitter.setStretchFactor(1, 0)
-        self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([1132, 0, AppTheme.sidebar_width])
+        self.splitter.setSizes([1132, AppTheme.sidebar_width])
         self.splitter.handle(1).setEnabled(False)
-        self.splitter.handle(2).setEnabled(False)
         self.splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         container_layout.addWidget(self.splitter, 1)
 
@@ -3008,6 +3048,58 @@ class MainWindow(QMainWindow):
         panel.setObjectName("rightPanel")
         panel.setFixedWidth(AppTheme.sidebar_width)
         panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        layout.addWidget(self._build_right_sidebar_tabs())
+
+        self.right_sidebar_stack = QStackedWidget()
+        self.right_sidebar_stack.setObjectName("rightSidebarStack")
+        self.right_sidebar_stack.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.replay_sidebar_panel = self._build_replay_sidebar_panel()
+        self.trade_review_sidebar = TradeReviewSidebar(self, panel)
+        self.right_sidebar_stack.addWidget(self.replay_sidebar_panel)
+        self.right_sidebar_stack.addWidget(self.trade_review_sidebar)
+        layout.addWidget(self.right_sidebar_stack, 1)
+        self.show_training_sidebar()
+        return panel
+
+    def _build_right_sidebar_tabs(self) -> QWidget:
+        tabs = QWidget()
+        tabs.setObjectName("rightSidebarTabs")
+        tabs.setProperty("segmented", True)
+        tabs.setFixedHeight(34)
+        tabs.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(tabs)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(3)
+
+        self.right_sidebar_tab_group = QButtonGroup(self)
+        self.right_sidebar_tab_group.setExclusive(True)
+        for label, object_name, handler in (
+            ("训练", "trainingSidebarTabButton", self.show_training_sidebar),
+            ("历史交易", "tradeHistorySidebarTabButton", self.show_trade_history_sidebar),
+        ):
+            button = QPushButton(label)
+            button.setObjectName(object_name)
+            button.setCheckable(True)
+            button.setProperty("role", "sidebarTab")
+            button.setFixedHeight(28)
+            button.clicked.connect(handler)
+            self.right_sidebar_tab_group.addButton(button)
+            layout.addWidget(button, 1)
+            if label == "训练":
+                self.training_sidebar_tab_button = button
+            else:
+                self.trade_history_sidebar_tab_button = button
+        return tabs
+
+    def _build_replay_sidebar_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setObjectName("replaySidebarPanel")
+        panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -3202,11 +3294,6 @@ class MainWindow(QMainWindow):
         display_layout = QVBoxLayout(display_box)
         display_layout.setContentsMargins(8, 14, 8, 8)
         display_layout.setSpacing(4)
-        self.open_trade_history_button = QPushButton("历史交易")
-        self.open_trade_history_button.setFixedHeight(26)
-        self.open_trade_history_button.setProperty("role", "utility")
-        self.open_trade_history_button.clicked.connect(self.open_trade_history_dialog)
-        display_layout.addWidget(self.open_trade_history_button)
 
         for toggle_button in (
             self.bar_count_toggle_button,
@@ -3465,26 +3552,36 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def open_trade_history_dialog(self) -> None:
-        self.toggle_trade_review_sidebar()
+        self.show_trade_history_sidebar()
 
     def toggle_trade_review_sidebar(self) -> None:
-        if self.trade_review_sidebar is None:
+        if self.right_sidebar_stack is None or self.trade_review_sidebar is None or self.replay_sidebar_panel is None:
             return
-        if not self.trade_review_sidebar.isHidden():
-            self.trade_review_sidebar.hide()
+        if self.right_sidebar_stack.currentWidget() is self.trade_review_sidebar:
+            self.show_training_sidebar()
+            return
+        self.show_trade_history_sidebar()
+
+    def show_trade_history_sidebar(self) -> None:
+        if self.right_sidebar_stack is None or self.trade_review_sidebar is None:
             return
         self.trade_review_sidebar.refresh_items()
-        self.trade_review_sidebar.show()
-        self.splitter.setSizes([max(self.width() - AppTheme.sidebar_width - 380, 600), 380, AppTheme.sidebar_width])
+        self.right_sidebar_stack.setCurrentWidget(self.trade_review_sidebar)
+        if self.trade_history_sidebar_tab_button is not None:
+            self.trade_history_sidebar_tab_button.setChecked(True)
+
+    def show_training_sidebar(self) -> None:
+        if self.right_sidebar_stack is None or self.replay_sidebar_panel is None:
+            return
+        self.right_sidebar_stack.setCurrentWidget(self.replay_sidebar_panel)
+        if self.training_sidebar_tab_button is not None:
+            self.training_sidebar_tab_button.setChecked(True)
+
+    def show_replay_sidebar(self) -> None:
+        self.show_training_sidebar()
 
     def open_full_trade_history_dialog(self) -> None:
-        if self._trade_history_dialog is None:
-            self._trade_history_dialog = TradeHistoryDialog(self, self)
-            self._trade_history_dialog.finished.connect(self._handle_trade_history_dialog_closed)
-        self._trade_history_dialog.refresh_items()
-        self._trade_history_dialog.show()
-        self._trade_history_dialog.raise_()
-        self._trade_history_dialog.activateWindow()
+        self.show_trade_history_sidebar()
 
     def open_log_viewer(self) -> None:
         if self._log_viewer_dialog is None:
@@ -3601,7 +3698,6 @@ class MainWindow(QMainWindow):
         self.training_stats_meta.clear()
         self.training_stats_meta.hide()
         self.training_stats_label.setText("总盈亏 0.00 · 期望值 --")
-        self.open_trade_history_button.setEnabled(False)
         if self._trade_history_dialog is not None:
             self._trade_history_dialog.refresh_items()
         if self.trade_review_sidebar is not None:
@@ -3837,7 +3933,6 @@ class MainWindow(QMainWindow):
         self._selected_trade_view = self._trade_review_controller.focus_mode
         self._update_training_stats()
         self._sync_selected_trade_focus()
-        self.open_trade_history_button.setEnabled(bool(self._trade_review_items))
         if self._trade_history_dialog is not None:
             self._trade_history_dialog.refresh_items()
         if self.trade_review_sidebar is not None and self.trade_review_sidebar.isVisible():
