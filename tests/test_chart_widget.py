@@ -1171,16 +1171,18 @@ def test_trade_triangle_size_scales_with_zoom(widget: ChartWidget, app: QApplica
     widget.show()
     widget.set_full_data(_bars())
     widget.set_cursor(120)
-    widget.set_trade_actions([SessionAction(ActionType.OPEN_LONG, 60, datetime(2025, 1, 1, 10, 0), price=101.0, quantity=1)])
+    widget.set_trade_actions([SessionAction(ActionType.OPEN_LONG, 90, datetime(2025, 1, 1, 10, 30), price=101.0, quantity=1)])
     app.processEvents()
 
     initial_size = widget._trade_markers[0].size
 
-    widget.zoom_x(anchor_x=60, scale=0.5)
+    widget.zoom_x(anchor_x=90, scale=0.5)
+    widget.refresh_cursor_dependent_overlays()
     app.processEvents()
     zoomed_in_size = widget._trade_markers[0].size
 
-    widget.zoom_x(anchor_x=60, scale=2.0)
+    widget.zoom_x(anchor_x=90, scale=2.0)
+    widget.refresh_cursor_dependent_overlays()
     app.processEvents()
     zoomed_out_size = widget._trade_markers[0].size
 
@@ -2895,12 +2897,10 @@ def test_trade_hover_ignores_markers_outside_visible_x_range(widget: ChartWidget
     widget.set_trade_actions([far_action, visible_action])
     app.processEvents()
 
-    far_marker = next(marker for marker in widget._trade_markers if marker.action is far_action)
-    far_scene = widget.price_plot.vb.mapViewToScene(QPointF(far_marker.x, far_marker.y))
+    assert all(marker.action is not far_action for marker in widget._trade_markers)
     visible_marker = next(marker for marker in widget._trade_markers if marker.action is visible_action)
     visible_scene = widget.price_plot.vb.mapViewToScene(QPointF(visible_marker.x, visible_marker.y))
 
-    assert widget._trade_marker_at_scene_pos(far_scene) is None
     assert widget._trade_marker_at_scene_pos(visible_scene) == (visible_marker, None)
 
 

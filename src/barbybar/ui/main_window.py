@@ -426,12 +426,12 @@ class SessionLoadWorker(QObject):
             log = log.bind(dataset_id=session.dataset_id)
             log.debug("event=get_dataset elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - dataset_step) * 1000)
             actions_step = perf_counter()
-            actions = repo.get_session_actions(session.id or 0)
+            timeframe = self.chart_timeframe or session.chart_timeframe
+            actions = repo.get_session_actions(session.id or 0, timeframe)
             log.debug("event=get_session_actions elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - actions_step) * 1000)
             order_step = perf_counter()
-            order_lines = repo.get_order_lines(session.id or 0)
+            order_lines = repo.get_order_lines(session.id or 0, timeframe)
             log.debug("event=get_order_lines elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - order_step) * 1000)
-            timeframe = self.chart_timeframe or session.chart_timeframe
             drawing_step = perf_counter()
             drawings = repo.get_drawings(session.id or 0, timeframe)
             log.debug("event=get_drawings elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - drawing_step) * 1000)
@@ -4454,6 +4454,7 @@ class MainWindow(QMainWindow):
         *,
         trigger: str = "manual",
         persist_drawings: bool = True,
+        persist_trades: bool = True,
         flush_step_forward_pending: bool = True,
     ) -> None:
         if not self.engine:
@@ -4463,14 +4464,20 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.stop()
         self.engine.session.drawing_style_presets = self._serialize_drawing_style_presets()
         self.engine.session.current_bar_time = self.engine.current_bar.timestamp
+        session_to_save = self.engine.session
+        if not persist_trades:
+            session_to_save = deepcopy(self.engine.session)
+            session_to_save.position = PositionState()
+            session_to_save.stats = SessionStats()
         saved = self.repo.save_session(
-            self.engine.session,
-            self.engine.actions,
-            self.engine.order_lines,
+            session_to_save,
+            self.engine.actions if persist_trades else None,
+            self.engine.order_lines if persist_trades else None,
             self.chart_widget.drawings() if persist_drawings else None,
         )
         self.engine.session = saved
-        self.engine.order_lines = self.repo.get_order_lines(saved.id or 0)
+        if persist_trades:
+            self.engine.order_lines = self.repo.get_order_lines(saved.id or 0, saved.chart_timeframe)
         self._session_dirty = False
         logger.bind(
             component="session",
@@ -4506,7 +4513,7 @@ class MainWindow(QMainWindow):
         self.save_session(trigger="change_chart_timeframe:source")
         self.engine.session.chart_timeframe = normalized
         self.engine.session.current_bar_time = anchor_time
-        self.save_session(trigger="change_chart_timeframe", persist_drawings=False)
+        self.save_session(trigger="change_chart_timeframe", persist_drawings=False, persist_trades=False)
         logger.bind(component="chart", session_id=self.current_session_id, chart_timeframe=normalized).info(
             "event=change_chart_timeframe"
         )

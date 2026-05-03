@@ -41,6 +41,19 @@ def test_open_close_and_stats() -> None:
     assert engine.session.stats.win_rate == 1.0
 
 
+def test_engine_stamps_new_trade_state_with_chart_timeframe() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="15m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+
+    action = engine.record_action(ActionType.OPEN_LONG, quantity=1)
+    line = engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+    average_line = next(item for item in engine.display_order_lines() if item.order_type.value == "average_price")
+
+    assert action.chart_timeframe == "15m"
+    assert line.chart_timeframe == "15m"
+    assert average_line.chart_timeframe == "15m"
+
+
 def test_stop_loss_auto_close() -> None:
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
     engine = ReviewEngine(session, sample_bars())

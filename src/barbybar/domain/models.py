@@ -183,6 +183,7 @@ class SessionAction:
     quantity: float = 1.0
     note: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+    chart_timeframe: str = "1m"
     id: int | None = None
     session_id: int | None = None
 
@@ -195,6 +196,7 @@ class OrderLine:
     created_bar_index: int
     active_from_bar_index: int
     created_at: datetime
+    chart_timeframe: str = "1m"
     trigger_mode: OrderTriggerMode = OrderTriggerMode.TOUCH
     reference_price_at_creation: float | None = None
     status: OrderStatus = OrderStatus.ACTIVE

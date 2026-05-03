@@ -112,6 +112,7 @@ class ReviewEngine:
                     created_bar_index=self.session.current_index,
                     active_from_bar_index=self.session.current_index,
                     created_at=self.current_bar.timestamp,
+                    chart_timeframe=self.session.chart_timeframe,
                     trigger_mode=OrderTriggerMode.TOUCH,
                     reference_price_at_creation=position.average_price,
                     note="成本线",
@@ -223,6 +224,7 @@ class ReviewEngine:
             quantity=quantity,
             note=note,
             extra=extra or {},
+            chart_timeframe=self.session.chart_timeframe,
             session_id=self.session.id,
         )
         self._apply_action(action)
@@ -259,6 +261,7 @@ class ReviewEngine:
             created_bar_index=self.session.current_index,
             active_from_bar_index=self.session.current_index + 1,
             created_at=self.current_bar.timestamp,
+            chart_timeframe=self.session.chart_timeframe,
             trigger_mode=OrderTriggerMode.TOUCH,
             reference_price_at_creation=self.current_bar.close,
             note=note,
@@ -574,6 +577,7 @@ class ReviewEngine:
             quantity=close_quantity,
             note=f"Auto close by {hit_line.order_type.value}",
             extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
+            chart_timeframe=self.session.chart_timeframe,
             session_id=self.session.id,
         )
         self._apply_action(auto_action)
@@ -615,6 +619,7 @@ class ReviewEngine:
             quantity=hit_line.quantity,
             note=f"Auto entry by {hit_line.order_type.value}",
             extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
+            chart_timeframe=self.session.chart_timeframe,
             session_id=self.session.id,
         )
         self._apply_action(auto_action)
@@ -663,6 +668,7 @@ class ReviewEngine:
             quantity=close_quantity,
             note=f"Auto close by {hit_line.order_type.value}",
             extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
+            chart_timeframe=self.session.chart_timeframe,
             session_id=self.session.id,
         )
         self._apply_action(close_action)
@@ -677,6 +683,7 @@ class ReviewEngine:
                     quantity=reverse_open_quantity,
                     note="Auto reverse by reverse line",
                     extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
+                    chart_timeframe=self.session.chart_timeframe,
                     session_id=self.session.id,
                 )
                 self._apply_action(reverse_action)
@@ -833,6 +840,7 @@ class ReviewEngine:
             created_bar_index=self.session.current_index,
             active_from_bar_index=self.session.current_index + 1,
             created_at=self.current_bar.timestamp,
+            chart_timeframe=self.session.chart_timeframe,
             trigger_mode=OrderTriggerMode.TOUCH,
             reference_price_at_creation=self.current_bar.close,
             note=note,
@@ -878,6 +886,7 @@ class ReviewEngine:
             quantity=position.quantity,
             note="Auto close at session end",
             extra={"auto": True, "order_type": SESSION_END_FLATTEN_ORDER_TYPE},
+            chart_timeframe=self.session.chart_timeframe,
             session_id=self.session.id,
         )
         self._apply_action(auto_action)

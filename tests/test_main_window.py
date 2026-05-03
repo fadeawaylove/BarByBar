@@ -13,7 +13,7 @@ from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
 from barbybar.data.tick_size import default_tick_size_for_symbol, format_average_price, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, TradeReviewItem, WindowBars
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLine, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, TradeReviewItem, WindowBars
 from barbybar.performance_metrics import clear_metrics, recent_metrics, record_metric
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
@@ -1525,6 +1525,89 @@ def test_main_window_ignores_invalid_global_drawing_template_store(app: QApplica
     finally:
         main_window.close()
         main_window.deleteLater()
+        app.processEvents()
+
+
+def test_main_window_keeps_trade_state_isolated_when_switching_timeframes(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(480):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    dataset = repo.import_csv(csv_path, "IF", "1m")
+    session = repo.create_session(dataset.id or 0, start_index=10)
+    bars_5m = repo.get_chart_bars(session.id or 0, "5m")
+    session.chart_timeframe = "5m"
+    session.current_index = 8
+    session.current_bar_time = bars_5m[8].timestamp
+    actions = [
+        SessionAction(ActionType.OPEN_LONG, 2, bars_5m[2].timestamp, price=bars_5m[2].close, quantity=1, note="5m entry note", chart_timeframe="5m"),
+        SessionAction(ActionType.CLOSE, 5, bars_5m[5].timestamp, price=bars_5m[5].close + 2, quantity=1, note="5m review note", chart_timeframe="5m"),
+    ]
+    order_lines = [
+        OrderLine(
+            OrderLineType.ENTRY_LONG,
+            price=bars_5m[7].close,
+            quantity=1,
+            created_bar_index=6,
+            active_from_bar_index=7,
+            created_at=bars_5m[6].timestamp,
+            chart_timeframe="5m",
+            note="5m pending line",
+        )
+    ]
+    repo.save_session(session, actions, order_lines)
+
+    window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, window)
+        assert window.engine is not None
+        assert window.engine.session.chart_timeframe == "5m"
+        assert len(window.engine.trade_review_items()) == 1
+        assert window.engine.trade_review_items()[0].review_note == "5m review note"
+        assert [line.note for line in window.engine.order_lines] == ["5m pending line"]
+
+        window.change_chart_timeframe("60m")
+        started = perf_counter()
+        while perf_counter() - started < 5.0:
+            app.processEvents()
+            if window.engine is not None and window.engine.session.chart_timeframe == "60m":
+                break
+
+        assert window.engine is not None
+        assert window.engine.session.chart_timeframe == "60m"
+        assert window.engine.actions == []
+        assert window.engine.order_lines == []
+        assert window.engine.session.stats.total_trades == 0
+        assert window.engine.trade_review_items() == []
+        assert repo.get_session(session.id or 0).stats.total_trades == 0
+        assert repo.get_session_actions(session.id or 0, "60m") == []
+        assert repo.get_order_lines(session.id or 0, "60m") == []
+
+        window.change_chart_timeframe("5m")
+        started = perf_counter()
+        while perf_counter() - started < 5.0:
+            app.processEvents()
+            if window.engine is not None and window.engine.session.chart_timeframe == "5m":
+                break
+
+        assert window.engine is not None
+        assert window.engine.session.chart_timeframe == "5m"
+        assert len(window.engine.trade_review_items()) == 1
+        assert window.engine.trade_review_items()[0].entry_note == "5m entry note"
+        assert window.engine.trade_review_items()[0].review_note == "5m review note"
+        assert [line.note for line in window.engine.order_lines] == ["5m pending line"]
+    finally:
+        window.close()
+        window.deleteLater()
         app.processEvents()
 
 

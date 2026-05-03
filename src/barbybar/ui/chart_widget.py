@@ -1054,6 +1054,7 @@ class ChartWidget(QWidget):
         return tuple(
             (
                 line.id,
+                line.chart_timeframe,
                 line.order_type.value,
                 round(float(line.price), 8),
                 round(float(line.quantity), 8),
@@ -1072,6 +1073,7 @@ class ChartWidget(QWidget):
         action_signature = tuple(
             (
                 action.id,
+                action.chart_timeframe,
                 action.action_type.value,
                 action.bar_index,
                 action.timestamp.isoformat(),
@@ -1424,6 +1426,7 @@ class ChartWidget(QWidget):
                     order_type=line.order_type,
                     price=price,
                     quantity=line.quantity,
+                    chart_timeframe=line.chart_timeframe,
                     trigger_mode=line.trigger_mode,
                     reference_price_at_creation=line.reference_price_at_creation,
                     status=line.status,
@@ -1448,6 +1451,7 @@ class ChartWidget(QWidget):
                 created_bar_index=self._cursor,
                 active_from_bar_index=self._cursor + 1,
                 created_at=self._bars[-1].timestamp,
+                chart_timeframe=average_line.chart_timeframe if average_line is not None else self._chart_timeframe,
                 reference_price_at_creation=reference_price,
             )
         source = next((item for item in self._order_lines if item.order_type is target_type), None)
@@ -1458,6 +1462,7 @@ class ChartWidget(QWidget):
                 order_type=source.order_type,
                 price=price,
                 quantity=source.quantity,
+                chart_timeframe=source.chart_timeframe,
                 trigger_mode=source.trigger_mode,
                 reference_price_at_creation=source.reference_price_at_creation,
                 status=source.status,
@@ -1478,6 +1483,7 @@ class ChartWidget(QWidget):
             created_bar_index=self._cursor,
             active_from_bar_index=self._cursor + 1,
             created_at=self._bars[-1].timestamp,
+            chart_timeframe=average_line.chart_timeframe if average_line is not None else self._chart_timeframe,
             reference_price_at_creation=reference_price,
         )
 

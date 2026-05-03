@@ -280,7 +280,7 @@ class Repository:
     def save_session(
         self,
         session: ReviewSession,
-        actions: list[SessionAction],
+        actions: list[SessionAction] | None,
         order_lines: list[OrderLine] | None = None,
         drawings: list[ChartDrawing] | None = None,
     ) -> ReviewSession:
@@ -290,7 +290,7 @@ class Repository:
     def save_session_state(
         self,
         session: ReviewSession,
-        actions: list[SessionAction],
+        actions: list[SessionAction] | None,
         order_lines: list[OrderLine] | None = None,
         drawings: list[ChartDrawing] | None = None,
     ) -> None:
@@ -317,32 +317,41 @@ class Repository:
                 session.id,
             ),
         )
-        self.conn.execute("DELETE FROM actions WHERE session_id = ?", (session.id,))
-        self.conn.executemany(
-            """
-            INSERT INTO actions(session_id, action_type, bar_index, ts, price, quantity, note, extra_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    session.id,
-                    action.action_type.value,
-                    action.bar_index,
-                    action.timestamp.isoformat(),
-                    action.price,
-                    action.quantity,
-                    action.note,
-                    json.dumps(action.extra, ensure_ascii=False),
-                )
-                for action in actions
-            ],
-        )
+        trade_timeframe = normalize_timeframe(session.chart_timeframe)
+        if actions is not None:
+            self.conn.execute(
+                "DELETE FROM actions WHERE session_id = ? AND chart_timeframe = ?",
+                (session.id, trade_timeframe),
+            )
+            self.conn.executemany(
+                """
+                INSERT INTO actions(session_id, chart_timeframe, action_type, bar_index, ts, price, quantity, note, extra_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        session.id,
+                        trade_timeframe,
+                        action.action_type.value,
+                        action.bar_index,
+                        action.timestamp.isoformat(),
+                        action.price,
+                        action.quantity,
+                        action.note,
+                        json.dumps(action.extra, ensure_ascii=False),
+                    )
+                    for action in actions
+                ],
+            )
         if order_lines is not None:
             persisted_lines = [line for line in order_lines if line.order_type is not OrderLineType.AVERAGE_PRICE]
             incoming_ids = {line.id for line in persisted_lines if line.id is not None}
             existing_ids = {
                 row["id"]
-                for row in self.conn.execute("SELECT id FROM order_lines WHERE session_id = ?", (session.id,)).fetchall()
+                for row in self.conn.execute(
+                    "SELECT id FROM order_lines WHERE session_id = ? AND chart_timeframe = ?",
+                    (session.id, trade_timeframe),
+                ).fetchall()
             }
             stale_ids = existing_ids - incoming_ids
             if stale_ids:
@@ -353,13 +362,14 @@ class Repository:
                     cursor = self.conn.execute(
                         """
                         INSERT INTO order_lines(
-                            session_id, order_type, price, quantity, trigger_mode, reference_price_at_creation, status, created_bar_index, created_at,
+                            session_id, chart_timeframe, order_type, price, quantity, trigger_mode, reference_price_at_creation, status, created_bar_index, created_at,
                             active_from_bar_index, triggered_bar_index, triggered_at, note
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             session.id,
+                            trade_timeframe,
                             order_line.order_type.value,
                             order_line.price,
                             order_line.quantity,
@@ -376,13 +386,14 @@ class Repository:
                     )
                     order_line.id = int(cursor.lastrowid)
                     order_line.session_id = session.id
+                    order_line.chart_timeframe = trade_timeframe
                     continue
                 self.conn.execute(
                     """
                     UPDATE order_lines
                     SET order_type = ?, price = ?, quantity = ?, trigger_mode = ?, reference_price_at_creation = ?, status = ?, created_bar_index = ?, created_at = ?,
                         active_from_bar_index = ?, triggered_bar_index = ?, triggered_at = ?, note = ?
-                    WHERE id = ? AND session_id = ?
+                    WHERE id = ? AND session_id = ? AND chart_timeframe = ?
                     """,
                     (
                         order_line.order_type.value,
@@ -399,6 +410,7 @@ class Repository:
                         order_line.note,
                         order_line.id,
                         session.id,
+                        trade_timeframe,
                     ),
                 )
         if drawings is not None:
@@ -503,12 +515,17 @@ class Repository:
         self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         self.conn.commit()
 
-    def get_session_actions(self, session_id: int) -> list[SessionAction]:
-        rows = self.conn.execute("SELECT * FROM actions WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()
+    def get_session_actions(self, session_id: int, chart_timeframe: str) -> list[SessionAction]:
+        normalized_timeframe = normalize_timeframe(chart_timeframe)
+        rows = self.conn.execute(
+            "SELECT * FROM actions WHERE session_id = ? AND chart_timeframe = ? ORDER BY id",
+            (session_id, normalized_timeframe),
+        ).fetchall()
         return [
             SessionAction(
                 id=row["id"],
                 session_id=row["session_id"],
+                chart_timeframe=row["chart_timeframe"] if "chart_timeframe" in row.keys() else normalized_timeframe,
                 action_type=ActionType(row["action_type"]),
                 bar_index=row["bar_index"],
                 timestamp=datetime.fromisoformat(row["ts"]),
@@ -520,12 +537,17 @@ class Repository:
             for row in rows
         ]
 
-    def get_order_lines(self, session_id: int) -> list[OrderLine]:
-        rows = self.conn.execute("SELECT * FROM order_lines WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()
+    def get_order_lines(self, session_id: int, chart_timeframe: str) -> list[OrderLine]:
+        normalized_timeframe = normalize_timeframe(chart_timeframe)
+        rows = self.conn.execute(
+            "SELECT * FROM order_lines WHERE session_id = ? AND chart_timeframe = ? ORDER BY id",
+            (session_id, normalized_timeframe),
+        ).fetchall()
         return [
             OrderLine(
                 id=row["id"],
                 session_id=row["session_id"],
+                chart_timeframe=row["chart_timeframe"] if "chart_timeframe" in row.keys() else normalized_timeframe,
                 order_type=OrderLineType(row["order_type"]),
                 price=row["price"],
                 quantity=row["quantity"],

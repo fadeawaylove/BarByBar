@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS actions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
+    chart_timeframe TEXT NOT NULL DEFAULT '1m',
     action_type TEXT NOT NULL,
     bar_index INTEGER NOT NULL,
     ts TEXT NOT NULL,
@@ -80,6 +81,7 @@ CREATE TABLE IF NOT EXISTS actions (
 CREATE TABLE IF NOT EXISTS order_lines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
+    chart_timeframe TEXT NOT NULL DEFAULT '1m',
     order_type TEXT NOT NULL,
     price REAL NOT NULL,
     quantity REAL NOT NULL,
@@ -142,6 +144,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # SQLite does not allow adding a column with a non-constant default like CURRENT_TIMESTAMP.
         conn.execute("ALTER TABLE sessions ADD COLUMN last_opened_at TEXT")
         conn.execute("UPDATE sessions SET last_opened_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")
+    action_columns = {row["name"] for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
+    if action_columns and "chart_timeframe" not in action_columns:
+        conn.execute("ALTER TABLE actions ADD COLUMN chart_timeframe TEXT NOT NULL DEFAULT '1m'")
+        conn.execute(
+            """
+            UPDATE actions
+            SET chart_timeframe = COALESCE(
+                (
+                    SELECT sessions.chart_timeframe
+                    FROM sessions
+                    WHERE sessions.id = actions.session_id
+                ),
+                '1m'
+            )
+            WHERE chart_timeframe = '1m'
+            """
+        )
     order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
     if order_columns and "note" not in order_columns:
         conn.execute("ALTER TABLE order_lines ADD COLUMN note TEXT NOT NULL DEFAULT ''")
@@ -154,6 +173,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
     order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
     if order_columns and "reference_price_at_creation" not in order_columns:
         conn.execute("ALTER TABLE order_lines ADD COLUMN reference_price_at_creation REAL")
+    order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_lines)").fetchall()}
+    if order_columns and "chart_timeframe" not in order_columns:
+        conn.execute("ALTER TABLE order_lines ADD COLUMN chart_timeframe TEXT NOT NULL DEFAULT '1m'")
+        conn.execute(
+            """
+            UPDATE order_lines
+            SET chart_timeframe = COALESCE(
+                (
+                    SELECT sessions.chart_timeframe
+                    FROM sessions
+                    WHERE sessions.id = order_lines.session_id
+                ),
+                '1m'
+            )
+            WHERE chart_timeframe = '1m'
+            """
+        )
     bar_columns = {row["name"] for row in conn.execute("PRAGMA table_info(bars)").fetchall()}
     if bar_columns and "open_ts" not in bar_columns:
         conn.execute("ALTER TABLE bars ADD COLUMN open_ts TEXT")
@@ -195,5 +231,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             """
         )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_drawings_session_timeframe ON drawings(session_id, chart_timeframe)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_session_timeframe ON actions(session_id, chart_timeframe)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_order_lines_session_timeframe ON order_lines(session_id, chart_timeframe)")
     conn.execute("UPDATE datasets SET display_name = symbol WHERE display_name = ''")
     conn.commit()

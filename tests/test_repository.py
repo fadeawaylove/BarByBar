@@ -7,7 +7,7 @@ from uuid import uuid4
 from barbybar.data.tick_size import default_tick_size_for_symbol
 from barbybar.data.timeframe import aggregate_bars, default_chart_timeframe, find_bar_index_for_timestamp, normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLineType, SessionStatus
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, SessionStatus
 from barbybar.storage.database import connect
 from barbybar.storage.repository import Repository
 
@@ -43,8 +43,8 @@ def test_repository_roundtrip() -> None:
         repo.save_session(engine.session, engine.actions, engine.order_lines, drawings)
 
         saved = repo.get_session(session.id or 0)
-        actions = repo.get_session_actions(session.id or 0)
-        order_lines = repo.get_order_lines(session.id or 0)
+        actions = repo.get_session_actions(session.id or 0, "5m")
+        order_lines = repo.get_order_lines(session.id or 0, "5m")
         loaded_drawings = repo.get_drawings(session.id or 0, "5m")
         assert saved.notes.startswith("Breakout")
         assert saved.chart_timeframe == "5m"
@@ -492,7 +492,7 @@ def test_save_session_preserves_existing_order_line_ids() -> None:
         engine = ReviewEngine(session, bars)
         line = engine.place_order_line(OrderLineType.ENTRY_LONG, price=bars[1].close, quantity=1)
         repo.save_session(engine.session, engine.actions, engine.order_lines)
-        first_saved = repo.get_order_lines(session.id or 0)
+        first_saved = repo.get_order_lines(session.id or 0, session.chart_timeframe)
 
         assert len(first_saved) == 1
         first_id = first_saved[0].id
@@ -501,12 +501,127 @@ def test_save_session_preserves_existing_order_line_ids() -> None:
         engine.order_lines = first_saved
         engine.update_order_line(first_id, bars[1].close + 1)
         repo.save_session(engine.session, engine.actions, engine.order_lines)
-        second_saved = repo.get_order_lines(session.id or 0)
+        second_saved = repo.get_order_lines(session.id or 0, session.chart_timeframe)
 
         assert len(second_saved) == 1
         assert second_saved[0].id == first_id
         assert second_saved[0].price == bars[1].close + 1
         assert second_saved[0].active_from_bar_index == line.active_from_bar_index
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_save_session_persists_trades_by_chart_timeframe() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+
+        session.chart_timeframe = "5m"
+        action_5m = SessionAction(
+            ActionType.OPEN_LONG,
+            1,
+            datetime(2025, 1, 1, 9, 5),
+            price=101.0,
+            quantity=1,
+            note="5m entry",
+            chart_timeframe="5m",
+        )
+        repo.save_session(session, [action_5m], [])
+
+        session.chart_timeframe = "60m"
+        action_60m = SessionAction(
+            ActionType.OPEN_SHORT,
+            2,
+            datetime(2025, 1, 1, 10, 0),
+            price=102.0,
+            quantity=1,
+            note="60m entry",
+            chart_timeframe="60m",
+        )
+        repo.save_session(session, [action_60m], [])
+
+        loaded_5m = repo.get_session_actions(session.id or 0, "5m")
+        loaded_60m = repo.get_session_actions(session.id or 0, "60m")
+
+        assert [action.note for action in loaded_5m] == ["5m entry"]
+        assert [action.chart_timeframe for action in loaded_5m] == ["5m"]
+        assert [action.note for action in loaded_60m] == ["60m entry"]
+        assert [action.chart_timeframe for action in loaded_60m] == ["60m"]
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_save_session_replaces_only_current_timeframe_trade_state() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+
+        session.chart_timeframe = "5m"
+        action_5m = SessionAction(
+            ActionType.OPEN_LONG,
+            1,
+            datetime(2025, 1, 1, 9, 5),
+            price=101.0,
+            quantity=1,
+            chart_timeframe="5m",
+        )
+        line_5m = OrderLine(
+            OrderLineType.ENTRY_LONG,
+            price=102.0,
+            quantity=1,
+            created_bar_index=1,
+            active_from_bar_index=2,
+            created_at=datetime(2025, 1, 1, 9, 5),
+            chart_timeframe="5m",
+        )
+        repo.save_session(session, [action_5m], [line_5m])
+
+        session.chart_timeframe = "15m"
+        action_15m = SessionAction(
+            ActionType.OPEN_SHORT,
+            2,
+            datetime(2025, 1, 1, 9, 15),
+            price=103.0,
+            quantity=1,
+            chart_timeframe="15m",
+        )
+        line_15m = OrderLine(
+            OrderLineType.ENTRY_SHORT,
+            price=101.0,
+            quantity=1,
+            created_bar_index=2,
+            active_from_bar_index=3,
+            created_at=datetime(2025, 1, 1, 9, 15),
+            chart_timeframe="15m",
+        )
+        repo.save_session(session, [action_15m], [line_15m])
+
+        replacement_actions = [
+            SessionAction(
+                ActionType.OPEN_LONG,
+                3,
+                datetime(2025, 1, 1, 9, 30),
+                price=104.0,
+                quantity=1,
+                note="replacement 5m",
+                chart_timeframe="5m",
+            )
+        ]
+        session.chart_timeframe = "5m"
+        repo.save_session(session, replacement_actions, [])
+
+        assert [action.note for action in repo.get_session_actions(session.id or 0, "5m")] == ["replacement 5m"]
+        assert len(repo.get_order_lines(session.id or 0, "5m")) == 0
+        assert [action.action_type for action in repo.get_session_actions(session.id or 0, "15m")] == [ActionType.OPEN_SHORT]
+        assert [line.order_type for line in repo.get_order_lines(session.id or 0, "15m")] == [OrderLineType.ENTRY_SHORT]
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -867,6 +982,131 @@ def test_connect_migrates_legacy_drawings_to_session_chart_timeframe() -> None:
         assert row["chart_timeframe"] == "60m"
         assert len(drawings) == 1
         assert drawings[0].tool_type is DrawingToolType.HORIZONTAL_LINE
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_connect_migrates_legacy_trades_to_session_chart_timeframe() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE datasets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL DEFAULT '',
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                total_bars INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                replay_timeframe TEXT NOT NULL DEFAULT '1m',
+                chart_timeframe TEXT NOT NULL DEFAULT '1m',
+                title TEXT NOT NULL,
+                start_index INTEGER NOT NULL,
+                current_index INTEGER NOT NULL,
+                current_bar_time TEXT,
+                tick_size REAL NOT NULL DEFAULT 1.0,
+                status TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                drawing_style_presets_json TEXT NOT NULL DEFAULT '{}',
+                position_json TEXT NOT NULL DEFAULT '{}',
+                stats_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                bar_index INTEGER NOT NULL,
+                ts TEXT NOT NULL,
+                price REAL,
+                quantity REAL NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                extra_json TEXT NOT NULL DEFAULT '{}'
+            );
+
+            CREATE TABLE order_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                order_type TEXT NOT NULL,
+                price REAL NOT NULL,
+                quantity REAL NOT NULL,
+                trigger_mode TEXT NOT NULL DEFAULT 'touch',
+                reference_price_at_creation REAL,
+                status TEXT NOT NULL,
+                created_bar_index INTEGER NOT NULL,
+                active_from_bar_index INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                triggered_bar_index INTEGER,
+                triggered_at TEXT,
+                note TEXT NOT NULL DEFAULT ''
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO datasets(id, display_name, symbol, timeframe, source_path, total_bars, start_time, end_time, created_at)
+            VALUES (1, 'legacy.csv', 'IF', '1m', 'legacy.csv', 10, '2025-01-01T09:00:00', '2025-01-01T09:09:00', '2025-01-01T09:00:00')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO sessions(
+                id, dataset_id, symbol, timeframe, replay_timeframe, chart_timeframe, title,
+                start_index, current_index, current_bar_time, tick_size, status, notes, tags_json,
+                drawing_style_presets_json, position_json, stats_json, created_at, updated_at
+            ) VALUES (
+                1, 1, 'IF', '1m', '1m', '60m', 'legacy session',
+                0, 0, '2025-01-01T09:00:00', 1.0, 'active', '', '[]',
+                '{}', '{}', '{}', '2025-01-01T09:00:00', '2025-01-02T10:00:00'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO actions(session_id, action_type, bar_index, ts, price, quantity, note, extra_json)
+            VALUES (1, 'open_long', 1, '2025-01-01T09:01:00', 101.0, 1, 'legacy action', '{}')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO order_lines(
+                session_id, order_type, price, quantity, trigger_mode, reference_price_at_creation, status,
+                created_bar_index, active_from_bar_index, created_at, note
+            )
+            VALUES (1, 'entry_long', 102.0, 1, 'touch', 101.0, 'active', 1, 2, '2025-01-01T09:01:00', 'legacy line')
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        repo = Repository(db_path)
+        actions = repo.get_session_actions(1, "60m")
+        order_lines = repo.get_order_lines(1, "60m")
+
+        assert len(actions) == 1
+        assert actions[0].chart_timeframe == "60m"
+        assert actions[0].note == "legacy action"
+        assert len(order_lines) == 1
+        assert order_lines[0].chart_timeframe == "60m"
+        assert order_lines[0].note == "legacy line"
+        assert repo.get_session_actions(1, "5m") == []
+        assert repo.get_order_lines(1, "5m") == []
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
