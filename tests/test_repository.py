@@ -769,6 +769,31 @@ def test_delete_dataset_cascades_sessions_actions_and_order_lines() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_save_session_persists_merged_order_line_as_single_active_line() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        bars = repo.get_chart_bars(session.id or 0, "1m")
+        engine = ReviewEngine(session, bars)
+        engine.place_order_line(OrderLineType.ENTRY_LONG, price=bars[2].close, quantity=1)
+        engine.place_order_line(OrderLineType.ENTRY_LONG, price=bars[2].close, quantity=2)
+
+        repo.save_session(engine.session, engine.actions, engine.order_lines)
+        order_lines = repo.get_order_lines(session.id or 0, session.chart_timeframe)
+
+        active_entry_lines = [
+            line for line in order_lines if line.is_active and line.order_type is OrderLineType.ENTRY_LONG
+        ]
+        assert len(active_entry_lines) == 1
+        assert active_entry_lines[0].quantity == 3
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_save_session_persists_drawings_by_session() -> None:
     temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
     temp_dir.mkdir(parents=True, exist_ok=True)

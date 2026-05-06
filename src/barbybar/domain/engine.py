@@ -43,6 +43,7 @@ class SessionSnapshot:
     trade_review_items_cache: list[TradeReviewItem]
     trade_review_dirty: bool
     stats_dirty: bool
+    open_trade_lots: list[TradeEntryLeg]
 
 
 class ReviewEngine:
@@ -63,6 +64,7 @@ class ReviewEngine:
         self.actions = list(actions or [])
         self.order_lines = list(order_lines or [])
         self.trades: list[Trade] = []
+        self._open_trade_lots: list[TradeEntryLeg] = []
         self._history: list[SessionSnapshot] = []
         self._trade_review_items_cache: list[TradeReviewItem] = []
         self._trade_review_dirty = True
@@ -202,7 +204,10 @@ class ReviewEngine:
         self.session.stats = deepcopy(snap.stats)
         self._trade_review_items_cache = deepcopy(snap.trade_review_items_cache)
         self._trade_review_dirty = snap.trade_review_dirty
+        if self._trade_review_cache_requires_rebuild():
+            self._trade_review_dirty = True
         self._stats_dirty = snap.stats_dirty
+        self._open_trade_lots = deepcopy(snap.open_trade_lots)
         return True
 
     def record_action(
@@ -269,6 +274,7 @@ class ReviewEngine:
             session_id=self.session.id,
         )
         self.order_lines.append(line)
+        line = self._merge_matching_order_lines(line)
         self._sync_stats_max_drawdown()
         return line
 
@@ -284,10 +290,11 @@ class ReviewEngine:
         if line.is_entry:
             line.reference_price_at_creation = self.current_bar.close
             line.trigger_mode = OrderTriggerMode.TOUCH
-        if line.is_protective:
+        merged_line = self._merge_matching_order_lines(line)
+        if merged_line.is_protective:
             self._sync_position_from_lines()
         self._sync_stats_max_drawdown()
-        return line
+        return merged_line
 
     def update_order_line_quantity(self, order_id: int, quantity: float) -> OrderLine:
         line = self._find_order_line(order_id)
@@ -301,8 +308,11 @@ class ReviewEngine:
         if line.is_entry:
             line.reference_price_at_creation = self.current_bar.close
             line.trigger_mode = OrderTriggerMode.TOUCH
+        merged_line = self._merge_matching_order_lines(line)
+        if merged_line.is_protective:
+            self._sync_position_from_lines()
         self._sync_stats_max_drawdown()
-        return line
+        return merged_line
 
     def cancel_order_line(self, order_id: int) -> None:
         line = self._find_order_line(order_id)
@@ -348,10 +358,17 @@ class ReviewEngine:
         self._sync_stats_max_drawdown()
 
     def trade_review_items(self) -> list[TradeReviewItem]:
-        if self._trade_review_dirty:
+        if self._trade_review_dirty or self._trade_review_cache_requires_rebuild():
             self._trade_review_items_cache = self._rebuild_trade_review_cache()
             self._trade_review_dirty = False
         return list(self._trade_review_items_cache)
+
+    def _trade_review_cache_requires_rebuild(self) -> bool:
+        if len(self._trade_review_items_cache) != len(self.trades):
+            return True
+        if self.trades and any(not item.entry_legs for item in self._trade_review_items_cache):
+            return True
+        return False
 
     def _rebuild_trade_review_cache(self) -> list[TradeReviewItem]:
         items: list[TradeReviewItem] = []
@@ -449,7 +466,7 @@ class ReviewEngine:
             remaining_quantity = max(position_quantity - close_quantity, 0.0)
             trade = self.trades[trade_index]
             trade_index += 1
-            consumed_legs = self._consume_trade_entry_legs(open_lots, close_quantity)
+            consumed_legs = list(trade.entry_legs) if trade.entry_legs else self._consume_trade_entry_legs(open_lots, close_quantity)
             first_leg = consumed_legs[0] if consumed_legs else None
             entry_bar_index = first_leg.bar_index if first_leg is not None else open_trade_started_bar_index
             entry_time = first_leg.timestamp if first_leg is not None else trade.entry_time
@@ -529,10 +546,13 @@ class ReviewEngine:
         quantity = max(action.quantity, 0.0)
         if action.action_type is ActionType.OPEN_LONG:
             self._open_position("long", quantity, price, action.timestamp)
+            self._append_fifo_entry_lot(action, price, quantity)
         elif action.action_type is ActionType.OPEN_SHORT:
             self._open_position("short", quantity, price, action.timestamp)
+            self._append_fifo_entry_lot(action, price, quantity)
         elif action.action_type is ActionType.ADD:
             self._add_position(quantity, price)
+            self._append_fifo_entry_lot(action, price, quantity)
         elif action.action_type is ActionType.REDUCE:
             self._close_position_partially(quantity, price, action.timestamp)
         elif action.action_type is ActionType.CLOSE:
@@ -545,6 +565,20 @@ class ReviewEngine:
             self._sync_position_from_lines()
         elif action.action_type is ActionType.NOTE and action.note:
             self.session.notes = f"{self.session.notes}\n{action.note}".strip()
+
+    def _append_fifo_entry_lot(self, action: SessionAction, price: float, quantity: float) -> None:
+        if quantity <= 0:
+            return
+        self._open_trade_lots.append(
+            TradeEntryLeg(
+                bar_index=action.bar_index,
+                timestamp=action.timestamp,
+                price=price,
+                quantity=quantity,
+                action_index=len(self.actions),
+                note=action.note,
+            )
+        )
 
     def _open_position(self, direction: str, quantity: float, price: float, timestamp) -> None:
         position = self.session.position
@@ -574,19 +608,45 @@ class ReviewEngine:
         if not position.is_open:
             return
         close_qty = min(quantity, position.quantity)
-        direction_sign = 1 if position.direction == "long" else -1
-        pnl = (price - position.average_price) * close_qty * direction_sign
+        self._close_position_partially_fifo(close_qty, price, timestamp)
+
+    def _close_position_partially_fifo(self, close_qty: float, price: float, timestamp) -> None:
+        position = self.session.position
+        if close_qty <= 0:
+            return
+        direction = position.direction or "flat"
+        direction_sign = 1 if direction == "long" else -1
+        entry_legs = self._consume_trade_entry_legs(self._open_trade_lots, close_qty)
+        matched_quantity = sum(float(leg.quantity) for leg in entry_legs)
+        if matched_quantity <= 0.0001:
+            entry_price = position.average_price
+            pnl = (price - entry_price) * close_qty * direction_sign
+            entry_legs = [
+                TradeEntryLeg(
+                    bar_index=self.session.current_index,
+                    timestamp=position.open_trade_started_at or timestamp,
+                    price=entry_price,
+                    quantity=close_qty,
+                    action_index=None,
+                    note="",
+                )
+            ]
+        else:
+            entry_price = sum(float(leg.price) * float(leg.quantity) for leg in entry_legs) / matched_quantity
+            pnl = sum((price - float(leg.price)) * float(leg.quantity) * direction_sign for leg in entry_legs)
         position.realized_pnl += pnl
-        trade = Trade(
-            entry_time=position.open_trade_started_at or timestamp,
-            exit_time=timestamp,
-            direction=position.direction or "flat",
-            quantity=close_qty,
-            entry_price=position.average_price,
-            exit_price=price,
-            pnl=pnl,
+        self.trades.append(
+            Trade(
+                entry_time=entry_legs[0].timestamp,
+                exit_time=timestamp,
+                direction=direction,
+                quantity=close_qty,
+                entry_price=entry_price,
+                exit_price=price,
+                pnl=pnl,
+                entry_legs=entry_legs,
+            )
         )
-        self.trades.append(trade)
         position.quantity -= close_qty
         if position.quantity <= 0:
             position.direction = None
@@ -595,7 +655,17 @@ class ReviewEngine:
             position.stop_loss = None
             position.take_profit = None
             position.open_trade_started_at = None
+            self._open_trade_lots = []
             self._remove_protective_lines()
+        else:
+            self._sync_fifo_position_average_price()
+
+    def _sync_fifo_position_average_price(self) -> None:
+        position = self.session.position
+        remaining_quantity = sum(float(lot.quantity) for lot in self._open_trade_lots)
+        if remaining_quantity <= 0.0001:
+            return
+        position.average_price = sum(float(lot.price) * float(lot.quantity) for lot in self._open_trade_lots) / remaining_quantity
 
     def _apply_protective_order_lines(self, index: int, bar: Bar) -> bool:
         position = self.session.position
@@ -884,6 +954,7 @@ class ReviewEngine:
                 trade_review_items_cache=deepcopy(self._trade_review_items_cache),
                 trade_review_dirty=self._trade_review_dirty,
                 stats_dirty=self._stats_dirty,
+                open_trade_lots=deepcopy(self._open_trade_lots),
             )
         )
 
@@ -916,7 +987,57 @@ class ReviewEngine:
             session_id=self.session.id,
         )
         self.order_lines.append(line)
-        return line
+        return self._merge_matching_order_lines(line)
+
+    def _merge_matching_order_lines(self, preferred_line: OrderLine) -> OrderLine:
+        if preferred_line.is_reference or not preferred_line.is_active:
+            return preferred_line
+        merge_key = self._order_line_merge_key(preferred_line)
+        matches = [
+            line
+            for line in self.order_lines
+            if line.is_active and not line.is_reference and self._order_line_merge_key(line) == merge_key
+        ]
+        if len(matches) <= 1:
+            return preferred_line
+        order_index = {id(line): index for index, line in enumerate(self.order_lines)}
+        winner = min(
+            matches,
+            key=lambda line: (
+                line.created_bar_index,
+                line.active_from_bar_index,
+                line.created_at,
+                order_index.get(id(line), 0),
+            ),
+        )
+        winner.quantity = sum(float(line.quantity) for line in matches)
+        winner.note = self._merge_order_line_notes(matches)
+        winner.created_bar_index = min(line.created_bar_index for line in matches)
+        winner.active_from_bar_index = min(line.active_from_bar_index for line in matches)
+        winner.created_at = min(line.created_at for line in matches)
+        for line in matches:
+            if line is winner:
+                continue
+            self._cancel_line(line)
+        return winner
+
+    def _order_line_merge_key(self, line: OrderLine) -> tuple[OrderLineType, float, str]:
+        tick_size = max(float(self.session.tick_size), 0.0001)
+        return (
+            line.order_type,
+            snap_price(float(line.price), tick_size),
+            line.chart_timeframe,
+        )
+
+    @staticmethod
+    def _merge_order_line_notes(lines: list[OrderLine]) -> str:
+        notes: list[str] = []
+        for line in lines:
+            for note in str(line.note or "").splitlines():
+                normalized = note.strip()
+                if normalized and normalized not in notes:
+                    notes.append(normalized)
+        return "\n".join(notes)
 
     def _remove_protective_lines(self) -> None:
         for line in self.order_lines:

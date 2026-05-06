@@ -1014,6 +1014,31 @@ def test_trade_review_item_with_multiple_entry_legs_renders_multiple_links(widge
     assert all(not line.startswith("入场备注") for link in widget._trade_links for line in link.detail_lines)
 
 
+def test_trade_review_item_legacy_fallback_updates_to_entry_leg_links(widget: ChartWidget) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_review_items([_review_item(3, quantity=2)])
+
+    assert [link.trade_number for link in widget._trade_links] == [3]
+
+    widget.set_trade_review_items(
+        [
+            _review_item(
+                3,
+                quantity=2,
+                entry_legs=[
+                    TradeEntryLeg(5, start + timedelta(minutes=5), 101.0, 1, 0, "首仓"),
+                    TradeEntryLeg(7, start + timedelta(minutes=7), 102.0, 1, 1, "加仓"),
+                ],
+            )
+        ]
+    )
+
+    assert [link.trade_number for link in widget._trade_links] == [3, 3]
+    assert [(link.x1, link.y1) for link in widget._trade_links] == [(5.0, 101.0), (7.0, 102.0)]
+
+
 def test_double_click_any_entry_leg_link_requests_same_trade_number(widget: ChartWidget, app: QApplication) -> None:
     start = datetime(2025, 1, 1, 9, 0)
     widget.resize(900, 600)

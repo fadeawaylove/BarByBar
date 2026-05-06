@@ -4058,6 +4058,22 @@ def test_place_order_line_saves_before_refreshing_chart(window: MainWindow, monk
     assert order_ids_seen_by_chart == [[1]]
 
 
+def test_place_order_line_merges_same_price_lines_before_chart_refresh(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    monkeypatch.setattr(window, "save_session", lambda **kwargs: None)
+
+    window._place_order_line_with_quantity(OrderLineType.ENTRY_LONG, 100.5, 1)
+    window._place_order_line_with_quantity(OrderLineType.ENTRY_LONG, 100.5, 2)
+
+    active_entry_lines = [
+        line for line in window.engine.active_order_lines if line.order_type is OrderLineType.ENTRY_LONG
+    ]
+
+    assert len(active_entry_lines) == 1
+    assert active_entry_lines[0].quantity == 3
+    assert [line.quantity for line in window.chart_widget._order_lines if line.order_type is OrderLineType.ENTRY_LONG] == [3]
+
+
 def test_busy_overlay_becomes_visible_when_window_is_shown(window: MainWindow, app: QApplication) -> None:
     window.show()
     window.show_busy_overlay("正在加载案例...", "正在读取数据并构建图表")

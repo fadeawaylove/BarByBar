@@ -106,6 +106,24 @@ def test_trade_review_items_include_fifo_entry_legs_for_adds() -> None:
     ]
 
 
+def test_fifo_lot_trade_uses_weighted_entry_price_and_lot_pnl() -> None:
+    bars = sample_bars()
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.step_forward()
+    engine.record_action(ActionType.ADD, quantity=1, price=104)
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=2, price=103)
+
+    trade = engine.trades[0]
+
+    assert trade.entry_price == 102
+    assert trade.pnl == 2
+    assert [(leg.price, leg.quantity) for leg in trade.entry_legs] == [(100, 1), (104, 1)]
+
+
 def test_trade_review_items_allocate_entry_legs_to_partial_exits_fifo() -> None:
     bars = sample_bars()
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
@@ -125,6 +143,90 @@ def test_trade_review_items_allocate_entry_legs_to_partial_exits_fifo() -> None:
     assert [(leg.bar_index, leg.price, leg.quantity, leg.note) for leg in second.entry_legs] == [(1, 101, 2, "加仓两手")]
     assert first.entry_action_index == 0
     assert second.entry_action_index == 1
+
+
+def test_fifo_lot_partial_exit_reprices_remaining_position_average() -> None:
+    bars = sample_bars()
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100)
+    engine.step_forward()
+    engine.record_action(ActionType.ADD, quantity=2, price=104)
+    engine.step_forward()
+    engine.record_action(ActionType.REDUCE, quantity=1, price=103)
+
+    assert engine.session.position.quantity == 2
+    assert engine.session.position.average_price == 104
+
+
+def test_trade_review_items_rebuild_legacy_cache_without_entry_legs() -> None:
+    bars = sample_bars()
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100, note="首仓")
+    engine.step_forward()
+    engine.record_action(ActionType.ADD, quantity=1, price=101, note="加仓")
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=2, price=103, note="平仓")
+    fresh_item = engine.trade_review_items()[0]
+    engine._trade_review_items_cache = [_legacy_review_item_without_entry_legs(fresh_item)]
+    engine._trade_review_dirty = False
+
+    rebuilt_item = engine.trade_review_items()[0]
+
+    assert [(leg.bar_index, leg.price, leg.quantity, leg.note) for leg in rebuilt_item.entry_legs] == [
+        (0, 100, 1, "首仓"),
+        (1, 101, 1, "加仓"),
+    ]
+
+
+def test_step_back_marks_legacy_trade_review_cache_dirty() -> None:
+    bars = sample_bars()
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100, note="首仓")
+    engine.step_forward()
+    engine.record_action(ActionType.ADD, quantity=1, price=101, note="加仓")
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=2, price=103, note="平仓")
+    fresh_item = engine.trade_review_items()[0]
+    engine._trade_review_items_cache = [_legacy_review_item_without_entry_legs(fresh_item)]
+    engine._trade_review_dirty = False
+
+    assert engine.step_forward() is True
+    assert engine.step_back() is True
+    rebuilt_item = engine.trade_review_items()[0]
+
+    assert [(leg.bar_index, leg.price, leg.quantity, leg.note) for leg in rebuilt_item.entry_legs] == [
+        (0, 100, 1, "首仓"),
+        (1, 101, 1, "加仓"),
+    ]
+
+
+def _legacy_review_item_without_entry_legs(item: TradeReviewItem) -> TradeReviewItem:
+    return TradeReviewItem(
+        trade_number=item.trade_number,
+        entry_time=item.entry_time,
+        exit_time=item.exit_time,
+        direction=item.direction,
+        quantity=item.quantity,
+        entry_price=item.entry_price,
+        exit_price=item.exit_price,
+        pnl=item.pnl,
+        entry_bar_index=item.entry_bar_index,
+        exit_bar_index=item.exit_bar_index,
+        holding_bars=item.holding_bars,
+        exit_reason=item.exit_reason,
+        is_manual=item.is_manual,
+        had_stop_protection=item.had_stop_protection,
+        had_adverse_add=item.had_adverse_add,
+        is_planned=item.is_planned,
+        entry_action_index=item.entry_action_index,
+        exit_action_index=item.exit_action_index,
+        entry_note=item.entry_note,
+        review_note=item.review_note,
+    )
 
 
 def test_step_back_restores_state() -> None:
@@ -195,6 +297,105 @@ def test_multiple_stop_loss_lines_can_coexist() -> None:
     assert [line.price for line in active_stop_lines] == [99, 97]
     assert engine.session.position.stop_loss == 99
     assert first is not second
+
+
+def test_same_price_take_profit_lines_merge_quantities() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=3, price=100)
+
+    first = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=1, note="第一笔止盈")
+    second = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=2, note="第二笔止盈")
+    active_take_profit_lines = [line for line in engine.active_order_lines if line.order_type is OrderLineType.TAKE_PROFIT]
+
+    assert first is second
+    assert active_take_profit_lines == [first]
+    assert first.quantity == 3
+    assert first.note == "第一笔止盈\n第二笔止盈"
+
+
+def test_same_price_order_lines_merge_by_order_type() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=3, price=100)
+    merge_cases = [
+        (OrderLineType.STOP_LOSS, 99),
+        (OrderLineType.ENTRY_LONG, 103),
+        (OrderLineType.ENTRY_SHORT, 98),
+        (OrderLineType.EXIT, 104),
+        (OrderLineType.REVERSE, 105),
+    ]
+
+    for order_type, price in merge_cases:
+        first = engine.place_order_line(order_type, price=price, quantity=1)
+        second = engine.place_order_line(order_type, price=price, quantity=2)
+        active_lines = [line for line in engine.active_order_lines if line.order_type is order_type and line.price == price]
+
+        assert first is second
+        assert active_lines == [first]
+        assert first.quantity == 3
+
+
+def test_same_price_different_order_types_do_not_merge() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+
+    stop = engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+    exit_line = engine.place_order_line(OrderLineType.EXIT, price=99, quantity=1)
+
+    assert stop is not exit_line
+    assert stop.is_active is True
+    assert exit_line.is_active is True
+    assert len([line for line in engine.active_order_lines if line.price == 99]) == 2
+
+
+def test_same_order_type_different_price_does_not_merge() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+
+    first = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=1)
+    second = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=103, quantity=2)
+
+    assert first is not second
+    assert [line.quantity for line in engine.active_order_lines if line.order_type is OrderLineType.TAKE_PROFIT] == [1, 2]
+
+
+def test_updating_order_line_price_merges_into_existing_same_price_line() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=3, price=100)
+    first = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=1, note="原目标")
+    second = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=103, quantity=2, note="移动目标")
+    first.id = 1
+    second.id = 2
+
+    merged = engine.update_order_line(second.id, 102)
+    active_take_profit_lines = [line for line in engine.active_order_lines if line.order_type is OrderLineType.TAKE_PROFIT]
+
+    assert merged is first
+    assert active_take_profit_lines == [first]
+    assert first.quantity == 3
+    assert first.note == "原目标\n移动目标"
+    assert second.is_active is False
+
+
+def test_updating_order_line_quantity_keeps_merged_total() -> None:
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, sample_bars())
+    engine.record_action(ActionType.OPEN_LONG, quantity=4, price=100)
+    line = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=1)
+    duplicate = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=103, quantity=1)
+    line.id = 1
+    duplicate.id = 2
+    engine.update_order_line(duplicate.id, 102)
+
+    merged = engine.update_order_line_quantity(line.id, 4)
+
+    assert merged is line
+    assert line.quantity == 4
+    assert [item for item in engine.active_order_lines if item.order_type is OrderLineType.TAKE_PROFIT] == [line]
 
 
 def test_nearest_long_stop_loss_triggers_first_when_multiple_lines_are_hit() -> None:
@@ -449,9 +650,9 @@ def test_multiple_take_profit_lines_trigger_on_same_bar_until_position_is_closed
 
     assert engine.session.position.is_open is False
     assert first.status.name == "TRIGGERED"
-    assert second.status.name == "TRIGGERED"
-    assert [trade.quantity for trade in engine.trades] == [1, 1]
-    assert [trade.exit_price for trade in engine.trades] == [102, 102]
+    assert second is first
+    assert [trade.quantity for trade in engine.trades] == [2]
+    assert [trade.exit_price for trade in engine.trades] == [102]
 
 
 def test_stop_loss_priority_does_not_mix_take_profit_lines_on_same_bar() -> None:

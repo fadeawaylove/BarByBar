@@ -314,6 +314,7 @@ class Trade:
     entry_price: float
     exit_price: float
     pnl: float
+    entry_legs: list[TradeEntryLeg] = field(default_factory=list)
 
 
 @dataclass(slots=True)
