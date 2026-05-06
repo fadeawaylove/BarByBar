@@ -3765,6 +3765,7 @@ class MainWindow(QMainWindow):
         self.chart_widget.set_window_data([], -1, 0, 0, timeframe="")
         self.chart_widget.set_drawings([])
         self.chart_widget.set_trade_actions([])
+        self.chart_widget.set_trade_review_items([])
         self.chart_widget.set_position_direction(None)
         self.chart_widget.set_trade_focus(None)
         self.chart_widget.set_active_drawing_tool(None)
@@ -4004,9 +4005,10 @@ class MainWindow(QMainWindow):
     def _update_ui_from_engine_deferred(self) -> None:
         if not self.engine:
             return
-        self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
-        self.chart_widget.refresh_cursor_dependent_overlays()
         self._trade_review_items = self.engine.trade_review_items()
+        self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
+        self.chart_widget.set_trade_review_items(self._trade_review_items)
+        self.chart_widget.refresh_cursor_dependent_overlays()
         self._trade_review_controller.refresh_selection(
             [item.trade_number for item in self._trade_review_items],
             [item.trade_number for item in self._trade_review_items],
@@ -4157,6 +4159,7 @@ class MainWindow(QMainWindow):
         self._selected_trade_number = trade_number
         self.save_session(trigger="trade_note")
         self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
+        self.chart_widget.set_trade_review_items(self._trade_review_items)
         self.chart_widget.refresh_cursor_dependent_overlays()
         if self._trade_history_dialog is not None:
             self._trade_history_dialog.refresh_items()

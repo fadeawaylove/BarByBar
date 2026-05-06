@@ -7,7 +7,7 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
 from barbybar.data.tick_size import format_price
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, TradeReviewItem
 from barbybar.performance_metrics import clear_metrics, recent_metrics
 from barbybar.ui.chart_widget import (
     AVERAGE_PRICE_LINE_COLOR,
@@ -52,6 +52,46 @@ def _bars(count: int = 240) -> list[Bar]:
             )
         )
     return bars
+
+
+def _review_item(
+    trade_number: int = 1,
+    *,
+    entry_bar_index: int = 5,
+    exit_bar_index: int = 8,
+    direction: str = "long",
+    quantity: float = 1,
+    entry_price: float = 101.0,
+    exit_price: float = 103.0,
+    pnl: float = 2.0,
+    entry_note: str = "",
+    review_note: str = "",
+    entry_action_index: int | None = 0,
+    exit_action_index: int | None = 1,
+) -> TradeReviewItem:
+    start = datetime(2025, 1, 1, 9, 0)
+    return TradeReviewItem(
+        trade_number=trade_number,
+        entry_time=start + timedelta(minutes=entry_bar_index),
+        exit_time=start + timedelta(minutes=exit_bar_index),
+        direction=direction,
+        quantity=quantity,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        pnl=pnl,
+        entry_bar_index=entry_bar_index,
+        exit_bar_index=exit_bar_index,
+        holding_bars=exit_bar_index - entry_bar_index,
+        exit_reason="manual_close",
+        is_manual=True,
+        had_stop_protection=False,
+        had_adverse_add=False,
+        is_planned=False,
+        entry_action_index=entry_action_index,
+        exit_action_index=exit_action_index,
+        entry_note=entry_note,
+        review_note=review_note,
+    )
 
 
 def _app() -> QApplication:
@@ -919,17 +959,27 @@ def test_trade_actions_render_marker_items(widget: ChartWidget) -> None:
 
     assert trade_items
     assert len(widget._trade_markers) == 2
-    assert len(widget._trade_links) == 1
+    assert len(widget._trade_links) == 0
     assert widget._trade_markers[0].role == "entry"
     assert widget._trade_markers[0].direction == "long"
     assert widget._trade_markers[0].symbol == "t1"
     assert widget._trade_markers[0].brush == TRADE_ENTRY_LONG_COLOR
     assert widget._trade_markers[0].size == pytest.approx(widget._scaled_trade_triangle_size())
     assert widget._trade_markers[1].role == "exit"
-    assert widget._trade_markers[1].outcome == "win"
+    assert widget._trade_markers[1].outcome == "pending"
     assert widget._trade_markers[1].symbol == "t"
     assert widget._trade_markers[1].brush == TRADE_ENTRY_SHORT_COLOR
     assert widget._trade_markers[1].size == pytest.approx(widget._scaled_trade_triangle_size())
+
+
+def test_trade_review_items_render_trade_links(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_review_items([_review_item()])
+    widget._apply_viewport()
+
+    assert len(widget._trade_links) == 1
+    assert widget._trade_links[0].trade_number == 1
     assert widget._trade_links[0].direction == "long"
     assert widget._trade_links[0].outcome == "win"
 
@@ -964,7 +1014,31 @@ def test_trade_exit_markers_are_limited_to_actual_trades(widget: ChartWidget) ->
 
     assert len(exit_markers) == 1
     assert exit_markers[0].action.bar_index == 8
-    assert len(widget._trade_links) == 1
+    assert len(widget._trade_links) == 0
+
+
+def test_trade_review_links_ignore_invalid_close_actions(widget: ChartWidget) -> None:
+    bars = _bars()
+    entry_time = bars[5].timestamp
+    duplicate_exit_time = bars[7].timestamp
+    actual_exit_time = bars[8].timestamp
+    widget.set_full_data(bars)
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, entry_time, price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 7, duplicate_exit_time, price=105.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 8, actual_exit_time, price=103.0, quantity=1),
+        ],
+        [Trade(entry_time, actual_exit_time, "long", 1, 101.0, 103.0, 2.0)],
+    )
+    widget.set_trade_review_items([_review_item(3, exit_bar_index=8, exit_price=103.0, pnl=2.0)])
+
+    exit_markers = [marker for marker in widget._trade_markers if marker.role == "exit"]
+
+    assert len(exit_markers) == 1
+    assert exit_markers[0].action.bar_index == 8
+    assert [link.trade_number for link in widget._trade_links] == [3]
     assert widget._trade_links[0].x2 == pytest.approx(8.0)
 
 
@@ -990,12 +1064,7 @@ def test_trade_link_hover_uses_open_hand_cursor(widget: ChartWidget, app: QAppli
     widget.show()
     widget.set_full_data(_bars())
     widget.set_cursor(20)
-    widget.set_trade_actions(
-        [
-            SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
-            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
-        ]
-    )
+    widget.set_trade_review_items([_review_item()])
     app.processEvents()
     link = widget._trade_links[0]
     scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
@@ -1024,12 +1093,7 @@ def test_trade_link_hover_includes_entry_and_review_notes(widget: ChartWidget, a
     widget.show()
     widget.set_full_data(_bars())
     widget.set_cursor(20)
-    widget.set_trade_actions(
-        [
-            SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1, note="突破确认"),
-            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1, note="按计划止盈"),
-        ]
-    )
+    widget.set_trade_review_items([_review_item(entry_note="突破确认", review_note="按计划止盈")])
     app.processEvents()
     link = widget._trade_links[0]
     scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
@@ -1045,12 +1109,7 @@ def test_double_click_trade_link_requests_note_editor(widget: ChartWidget, app: 
     widget.show()
     widget.set_full_data(_bars())
     widget.set_cursor(20)
-    widget.set_trade_actions(
-        [
-            SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
-            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
-        ]
-    )
+    widget.set_trade_review_items([_review_item()])
     app.processEvents()
     requested: list[int] = []
     widget.tradeLinkNoteRequested.connect(requested.append)
@@ -1070,17 +1129,12 @@ def test_trade_link_note_request_uses_global_trade_number_when_earlier_trades_ar
     bars = _bars()
     widget.set_full_data(bars)
     widget.set_cursor(210)
-    actions = [
-        SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
-        SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
-        SessionAction(ActionType.OPEN_LONG, 180, datetime(2025, 1, 1, 12, 0), price=104.0, quantity=1),
-        SessionAction(ActionType.CLOSE, 185, datetime(2025, 1, 1, 12, 5), price=106.0, quantity=1),
-    ]
-    trades = [
-        Trade(actions[0].timestamp, actions[1].timestamp, "long", 1, 101.0, 103.0, 2.0),
-        Trade(actions[2].timestamp, actions[3].timestamp, "long", 1, 104.0, 106.0, 2.0),
-    ]
-    widget.set_trade_actions(actions, trades)
+    widget.set_trade_review_items(
+        [
+            _review_item(1, entry_bar_index=5, exit_bar_index=8, entry_price=101.0, exit_price=103.0, pnl=2.0),
+            _review_item(2, entry_bar_index=180, exit_bar_index=185, entry_price=104.0, exit_price=106.0, pnl=2.0),
+        ]
+    )
     app.processEvents()
     requested: list[int] = []
     widget.tradeLinkNoteRequested.connect(requested.append)
@@ -1094,6 +1148,33 @@ def test_trade_link_note_request_uses_global_trade_number_when_earlier_trades_ar
     assert requested == [2]
 
 
+def test_same_bar_same_price_split_exits_keep_distinct_trade_link_notes(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_review_items(
+        [
+            _review_item(1, quantity=1, entry_note="三手开仓计划", review_note="第一笔一手止盈"),
+            _review_item(2, quantity=2, pnl=4.0, entry_note="三手开仓计划", review_note="第二笔两手止盈"),
+        ]
+    )
+    app.processEvents()
+    requested: list[int] = []
+    widget.tradeLinkNoteRequested.connect(requested.append)
+
+    assert [link.trade_number for link in widget._trade_links] == [1, 2]
+    assert "复盘总结 第一笔一手止盈" in widget._trade_links[0].detail_lines
+    assert "复盘总结 第二笔两手止盈" in widget._trade_links[1].detail_lines
+
+    for link in widget._trade_links:
+        scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
+        event = _FakeSceneClick(scene_pos, double=True)
+        widget._handle_scene_click(event)
+
+    assert requested == [1, 2]
+
+
 def test_short_trade_link_uses_loss_color(widget: ChartWidget) -> None:
     widget.set_full_data(_bars())
     widget.set_cursor(20)
@@ -1103,6 +1184,7 @@ def test_short_trade_link_uses_loss_color(widget: ChartWidget) -> None:
             SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
         ]
     )
+    widget.set_trade_review_items([_review_item(direction="short", entry_price=101.0, exit_price=103.0, pnl=-2.0)])
     widget._apply_viewport()
 
     assert widget._trade_markers[0].symbol == "t"
@@ -1163,6 +1245,7 @@ def test_flat_trade_exit_marker_and_link_use_neutral_color(widget: ChartWidget) 
             SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=101.0, quantity=1),
         ]
     )
+    widget.set_trade_review_items([_review_item(exit_price=101.0, pnl=0.0)])
 
     assert widget._trade_markers[1].outcome == "flat"
     assert widget._trade_markers[1].symbol == "t"
@@ -1182,6 +1265,7 @@ def test_trade_link_highlight_preserves_original_color(widget: ChartWidget, app:
             SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
         ]
     )
+    widget.set_trade_review_items([_review_item()])
     app.processEvents()
     link = widget._trade_links[0]
     scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))

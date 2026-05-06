@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QGraphicsPathItem, QLabel, Q
 
 from barbybar.data.tick_size import format_average_price, format_price
 from barbybar.data.timeframe import DAY_TIMEFRAME, normalize_timeframe, timeframe_to_minutes
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, normalize_drawing_style
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, TradeReviewItem, normalize_drawing_style
 from barbybar.performance_metrics import record_metric
 from barbybar.ui.theme import AppTheme
 
@@ -436,6 +436,7 @@ class ChartWidget(QWidget):
         self._order_line_labels: dict[int, pg.TextItem] = {}
         self._trade_actions: list[SessionAction] = []
         self._trades: list[Trade] | None = None
+        self._trade_review_items: list[TradeReviewItem] = []
         self._trade_links: list[TradeLink] = []
         self._trade_markers: list[TradeMarker] = []
         self._trade_markers_visible = True
@@ -498,6 +499,7 @@ class ChartWidget(QWidget):
         self._hover_card_content_cache: tuple[str, ...] | None = None
         self._order_lines_signature: tuple[object, ...] | None = None
         self._trade_actions_signature: tuple[object, ...] | None = None
+        self._trade_review_items_signature: tuple[object, ...] | None = None
         self._last_prepared_overlay_signature: tuple[object, ...] | None = None
         self._last_applied_overlay_signature: tuple[object, ...] | None = None
         self._y_range_cache_signature: tuple[object, ...] | None = None
@@ -841,6 +843,21 @@ class ChartWidget(QWidget):
             self._rebuild_trade_geometry(trades)
             self._rebuild_trade_marker_items()
 
+    def set_trade_review_items(self, items: list[TradeReviewItem]) -> None:
+        signature = self._trade_review_items_signature_for(items)
+        if signature == self._trade_review_items_signature:
+            return
+        self._trade_review_items = list(items)
+        self._trade_review_items_signature = signature
+        self._trade_geometry_dirty = True
+        self._trade_marker_items_dirty = True
+        self._mark_chart_layers_dirty(ChartLayer.TRADE_GEOMETRY, ChartLayer.TRADE_MARKERS)
+        if self._interactive_viewport:
+            self._schedule_deferred_overlay_refresh()
+        else:
+            self._rebuild_trade_geometry(self._trades)
+            self._rebuild_trade_marker_items()
+
     def set_trade_focus(self, trade_number: int | None, points: tuple[int, float, int, float] | None = None) -> None:
         # Historical trade navigation no longer adds a persistent highlight overlay.
         self._focused_trade_number = None
@@ -1116,6 +1133,34 @@ class ChartWidget(QWidget):
                 for trade in trades
             )
         return action_signature, trade_signature
+
+    @staticmethod
+    def _trade_review_items_signature_for(items: list[TradeReviewItem]) -> tuple[object, ...]:
+        return tuple(
+            (
+                item.trade_number,
+                item.entry_time.isoformat(),
+                item.exit_time.isoformat(),
+                item.direction,
+                round(float(item.quantity), 8),
+                round(float(item.entry_price), 8),
+                round(float(item.exit_price), 8),
+                round(float(item.pnl), 8),
+                item.entry_bar_index,
+                item.exit_bar_index,
+                item.holding_bars,
+                item.exit_reason,
+                item.is_manual,
+                item.had_stop_protection,
+                item.had_adverse_add,
+                item.is_planned,
+                item.entry_action_index,
+                item.exit_action_index,
+                item.entry_note,
+                item.review_note,
+            )
+            for item in items
+        )
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
@@ -1793,6 +1838,7 @@ class ChartWidget(QWidget):
             self._trade_links_visible,
             self._order_lines_signature,
             self._trade_actions_signature,
+            self._trade_review_items_signature,
         )
 
     def _visible_x_window(self) -> tuple[float, float]:
@@ -2803,13 +2849,18 @@ class ChartWidget(QWidget):
         if not (x_bounds[0] <= view_x <= x_bounds[1]):
             return None
         if self._trade_markers_visible:
+            nearest_marker: tuple[float, TradeMarker] | None = None
             for marker in self._trade_markers:
                 if not (x_bounds[0] <= marker.x <= x_bounds[1]):
                     continue
                 marker_scene = self.price_plot.vb.mapViewToScene(QPointF(marker.x, marker.y))
-                if hypot(float(scene_pos.x()) - float(marker_scene.x()), float(scene_pos.y()) - float(marker_scene.y())) <= TRADE_MARKER_HIT_DISTANCE_PX:
-                    return marker, None
+                distance = hypot(float(scene_pos.x()) - float(marker_scene.x()), float(scene_pos.y()) - float(marker_scene.y()))
+                if distance <= TRADE_MARKER_HIT_DISTANCE_PX and (nearest_marker is None or distance < nearest_marker[0]):
+                    nearest_marker = (distance, marker)
+            if nearest_marker is not None:
+                return nearest_marker[1], None
         if self._trade_links_visible:
+            nearest_link: tuple[float, TradeLink] | None = None
             for link in self._trade_links:
                 if not self._x_range_intersects(min(link.x1, link.x2), max(link.x1, link.x2), x_bounds):
                     continue
@@ -2823,8 +2874,10 @@ class ChartWidget(QWidget):
                     float(end.x()),
                     float(end.y()),
                 )
-                if distance <= TRADE_MARKER_HIT_DISTANCE_PX:
-                    return None, link
+                if distance <= TRADE_MARKER_HIT_DISTANCE_PX and (nearest_link is None or distance < nearest_link[0]):
+                    nearest_link = (distance, link)
+            if nearest_link is not None:
+                return None, nearest_link[1]
         return None
 
     def _order_line_style(self, line: OrderLine, *, highlighted: bool = False) -> tuple[pg.QtGui.QPen, str, bool]:
@@ -3736,17 +3789,11 @@ class ChartWidget(QWidget):
         offset_unit = y_span * 0.018
         marker_offsets: dict[int, int] = {}
         markers: list[TradeMarker] = []
-        marker_actions: list[SessionAction] = []
         active_direction = "flat"
-        matched_trades: set[int] = set()
-        trade_numbers_by_action_id: dict[int, int] = {}
+        trade_exit_action_ids = self._valid_trade_exit_action_ids(trades)
         for action in visible_actions:
-            if trades is not None and action.action_type in {ActionType.CLOSE, ActionType.REDUCE}:
-                trade_index = self._matching_trade_exit_index(action, trades, matched_trades)
-                if trade_index is None:
-                    continue
-                matched_trades.add(trade_index)
-                trade_numbers_by_action_id[id(action)] = trade_index + 1
+            if trades is not None and action.action_type in {ActionType.CLOSE, ActionType.REDUCE} and id(action) not in trade_exit_action_ids:
+                continue
             local_index = action.bar_index - self._global_start_index
             if not (0 <= local_index < len(self._bars)):
                 continue
@@ -3774,9 +3821,9 @@ class ChartWidget(QWidget):
                     detail_lines=[],
                 )
             )
-            marker_actions.append(action)
             active_direction = self._next_trade_direction(action, active_direction)
-        links = self._trade_link_segments(marker_actions, markers, trade_numbers_by_action_id)
+        links = self._trade_links_from_review_items()
+        self._apply_trade_review_outcomes_to_markers(markers)
         for marker in markers:
             marker.symbol, marker.brush, marker.size = self._trade_marker_visual(marker.role, marker.direction, marker.outcome)
             marker.detail_lines = self._trade_action_detail_lines(marker)
@@ -3785,22 +3832,33 @@ class ChartWidget(QWidget):
         self._trade_geometry_dirty = False
         self._clear_chart_layers_dirty(ChartLayer.TRADE_GEOMETRY)
 
-    @staticmethod
-    def _matching_trade_exit_index(action: SessionAction, trades: list[Trade], matched_indices: set[int]) -> int | None:
-        action_price = action.price
-        if action_price is None:
-            return None
-        for index, trade in enumerate(trades):
-            if index in matched_indices:
+    def _valid_trade_exit_action_ids(self, trades: list[Trade] | None = None) -> set[int]:
+        exit_actions = [
+            action
+            for action in self._trade_actions
+            if action.action_type in {ActionType.CLOSE, ActionType.REDUCE} and action.price is not None
+        ]
+        if trades is None:
+            return {id(action) for action in exit_actions}
+        used_action_ids: set[int] = set()
+        for trade in trades:
+            candidates = [
+                action
+                for action in exit_actions
+                if id(action) not in used_action_ids
+                and action.timestamp == trade.exit_time
+                and abs(float(action.price or 0.0) - float(trade.exit_price)) <= 0.0001
+            ]
+            if not candidates:
                 continue
-            if trade.exit_time != action.timestamp:
-                continue
-            if abs(float(trade.exit_price) - float(action_price)) > 0.0001:
-                continue
-            if abs(float(trade.quantity) - float(action.quantity)) > 0.0001:
-                continue
-            return index
-        return None
+            exact_quantity = [
+                action
+                for action in candidates
+                if abs(float(action.quantity) - float(trade.quantity)) <= 0.0001
+            ]
+            action = exact_quantity[0] if exact_quantity else candidates[0]
+            used_action_ids.add(id(action))
+        return used_action_ids
 
     @staticmethod
     def _trade_marker_role(action: SessionAction, active_direction: str) -> tuple[str, str]:
@@ -3924,110 +3982,82 @@ class ChartWidget(QWidget):
             "自动触发" if action.extra.get("auto") else "手动成交",
         ]
 
-    def _trade_link_segments(
-        self,
-        actions: list[SessionAction],
-        markers: list[TradeMarker],
-        trade_numbers_by_action_id: dict[int, int] | None = None,
-    ) -> list[TradeLink]:
-        marker_lookup: dict[tuple[int, ActionType, float], list[TradeMarker]] = {}
-        for marker in markers:
-            marker_lookup.setdefault((marker.action.bar_index, marker.action.action_type, float(marker.action.quantity)), []).append(marker)
-        open_lots: list[dict[str, object]] = []
+    def _trade_links_from_review_items(self) -> list[TradeLink]:
+        if not self._trade_review_items:
+            return []
+        visible_start, visible_stop = self._overlay_visible_index_bounds()
+        x_bounds = (float(visible_start) - 2.0, float(visible_stop) + 2.0)
         links: list[TradeLink] = []
-        for action in actions:
-            price = float(action.price or 0.0)
-            if action.action_type is ActionType.OPEN_LONG:
-                open_lots.append(
-                    {
-                        "direction": "long",
-                        "quantity": float(action.quantity),
-                        "bar_index": action.bar_index,
-                        "price": price,
-                        "timestamp": action.timestamp,
-                        "note": action.note,
-                    }
+        entry_stacks: dict[tuple[int, float], int] = {}
+        exit_stacks: dict[tuple[int, float], int] = {}
+        for item in self._trade_review_items:
+            if item.entry_bar_index > self._cursor or item.exit_bar_index > self._cursor:
+                continue
+            left = min(item.entry_bar_index, item.exit_bar_index)
+            right = max(item.entry_bar_index, item.exit_bar_index)
+            if not self._x_range_intersects(float(left), float(right), x_bounds):
+                continue
+            direction = item.direction if item.direction in {"long", "short"} else "long"
+            outcome = self._trade_outcome_from_pnl(float(item.pnl))
+            qty_text = int(item.quantity) if float(item.quantity).is_integer() else round(float(item.quantity), 2)
+            entry_note = item.entry_note.strip() or "未记录"
+            review_note = item.review_note.strip() or "未记录"
+            x1 = self._trade_review_endpoint_x(item.entry_bar_index, item.entry_price, entry_stacks)
+            x2 = self._trade_review_endpoint_x(item.exit_bar_index, item.exit_price, exit_stacks)
+            links.append(
+                TradeLink(
+                    trade_number=item.trade_number,
+                    direction=direction,
+                    outcome=outcome,
+                    x1=x1,
+                    y1=float(item.entry_price),
+                    x2=x2,
+                    y2=float(item.exit_price),
+                    pnl=float(item.pnl),
+                    detail_lines=[
+                        f"{'多单' if direction == 'long' else '空单'}{'盈利' if outcome == 'win' else '亏损' if outcome == 'loss' else '保本'} | {item.entry_time:%Y-%m-%d %H:%M} -> {item.exit_time:%Y-%m-%d %H:%M}",
+                        f"开 {format_price(float(item.entry_price), self._tick_size)} -> 平 {format_price(float(item.exit_price), self._tick_size)}",
+                        f"手数 {qty_text}",
+                        f"PnL {float(item.pnl):+.2f}",
+                        f"开仓想法 {entry_note}",
+                        f"复盘总结 {review_note}",
+                    ],
                 )
-                continue
-            if action.action_type is ActionType.OPEN_SHORT:
-                open_lots.append(
-                    {
-                        "direction": "short",
-                        "quantity": float(action.quantity),
-                        "bar_index": action.bar_index,
-                        "price": price,
-                        "timestamp": action.timestamp,
-                        "note": action.note,
-                    }
-                )
-                continue
-            if action.action_type is ActionType.ADD and open_lots:
-                direction = str(open_lots[-1]["direction"])
-                open_lots.append(
-                    {
-                        "direction": direction,
-                        "quantity": float(action.quantity),
-                        "bar_index": action.bar_index,
-                        "price": price,
-                        "timestamp": action.timestamp,
-                        "note": action.note,
-                    }
-                )
-                continue
-            if action.action_type not in {ActionType.CLOSE, ActionType.REDUCE}:
-                continue
-            remaining = float(action.quantity)
-            while remaining > 0 and open_lots:
-                lot = open_lots[0]
-                matched_qty = min(remaining, float(lot["quantity"]))
-                remaining -= matched_qty
-                lot["quantity"] = float(lot["quantity"]) - matched_qty
-                direction = str(lot["direction"])
-                entry_price = float(lot["price"])
-                pnl = (price - entry_price) * matched_qty * (1 if direction == "long" else -1)
-                outcome = self._trade_outcome_from_pnl(pnl)
-                entry_marker = self._find_trade_marker(markers, int(lot["bar_index"]), entry_price)
-                exit_marker = self._find_trade_marker(markers, action.bar_index, price, preferred_action=action.action_type)
-                if entry_marker is not None and exit_marker is not None:
-                    exit_marker.direction = direction
-                    exit_marker.outcome = self._merge_trade_outcome(exit_marker.outcome, outcome)
-                    qty_text = int(matched_qty) if float(matched_qty).is_integer() else round(matched_qty, 2)
-                    pnl_text = f"{pnl:+.2f}"
-                    entry_note = str(lot.get("note") or "").strip() or "未记录"
-                    review_note = action.note.strip() or "未记录"
-                    links.append(
-                        TradeLink(
-                            trade_number=(trade_numbers_by_action_id or {}).get(id(action), len(links) + 1),
-                            direction=direction,
-                            outcome=outcome,
-                            x1=entry_marker.x,
-                            y1=entry_marker.y,
-                            x2=exit_marker.x,
-                            y2=exit_marker.y,
-                            pnl=pnl,
-                            detail_lines=[
-                                f"{'多单' if direction == 'long' else '空单'}{'盈利' if outcome == 'win' else '亏损' if outcome == 'loss' else '保本'} | {lot['timestamp']:%Y-%m-%d %H:%M} -> {action.timestamp:%Y-%m-%d %H:%M}",
-                                f"开 {format_price(entry_price, self._tick_size)} -> 平 {format_price(price, self._tick_size)}",
-                                f"手数 {qty_text}",
-                                f"PnL {pnl_text}",
-                                f"开仓想法 {entry_note}",
-                                f"复盘总结 {review_note}",
-                            ],
-                        )
-                    )
-                if float(lot["quantity"]) <= 0.0001:
-                    open_lots.pop(0)
+            )
         return links
 
     @staticmethod
-    def _find_trade_marker(markers: list[TradeMarker], bar_index: int, price: float, preferred_action: ActionType | None = None) -> TradeMarker | None:
-        candidates = [
-            marker for marker in markers
-            if marker.action.bar_index == bar_index and (preferred_action is None or marker.action.action_type is preferred_action)
-        ]
-        if not candidates:
-            return None
-        return min(candidates, key=lambda item: abs(float(item.action.price or 0.0) - price))
+    def _trade_review_endpoint_x(bar_index: int, price: float, stacks: dict[tuple[int, float], int]) -> float:
+        key = (bar_index, round(float(price), 8))
+        stack = stacks.get(key, 0)
+        stacks[key] = stack + 1
+        if stack == 0:
+            return float(bar_index)
+        direction = -1.0 if stack % 2 else 1.0
+        magnitude = 0.12 * ((stack + 1) // 2)
+        return float(bar_index) + direction * magnitude
+
+    def _apply_trade_review_outcomes_to_markers(self, markers: list[TradeMarker]) -> None:
+        action_indices_by_id = {id(action): index for index, action in enumerate(self._trade_actions)}
+        markers_by_action_index = {
+            index: marker
+            for marker in markers
+            if (index := action_indices_by_id.get(id(marker.action))) is not None
+        }
+        for item in self._trade_review_items:
+            outcome = self._trade_outcome_from_pnl(float(item.pnl))
+            if item.entry_action_index is not None:
+                entry_marker = markers_by_action_index.get(item.entry_action_index)
+                if entry_marker is not None:
+                    entry_marker.trade_number = item.trade_number
+                    entry_marker.direction = item.direction if item.direction in {"long", "short"} else entry_marker.direction
+                    entry_marker.outcome = self._merge_trade_outcome(entry_marker.outcome, outcome)
+            if item.exit_action_index is not None:
+                exit_marker = markers_by_action_index.get(item.exit_action_index)
+                if exit_marker is not None:
+                    exit_marker.trade_number = item.trade_number
+                    exit_marker.direction = item.direction if item.direction in {"long", "short"} else exit_marker.direction
+                    exit_marker.outcome = self._merge_trade_outcome(exit_marker.outcome, outcome)
 
     def _parallel_channel_segments(
         self,

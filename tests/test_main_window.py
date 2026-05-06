@@ -3519,12 +3519,18 @@ def test_trade_link_note_dialog_loads_and_saves_entry_and_review_notes(window: M
     window._update_ui_from_engine()
     save_triggers: list[str] = []
     trade_action_refreshes: list[list[str]] = []
+    review_item_refreshes: list[list[tuple[int, str, str]]] = []
     monkeypatch.setattr(window, "save_session", lambda *, trigger="manual": save_triggers.append(trigger))
 
     def fake_set_trade_actions(actions, trades=None):  # noqa: ANN001
         trade_action_refreshes.append([action.note for action in actions])
 
     monkeypatch.setattr(window.chart_widget, "set_trade_actions", fake_set_trade_actions)
+    monkeypatch.setattr(
+        window.chart_widget,
+        "set_trade_review_items",
+        lambda items: review_item_refreshes.append([(item.trade_number, item.entry_note, item.review_note) for item in items]),
+    )
 
     captured: dict[str, str] = {}
 
@@ -3545,6 +3551,24 @@ def test_trade_link_note_dialog_loads_and_saves_entry_and_review_notes(window: M
     assert save_triggers == ["trade_note"]
     assert window._selected_trade_number == 1
     assert trade_action_refreshes[-1] == ["双击连线补充开仓计划", "双击连线补充复盘心得"]
+    assert review_item_refreshes[-1] == [(1, "双击连线补充开仓计划", "双击连线补充复盘心得")]
+
+
+def test_update_ui_passes_trade_review_items_to_chart(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=125.5, note="开仓计划")
+    window.engine.step_forward()
+    window.engine.record_action(ActionType.CLOSE, quantity=1, price=126.5, note="复盘总结")
+    captured: list[list[tuple[int, str, str]]] = []
+    monkeypatch.setattr(
+        window.chart_widget,
+        "set_trade_review_items",
+        lambda items: captured.append([(item.trade_number, item.entry_note, item.review_note) for item in items]),
+    )
+
+    window._update_ui_from_engine()
+
+    assert captured[-1] == [(1, "开仓计划", "复盘总结")]
 
 
 def test_trade_link_note_dialog_cancel_keeps_notes_unchanged(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
