@@ -393,6 +393,46 @@ def test_take_profit_line_can_partially_close_position() -> None:
     assert engine.trades[-1].exit_price == 102
 
 
+def test_multiple_take_profit_lines_trigger_on_same_bar_until_position_is_closed() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=101, high=103, low=100, close=102, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+    first = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=1)
+    second = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=2)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is False
+    assert first.status.name == "TRIGGERED"
+    assert second.status.name == "TRIGGERED"
+    assert [trade.quantity for trade in engine.trades] == [1, 1]
+    assert [trade.exit_price for trade in engine.trades] == [102, 102]
+
+
+def test_stop_loss_priority_does_not_mix_take_profit_lines_on_same_bar() -> None:
+    bars = [
+        Bar(timestamp=datetime(2025, 1, 1, 9, 0), open=100, high=101, low=99, close=100, volume=1),
+        Bar(timestamp=datetime(2025, 1, 1, 9, 1), open=100, high=103, low=98, close=101, volume=1),
+    ]
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+    engine.record_action(ActionType.OPEN_LONG, quantity=2, price=100)
+    stop = engine.place_order_line(OrderLineType.STOP_LOSS, price=99, quantity=1)
+    take = engine.place_order_line(OrderLineType.TAKE_PROFIT, price=102, quantity=1)
+
+    engine.step_forward()
+
+    assert engine.session.position.is_open is True
+    assert engine.session.position.quantity == 1
+    assert stop.status.name == "TRIGGERED"
+    assert take.is_active is True
+    assert engine.trades[-1].exit_price == 99
+
+
 def test_partial_protective_trigger_keeps_remaining_protective_lines() -> None:
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
     engine = ReviewEngine(session, sample_bars())

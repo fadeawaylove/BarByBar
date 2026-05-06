@@ -549,7 +549,6 @@ class ReviewEngine:
         stop_line = self._select_triggered_protective_line(OrderLineType.STOP_LOSS, index, bar)
         take_line = self._select_triggered_protective_line(OrderLineType.TAKE_PROFIT, index, bar)
         hit_line: OrderLine | None = None
-        fill_price: float | None = None
         if position.direction == "long":
             if stop_line:
                 hit_line = stop_line
@@ -563,31 +562,39 @@ class ReviewEngine:
         if hit_line is None:
             self._update_drawdown(bar.close)
             return False
-        fill_price = self._resolve_order_fill_price(hit_line, index, bar)
-        if fill_price is None:
-            self._update_drawdown(bar.close)
-            return False
-        self._trigger_line(hit_line, index, bar.timestamp)
-        close_quantity = min(hit_line.quantity, position.quantity)
-        auto_action = SessionAction(
-            action_type=ActionType.CLOSE if close_quantity >= position.quantity else ActionType.REDUCE,
-            bar_index=index,
-            timestamp=bar.timestamp,
-            price=fill_price,
-            quantity=close_quantity,
-            note=f"Auto close by {hit_line.order_type.value}",
-            extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
-            chart_timeframe=self.session.chart_timeframe,
-            session_id=self.session.id,
-        )
-        self._apply_action(auto_action)
-        self.actions.append(auto_action)
-        if self.session.position.is_open:
-            self._sync_position_from_lines()
-        else:
-            self._remove_protective_lines()
-        self._update_drawdown(fill_price)
-        return True
+        triggered = False
+        last_fill_price = bar.close
+        order_type = hit_line.order_type
+        while self.session.position.is_open:
+            hit_line = self._select_triggered_protective_line(order_type, index, bar)
+            if hit_line is None:
+                break
+            fill_price = self._resolve_order_fill_price(hit_line, index, bar)
+            if fill_price is None:
+                break
+            self._trigger_line(hit_line, index, bar.timestamp)
+            close_quantity = min(hit_line.quantity, self.session.position.quantity)
+            auto_action = SessionAction(
+                action_type=ActionType.CLOSE if close_quantity >= self.session.position.quantity else ActionType.REDUCE,
+                bar_index=index,
+                timestamp=bar.timestamp,
+                price=fill_price,
+                quantity=close_quantity,
+                note=f"Auto close by {hit_line.order_type.value}",
+                extra={"auto": True, "triggered_order_id": hit_line.id, "order_type": hit_line.order_type.value},
+                chart_timeframe=self.session.chart_timeframe,
+                session_id=self.session.id,
+            )
+            self._apply_action(auto_action)
+            self.actions.append(auto_action)
+            triggered = True
+            last_fill_price = fill_price
+            if self.session.position.is_open:
+                self._sync_position_from_lines()
+            else:
+                self._remove_protective_lines()
+        self._update_drawdown(last_fill_price)
+        return triggered
 
     def _apply_entry_order_lines(self, index: int, bar: Bar) -> bool:
         entry_lines = [
