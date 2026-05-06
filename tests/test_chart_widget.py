@@ -7,7 +7,7 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
 from barbybar.data.tick_size import format_price
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, TradeReviewItem
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, TradeEntryLeg, TradeReviewItem
 from barbybar.performance_metrics import clear_metrics, recent_metrics
 from barbybar.ui.chart_widget import (
     AVERAGE_PRICE_LINE_COLOR,
@@ -68,6 +68,7 @@ def _review_item(
     review_note: str = "",
     entry_action_index: int | None = 0,
     exit_action_index: int | None = 1,
+    entry_legs: list[TradeEntryLeg] | None = None,
 ) -> TradeReviewItem:
     start = datetime(2025, 1, 1, 9, 0)
     return TradeReviewItem(
@@ -91,6 +92,7 @@ def _review_item(
         exit_action_index=exit_action_index,
         entry_note=entry_note,
         review_note=review_note,
+        entry_legs=entry_legs or [],
     )
 
 
@@ -984,6 +986,85 @@ def test_trade_review_items_render_trade_links(widget: ChartWidget) -> None:
     assert widget._trade_links[0].outcome == "win"
 
 
+def test_trade_review_item_with_multiple_entry_legs_renders_multiple_links(widget: ChartWidget) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_review_items(
+        [
+            _review_item(
+                9,
+                quantity=2,
+                entry_note="首仓计划",
+                review_note="整体出场复盘",
+                entry_legs=[
+                    TradeEntryLeg(5, start + timedelta(minutes=5), 101.0, 1, 0, "首仓计划"),
+                    TradeEntryLeg(7, start + timedelta(minutes=7), 102.0, 1, 1, "加仓确认"),
+                ],
+            )
+        ]
+    )
+
+    assert [link.trade_number for link in widget._trade_links] == [9, 9]
+    assert [(link.x1, link.y1) for link in widget._trade_links] == [(5.0, 101.0), (7.0, 102.0)]
+    assert all(link.y2 == pytest.approx(103.0) for link in widget._trade_links)
+    assert widget._trade_links[0].x2 != widget._trade_links[1].x2
+    assert "开仓想法 首仓计划" in widget._trade_links[0].detail_lines
+    assert "开仓想法 首仓计划" in widget._trade_links[1].detail_lines
+    assert all(not line.startswith("入场备注") for link in widget._trade_links for line in link.detail_lines)
+
+
+def test_double_click_any_entry_leg_link_requests_same_trade_number(widget: ChartWidget, app: QApplication) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_review_items(
+        [
+            _review_item(
+                4,
+                quantity=2,
+                entry_legs=[
+                    TradeEntryLeg(5, start + timedelta(minutes=5), 101.0, 1, 0, "首仓"),
+                    TradeEntryLeg(7, start + timedelta(minutes=7), 102.0, 1, 1, "加仓"),
+                ],
+            )
+        ]
+    )
+    app.processEvents()
+    requested: list[int] = []
+    widget.tradeLinkNoteRequested.connect(requested.append)
+
+    for link in widget._trade_links:
+        scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
+        widget._handle_scene_click(_FakeSceneClick(scene_pos, double=True))
+
+    assert requested == [4, 4]
+
+
+def test_same_bar_same_price_entry_legs_are_staggered(widget: ChartWidget) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_review_items(
+        [
+            _review_item(
+                5,
+                quantity=2,
+                entry_legs=[
+                    TradeEntryLeg(5, start + timedelta(minutes=5), 101.0, 1, 0, "第一手"),
+                    TradeEntryLeg(5, start + timedelta(minutes=5), 101.0, 1, 1, "第二手"),
+                ],
+            )
+        ]
+    )
+
+    assert len(widget._trade_links) == 2
+    assert widget._trade_links[0].x1 != widget._trade_links[1].x1
+    assert widget._trade_links[0].trade_number == widget._trade_links[1].trade_number == 5
+
+
 def test_trade_exit_markers_are_limited_to_actual_trades(widget: ChartWidget) -> None:
     bars = _bars()
     entry_time = bars[5].timestamp
@@ -1100,8 +1181,19 @@ def test_trade_link_hover_includes_entry_and_review_notes(widget: ChartWidget, a
 
     widget._handle_mouse_moved((scene_pos,))
 
-    assert "开仓想法 突破确认" in widget._hover_close_label.text()
-    assert "复盘总结 按计划止盈" in widget._hover_range_label.text()
+    hover_text = "\n".join(
+        [
+            widget._hover_time_label.text(),
+            widget._hover_open_label.text(),
+            widget._hover_high_label.text(),
+            widget._hover_low_label.text(),
+            widget._hover_close_label.text(),
+            widget._hover_range_label.text(),
+        ]
+    )
+    assert "开仓想法 突破确认" in hover_text
+    assert "复盘总结 按计划止盈" in hover_text
+    assert "入场备注" not in hover_text
 
 
 def test_double_click_trade_link_requests_note_editor(widget: ChartWidget, app: QApplication) -> None:
@@ -1306,7 +1398,7 @@ def test_trade_marker_alpha_can_be_configured(widget: ChartWidget) -> None:
     assert focused.alphaF() == pytest.approx(0.75, abs=0.01)
 
 
-def test_multiple_trade_actions_same_bar_are_staggered(widget: ChartWidget) -> None:
+def test_multiple_trade_actions_same_bar_keep_true_bar_x(widget: ChartWidget) -> None:
     widget.set_full_data(_bars())
     widget.set_cursor(20)
     widget.set_trade_actions(
@@ -1317,7 +1409,8 @@ def test_multiple_trade_actions_same_bar_are_staggered(widget: ChartWidget) -> N
     )
 
     assert len(widget._trade_markers) == 2
-    assert widget._trade_markers[0].x != widget._trade_markers[1].x
+    assert widget._trade_markers[0].x == pytest.approx(5.0)
+    assert widget._trade_markers[1].x == pytest.approx(5.0)
     assert widget._trade_markers[0].y == 101.0
     assert widget._trade_markers[1].y == 101.2
     assert widget._trade_markers[1].symbol == "t1"

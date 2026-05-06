@@ -86,6 +86,47 @@ def test_trade_review_items_include_entry_exit_action_indices_and_notes() -> Non
     assert review_item.review_note == "止盈后复盘：执行不错"
 
 
+def test_trade_review_items_include_fifo_entry_legs_for_adds() -> None:
+    bars = sample_bars()
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100, note="首仓计划")
+    engine.step_forward()
+    engine.record_action(ActionType.ADD, quantity=1, price=102, note="加仓确认")
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=2, price=104, note="整体复盘")
+
+    review_item = engine.trade_review_items()[0]
+
+    assert review_item.entry_note == "首仓计划"
+    assert [(leg.bar_index, leg.price, leg.quantity, leg.action_index, leg.note) for leg in review_item.entry_legs] == [
+        (0, 100, 1, 0, "首仓计划"),
+        (1, 102, 1, 1, "加仓确认"),
+    ]
+
+
+def test_trade_review_items_allocate_entry_legs_to_partial_exits_fifo() -> None:
+    bars = sample_bars()
+    session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
+    engine = ReviewEngine(session, bars)
+
+    engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100, note="首仓")
+    engine.step_forward()
+    engine.record_action(ActionType.ADD, quantity=2, price=101, note="加仓两手")
+    engine.step_forward()
+    engine.record_action(ActionType.REDUCE, quantity=1, price=103, note="先止盈一手")
+    engine.step_forward()
+    engine.record_action(ActionType.CLOSE, quantity=2, price=104, note="剩余止盈")
+
+    first, second = engine.trade_review_items()
+
+    assert [(leg.bar_index, leg.price, leg.quantity, leg.note) for leg in first.entry_legs] == [(0, 100, 1, "首仓")]
+    assert [(leg.bar_index, leg.price, leg.quantity, leg.note) for leg in second.entry_legs] == [(1, 101, 2, "加仓两手")]
+    assert first.entry_action_index == 0
+    assert second.entry_action_index == 1
+
+
 def test_step_back_restores_state() -> None:
     session = ReviewSession(id=1, dataset_id=1, symbol="IF", timeframe="1m", chart_timeframe="1m", start_index=0, current_index=0)
     engine = ReviewEngine(session, sample_bars())

@@ -451,6 +451,16 @@ class SessionStats:
 
 
 @dataclass(slots=True)
+class TradeEntryLeg:
+    bar_index: int
+    timestamp: datetime
+    price: float
+    quantity: float
+    action_index: int | None = None
+    note: str = ""
+
+
+@dataclass(slots=True)
 class TradeReviewItem:
     trade_number: int
     entry_time: datetime
@@ -472,6 +482,7 @@ class TradeReviewItem:
     exit_action_index: int | None = None
     entry_note: str = ""
     review_note: str = ""
+    entry_legs: list[TradeEntryLeg] = field(default_factory=list)
 
 
 @dataclass(slots=True)

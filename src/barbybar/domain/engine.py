@@ -20,6 +20,7 @@ from barbybar.domain.models import (
     SessionStats,
     SessionStatus,
     Trade,
+    TradeEntryLeg,
     TradeReviewItem,
 )
 
@@ -364,6 +365,7 @@ class ReviewEngine:
         had_adverse_add = False
         trade_index = 0
         open_trade_action_index: int | None = None
+        open_lots: list[TradeEntryLeg] = []
 
         for action_index, action in enumerate(self.actions):
             price = float(action.price if action.price is not None else 0.0)
@@ -378,6 +380,16 @@ class ReviewEngine:
                     open_trade_started_at = action.timestamp
                     open_trade_started_bar_index = action.bar_index
                     open_trade_action_index = action_index
+                    open_lots = [
+                        TradeEntryLeg(
+                            bar_index=action.bar_index,
+                            timestamp=action.timestamp,
+                            price=price,
+                            quantity=quantity,
+                            action_index=action_index,
+                            note=action.note,
+                        )
+                    ]
                     has_stop_protection = False
                     stop_set_bar_index = None
                     had_adverse_add = False
@@ -386,6 +398,16 @@ class ReviewEngine:
                     if new_quantity > 0:
                         average_price = ((average_price * position_quantity) + (price * quantity)) / new_quantity
                         position_quantity = new_quantity
+                        open_lots.append(
+                            TradeEntryLeg(
+                                bar_index=action.bar_index,
+                                timestamp=action.timestamp,
+                                price=price,
+                                quantity=quantity,
+                                action_index=action_index,
+                                note=action.note,
+                            )
+                        )
                 continue
 
             if action.action_type is ActionType.ADD:
@@ -399,6 +421,16 @@ class ReviewEngine:
                     if new_quantity > 0:
                         average_price = ((average_price * position_quantity) + (price * quantity)) / new_quantity
                         position_quantity = new_quantity
+                        open_lots.append(
+                            TradeEntryLeg(
+                                bar_index=action.bar_index,
+                                timestamp=action.timestamp,
+                                price=price,
+                                quantity=quantity,
+                                action_index=action_index,
+                                note=action.note,
+                            )
+                        )
                 continue
 
             if action.action_type is ActionType.SET_STOP_LOSS:
@@ -417,8 +449,13 @@ class ReviewEngine:
             remaining_quantity = max(position_quantity - close_quantity, 0.0)
             trade = self.trades[trade_index]
             trade_index += 1
+            consumed_legs = self._consume_trade_entry_legs(open_lots, close_quantity)
+            first_leg = consumed_legs[0] if consumed_legs else None
+            entry_bar_index = first_leg.bar_index if first_leg is not None else open_trade_started_bar_index
+            entry_time = first_leg.timestamp if first_leg is not None else trade.entry_time
+            entry_action_index = first_leg.action_index if first_leg is not None else open_trade_action_index
             exit_reason = self._trade_exit_reason(action, remaining_quantity)
-            holding_bars = max(action.bar_index - open_trade_started_bar_index, 0)
+            holding_bars = max(action.bar_index - entry_bar_index, 0)
             is_planned = (
                 has_stop_protection
                 and stop_set_bar_index is not None
@@ -429,14 +466,14 @@ class ReviewEngine:
             items.append(
                 TradeReviewItem(
                     trade_number=len(items) + 1,
-                    entry_time=trade.entry_time,
+                    entry_time=entry_time,
                     exit_time=trade.exit_time,
                     direction=trade.direction,
                     quantity=trade.quantity,
                     entry_price=trade.entry_price,
                     exit_price=trade.exit_price,
                     pnl=trade.pnl,
-                    entry_bar_index=open_trade_started_bar_index,
+                    entry_bar_index=entry_bar_index,
                     exit_bar_index=action.bar_index,
                     holding_bars=holding_bars,
                     exit_reason=exit_reason,
@@ -444,10 +481,11 @@ class ReviewEngine:
                     had_stop_protection=has_stop_protection,
                     had_adverse_add=had_adverse_add,
                     is_planned=is_planned,
-                    entry_action_index=open_trade_action_index,
+                    entry_action_index=entry_action_index,
                     exit_action_index=action_index,
-                    entry_note=self.actions[open_trade_action_index].note if open_trade_action_index is not None else "",
+                    entry_note=self.actions[entry_action_index].note if entry_action_index is not None else "",
                     review_note=action.note,
+                    entry_legs=consumed_legs,
                 )
             )
             position_quantity = remaining_quantity
@@ -455,11 +493,35 @@ class ReviewEngine:
                 position_direction = None
                 average_price = 0.0
                 open_trade_action_index = None
+                open_lots = []
                 has_stop_protection = False
                 stop_set_bar_index = None
                 had_adverse_add = False
 
         return items
+
+    @staticmethod
+    def _consume_trade_entry_legs(open_lots: list[TradeEntryLeg], quantity: float) -> list[TradeEntryLeg]:
+        remaining = max(float(quantity), 0.0)
+        consumed: list[TradeEntryLeg] = []
+        while remaining > 0.0001 and open_lots:
+            lot = open_lots[0]
+            matched_quantity = min(remaining, float(lot.quantity))
+            consumed.append(
+                TradeEntryLeg(
+                    bar_index=lot.bar_index,
+                    timestamp=lot.timestamp,
+                    price=lot.price,
+                    quantity=matched_quantity,
+                    action_index=lot.action_index,
+                    note=lot.note,
+                )
+            )
+            remaining -= matched_quantity
+            lot.quantity = float(lot.quantity) - matched_quantity
+            if lot.quantity <= 0.0001:
+                open_lots.pop(0)
+        return consumed
 
     def _apply_action(self, action: SessionAction) -> None:
         position = self.session.position

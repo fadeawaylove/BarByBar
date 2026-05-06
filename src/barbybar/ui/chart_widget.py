@@ -1158,6 +1158,17 @@ class ChartWidget(QWidget):
                 item.exit_action_index,
                 item.entry_note,
                 item.review_note,
+                tuple(
+                    (
+                        leg.bar_index,
+                        leg.timestamp.isoformat(),
+                        round(float(leg.price), 8),
+                        round(float(leg.quantity), 8),
+                        leg.action_index,
+                        leg.note,
+                    )
+                    for leg in item.entry_legs
+                ),
             )
             for item in items
         )
@@ -3787,7 +3798,6 @@ class ChartWidget(QWidget):
         y_min, y_max = self.price_plot.viewRange()[1]
         y_span = max(y_max - y_min, 1.0)
         offset_unit = y_span * 0.018
-        marker_offsets: dict[int, int] = {}
         markers: list[TradeMarker] = []
         active_direction = "flat"
         trade_exit_action_ids = self._valid_trade_exit_action_ids(trades)
@@ -3798,9 +3808,7 @@ class ChartWidget(QWidget):
             if not (0 <= local_index < len(self._bars)):
                 continue
             bar = self._bars[local_index]
-            stack = marker_offsets.get(action.bar_index, 0)
-            marker_offsets[action.bar_index] = stack + 1
-            x = self._trade_marker_x(action, stack)
+            x = float(action.bar_index)
             y = self._trade_marker_y(action, bar)
             role, direction = self._trade_marker_role(action, active_direction)
             if direction in {"long", "short"}:
@@ -3942,13 +3950,6 @@ class ChartWidget(QWidget):
     def _trade_link_color(self, link: TradeLink) -> str:
         return self._trade_outcome_color(link.outcome)
 
-    def _trade_marker_x(self, action: SessionAction, stack: int) -> float:
-        if stack == 0:
-            return float(action.bar_index)
-        direction = -1.0 if stack % 2 else 1.0
-        magnitude = 0.12 * ((stack + 1) // 2)
-        return float(action.bar_index) + direction * magnitude
-
     @staticmethod
     def _trade_marker_y(action: SessionAction, bar: Bar) -> float:
         return float(action.price if action.price is not None else bar.close)
@@ -3991,40 +3992,67 @@ class ChartWidget(QWidget):
         entry_stacks: dict[tuple[int, float], int] = {}
         exit_stacks: dict[tuple[int, float], int] = {}
         for item in self._trade_review_items:
-            if item.entry_bar_index > self._cursor or item.exit_bar_index > self._cursor:
-                continue
-            left = min(item.entry_bar_index, item.exit_bar_index)
-            right = max(item.entry_bar_index, item.exit_bar_index)
-            if not self._x_range_intersects(float(left), float(right), x_bounds):
+            entry_legs = self._trade_entry_legs_for_link(item)
+            if item.exit_bar_index > self._cursor:
                 continue
             direction = item.direction if item.direction in {"long", "short"} else "long"
             outcome = self._trade_outcome_from_pnl(float(item.pnl))
-            qty_text = int(item.quantity) if float(item.quantity).is_integer() else round(float(item.quantity), 2)
             entry_note = item.entry_note.strip() or "未记录"
             review_note = item.review_note.strip() or "未记录"
-            x1 = self._trade_review_endpoint_x(item.entry_bar_index, item.entry_price, entry_stacks)
-            x2 = self._trade_review_endpoint_x(item.exit_bar_index, item.exit_price, exit_stacks)
-            links.append(
-                TradeLink(
-                    trade_number=item.trade_number,
-                    direction=direction,
-                    outcome=outcome,
-                    x1=x1,
-                    y1=float(item.entry_price),
-                    x2=x2,
-                    y2=float(item.exit_price),
-                    pnl=float(item.pnl),
-                    detail_lines=[
-                        f"{'多单' if direction == 'long' else '空单'}{'盈利' if outcome == 'win' else '亏损' if outcome == 'loss' else '保本'} | {item.entry_time:%Y-%m-%d %H:%M} -> {item.exit_time:%Y-%m-%d %H:%M}",
-                        f"开 {format_price(float(item.entry_price), self._tick_size)} -> 平 {format_price(float(item.exit_price), self._tick_size)}",
-                        f"手数 {qty_text}",
-                        f"PnL {float(item.pnl):+.2f}",
-                        f"开仓想法 {entry_note}",
-                        f"复盘总结 {review_note}",
-                    ],
+            for leg in entry_legs:
+                if leg["bar_index"] > self._cursor:
+                    continue
+                left = min(int(leg["bar_index"]), item.exit_bar_index)
+                right = max(int(leg["bar_index"]), item.exit_bar_index)
+                if not self._x_range_intersects(float(left), float(right), x_bounds):
+                    continue
+                leg_quantity = float(leg["quantity"])
+                qty_text = int(leg_quantity) if leg_quantity.is_integer() else round(leg_quantity, 2)
+                x1 = self._trade_review_endpoint_x(int(leg["bar_index"]), float(leg["price"]), entry_stacks)
+                x2 = self._trade_review_endpoint_x(item.exit_bar_index, item.exit_price, exit_stacks)
+                links.append(
+                    TradeLink(
+                        trade_number=item.trade_number,
+                        direction=direction,
+                        outcome=outcome,
+                        x1=x1,
+                        y1=float(leg["price"]),
+                        x2=x2,
+                        y2=float(item.exit_price),
+                        pnl=float(item.pnl),
+                        detail_lines=[
+                            f"{'多单' if direction == 'long' else '空单'}{'盈利' if outcome == 'win' else '亏损' if outcome == 'loss' else '保本'} | {leg['timestamp']:%Y-%m-%d %H:%M} -> {item.exit_time:%Y-%m-%d %H:%M}",
+                            f"入场 {format_price(float(leg['price']), self._tick_size)} -> 出场 {format_price(float(item.exit_price), self._tick_size)}",
+                            f"本段手数 {qty_text}",
+                            f"开仓想法 {entry_note}",
+                            f"复盘总结 {review_note}",
+                        ],
+                    )
                 )
-            )
         return links
+
+    @staticmethod
+    def _trade_entry_legs_for_link(item: TradeReviewItem) -> list[dict[str, object]]:
+        if item.entry_legs:
+            return [
+                {
+                    "bar_index": leg.bar_index,
+                    "timestamp": leg.timestamp,
+                    "price": leg.price,
+                    "quantity": leg.quantity,
+                    "note": leg.note,
+                }
+                for leg in item.entry_legs
+            ]
+        return [
+            {
+                "bar_index": item.entry_bar_index,
+                "timestamp": item.entry_time,
+                "price": item.entry_price,
+                "quantity": item.quantity,
+                "note": item.entry_note,
+            }
+        ]
 
     @staticmethod
     def _trade_review_endpoint_x(bar_index: int, price: float, stacks: dict[tuple[int, float], int]) -> float:
@@ -4046,6 +4074,12 @@ class ChartWidget(QWidget):
         }
         for item in self._trade_review_items:
             outcome = self._trade_outcome_from_pnl(float(item.pnl))
+            for leg in item.entry_legs:
+                leg_marker = markers_by_action_index.get(leg.action_index) if leg.action_index is not None else None
+                if leg_marker is not None:
+                    leg_marker.trade_number = item.trade_number
+                    leg_marker.direction = item.direction if item.direction in {"long", "short"} else leg_marker.direction
+                    leg_marker.outcome = self._merge_trade_outcome(leg_marker.outcome, outcome)
             if item.entry_action_index is not None:
                 entry_marker = markers_by_action_index.get(item.entry_action_index)
                 if entry_marker is not None:
