@@ -479,9 +479,8 @@ def test_session_open_markers_render_for_0900_and_2100(widget: ChartWidget) -> N
 
     assert len(line_markers) == 2
     assert sorted(round(marker.value(), 2) for marker in line_markers) == [-0.5, 2.5]
-    assert sorted(item.toPlainText() for item in label_markers) == ["夜", "日"]
-    y_min, y_max = widget.price_plot.viewRange()[1]
-    assert all(item.pos().y() < (y_min + y_max) / 2 for item in label_markers)
+    assert label_markers == []
+    assert sorted((round(x, 2), label) for x, label in widget.session_axis.session_ticks) == [(-0.5, "日"), (2.5, "夜")]
 
 
 def test_session_end_markers_render_for_day_and_night_tail_bars(widget: ChartWidget) -> None:
@@ -1018,6 +1017,81 @@ def test_trade_link_hover_uses_open_hand_cursor(widget: ChartWidget, app: QAppli
     assert "09:08" in widget._hover_time_label.text()
     assert highlighted_link_items
     assert any(item.opts["pen"].widthF() == 3.0 for item in highlighted_link_items)
+
+
+def test_trade_link_hover_includes_entry_and_review_notes(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1, note="突破确认"),
+            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1, note="按计划止盈"),
+        ]
+    )
+    app.processEvents()
+    link = widget._trade_links[0]
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
+
+    widget._handle_mouse_moved((scene_pos,))
+
+    assert "开仓想法 突破确认" in widget._hover_close_label.text()
+    assert "复盘总结 按计划止盈" in widget._hover_range_label.text()
+
+
+def test_double_click_trade_link_requests_note_editor(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
+        ]
+    )
+    app.processEvents()
+    requested: list[int] = []
+    widget.tradeLinkNoteRequested.connect(requested.append)
+    link = widget._trade_links[0]
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
+
+    event = _FakeSceneClick(scene_pos, double=True)
+    widget._handle_scene_click(event)
+
+    assert event.accepted is True
+    assert requested == [1]
+
+
+def test_trade_link_note_request_uses_global_trade_number_when_earlier_trades_are_offscreen(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    bars = _bars()
+    widget.set_full_data(bars)
+    widget.set_cursor(210)
+    actions = [
+        SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1),
+        SessionAction(ActionType.CLOSE, 8, datetime(2025, 1, 1, 9, 8), price=103.0, quantity=1),
+        SessionAction(ActionType.OPEN_LONG, 180, datetime(2025, 1, 1, 12, 0), price=104.0, quantity=1),
+        SessionAction(ActionType.CLOSE, 185, datetime(2025, 1, 1, 12, 5), price=106.0, quantity=1),
+    ]
+    trades = [
+        Trade(actions[0].timestamp, actions[1].timestamp, "long", 1, 101.0, 103.0, 2.0),
+        Trade(actions[2].timestamp, actions[3].timestamp, "long", 1, 104.0, 106.0, 2.0),
+    ]
+    widget.set_trade_actions(actions, trades)
+    app.processEvents()
+    requested: list[int] = []
+    widget.tradeLinkNoteRequested.connect(requested.append)
+
+    assert [link.trade_number for link in widget._trade_links] == [2]
+    link = widget._trade_links[0]
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
+    event = _FakeSceneClick(scene_pos, double=True)
+    widget._handle_scene_click(event)
+
+    assert requested == [2]
 
 
 def test_short_trade_link_uses_loss_color(widget: ChartWidget) -> None:
@@ -1560,6 +1634,21 @@ def test_double_click_y_axis_only_clears_y_offset(widget: ChartWidget, app: QApp
     assert widget.viewport_state.right_edge_index == pytest.approx(old_right)
     assert widget.viewport_state.follow_latest is old_follow_latest
     assert widget.current_x_range() == pytest.approx(old_x_range)
+
+
+def test_double_click_chart_area_still_resets_viewport(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    widget.pan_x(-30)
+    app.processEvents()
+
+    event = _FakeSceneClick(widget._data_scene_rect().center(), double=True)
+    widget._handle_scene_click(event)
+
+    assert event.accepted is True
+    assert widget.viewport_state.follow_latest is True
 
 
 def test_set_cursor_preserves_y_offset_and_refits_visible_bars(widget: ChartWidget, app: QApplication) -> None:

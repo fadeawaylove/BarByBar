@@ -266,6 +266,20 @@ class CandlestickItem(pg.GraphicsObject):
         return self._bounding_rect
 
 
+class SessionAxisItem(pg.AxisItem):
+    def __init__(self) -> None:
+        super().__init__(orientation="bottom")
+        self._session_ticks: list[tuple[float, str]] = []
+
+    @property
+    def session_ticks(self) -> list[tuple[float, str]]:
+        return list(self._session_ticks)
+
+    def set_session_ticks(self, ticks: list[tuple[float, str]]) -> None:
+        self._session_ticks = list(ticks)
+        self.setTicks([self._session_ticks])
+
+
 class CandleViewBox(pg.ViewBox):
     def __init__(self, chart: "ChartWidget") -> None:
         super().__init__(enableMenu=False)
@@ -393,6 +407,7 @@ class ChartWidget(QWidget):
     protectiveOrderCreated = Signal(str, float, bool)
     orderPreviewConfirmed = Signal(str, float, float)
     orderLineActionRequested = Signal(int, str)
+    tradeLinkNoteRequested = Signal(int)
 
     def __init__(self) -> None:
         super().__init__()
@@ -495,7 +510,8 @@ class ChartWidget(QWidget):
         self.graphics = pg.GraphicsLayoutWidget()
         self.graphics.setBackground(self._chart_background_color)
         self.view_box = CandleViewBox(self)
-        self.price_plot = self.graphics.addPlot(row=0, col=0, viewBox=self.view_box)
+        self.session_axis = SessionAxisItem()
+        self.price_plot = self.graphics.addPlot(row=0, col=0, viewBox=self.view_box, axisItems={"bottom": self.session_axis})
         self.price_plot.showGrid(x=False, y=False, alpha=0.0)
         self.price_plot.setMenuEnabled(False)
         self.price_plot.hideAxis("left")
@@ -506,7 +522,7 @@ class ChartWidget(QWidget):
         self.price_plot.getAxis("right").setTextPen(pg.mkPen(AppTheme.text_faint))
         self.price_plot.getAxis("bottom").setPen(pg.mkPen(AppTheme.border))
         self.price_plot.getAxis("bottom").setTextPen(pg.mkPen(AppTheme.text_faint))
-        self.price_plot.getAxis("bottom").setStyle(showValues=False)
+        self.price_plot.getAxis("bottom").setStyle(showValues=True)
         self.price_plot.hideButtons()
         self.view_box.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=False)
         self.price_plot.enableAutoRange(axis="xy", enable=False)
@@ -1165,10 +1181,12 @@ class ChartWidget(QWidget):
             ):
                 self.price_plot.removeItem(item)
         if not self._bars:
+            self.session_axis.set_session_ticks([])
             self._session_markers_dirty = False
             self._clear_chart_layers_dirty(ChartLayer.SESSION_MARKERS)
             return
         if normalize_timeframe(self._chart_timeframe) == DAY_TIMEFRAME:
+            self.session_axis.set_session_ticks([])
             self._session_markers_dirty = False
             self._clear_chart_layers_dirty(ChartLayer.SESSION_MARKERS)
             return
@@ -1178,6 +1196,7 @@ class ChartWidget(QWidget):
         start = max(0, visible_start - 2 - self._global_start_index)
         stop = min(len(self._bars), min(local_cursor + 1, visible_stop - self._global_start_index + 2))
         if stop <= start:
+            self.session_axis.set_session_ticks([])
             self._session_markers_dirty = False
             self._clear_chart_layers_dirty(ChartLayer.SESSION_MARKERS)
             return
@@ -1185,7 +1204,7 @@ class ChartWidget(QWidget):
             self._session_marker_label(self._bars[index].timestamp, timeframe_minutes) is not None
             for index in range(start, stop)
         )
-        session_label_y = self._annotation_y_position(0.03)
+        session_axis_ticks: list[tuple[float, str]] = []
         prefix_start = 0
         session_counts: dict[tuple[str, datetime], int] = {}
         for index in range(prefix_start, stop):
@@ -1196,8 +1215,9 @@ class ChartWidget(QWidget):
                 continue
             session_label = self._session_marker_label(bar.timestamp, timeframe_minutes) if show_session_annotations else None
             if session_label is not None:
+                session_x = float(self._global_start_index + index - 0.5)
                 marker = pg.InfiniteLine(
-                    pos=self._global_start_index + index - 0.5,
+                    pos=session_x,
                     angle=90,
                     movable=False,
                     pen=pg.mkPen(SESSION_MARKER_COLOR, width=1, style=Qt.PenStyle.DashLine),
@@ -1205,16 +1225,7 @@ class ChartWidget(QWidget):
                 marker.setZValue(-10)
                 marker._barbybar_session_marker = True
                 self.price_plot.addItem(marker, ignoreBounds=True)
-                label = pg.TextItem(
-                    session_label,
-                    color=SESSION_LABEL_COLOR,
-                    fill=pg.mkBrush(255, 255, 255, 220),
-                    anchor=(0.5, 1),
-                )
-                label._barbybar_session_marker = True
-                label.setZValue(5)
-                label.setPos(self._global_start_index + index - 0.5, session_label_y)
-                self.price_plot.addItem(label, ignoreBounds=True)
+                session_axis_ticks.append((session_x, session_label))
             if show_session_annotations and self._is_session_end_bar(index, stop):
                 arrow = pg.ArrowItem(
                     pos=(float(self._global_start_index + index), self._session_end_marker_y(index)),
@@ -1249,6 +1260,7 @@ class ChartWidget(QWidget):
             count_label.setZValue(4)
             count_label.setPos(x_pos, y_pos)
             self.price_plot.addItem(count_label, ignoreBounds=True)
+        self.session_axis.set_session_ticks(session_axis_ticks)
         self._session_markers_dirty = False
         self._clear_chart_layers_dirty(ChartLayer.SESSION_MARKERS)
 
@@ -1812,6 +1824,17 @@ class ChartWidget(QWidget):
             pending_anchors=len(self._pending_drawing_anchors),
         )
         if event.button() == Qt.MouseButton.LeftButton and is_double:
+            if (
+                in_chart
+                and self._hover_target.target_type is HoverTargetType.TRADE_LINK
+                and self._hover_target.trade_link is not None
+                and self._hover_target.trade_link.trade_number is not None
+            ):
+                trade_number = self._hover_target.trade_link.trade_number
+                self._log_interaction("scene_click_trade_link_note_requested", trade_number=trade_number)
+                self.tradeLinkNoteRequested.emit(trade_number)
+                event.accept()
+                return
             if self._is_in_y_axis_drag_gutter(scene_pos):
                 self.reset_y_axis_offset()
                 event.accept()
@@ -3716,12 +3739,14 @@ class ChartWidget(QWidget):
         marker_actions: list[SessionAction] = []
         active_direction = "flat"
         matched_trades: set[int] = set()
+        trade_numbers_by_action_id: dict[int, int] = {}
         for action in visible_actions:
             if trades is not None and action.action_type in {ActionType.CLOSE, ActionType.REDUCE}:
                 trade_index = self._matching_trade_exit_index(action, trades, matched_trades)
                 if trade_index is None:
                     continue
                 matched_trades.add(trade_index)
+                trade_numbers_by_action_id[id(action)] = trade_index + 1
             local_index = action.bar_index - self._global_start_index
             if not (0 <= local_index < len(self._bars)):
                 continue
@@ -3751,7 +3776,7 @@ class ChartWidget(QWidget):
             )
             marker_actions.append(action)
             active_direction = self._next_trade_direction(action, active_direction)
-        links = self._trade_link_segments(marker_actions, markers)
+        links = self._trade_link_segments(marker_actions, markers, trade_numbers_by_action_id)
         for marker in markers:
             marker.symbol, marker.brush, marker.size = self._trade_marker_visual(marker.role, marker.direction, marker.outcome)
             marker.detail_lines = self._trade_action_detail_lines(marker)
@@ -3899,7 +3924,12 @@ class ChartWidget(QWidget):
             "自动触发" if action.extra.get("auto") else "手动成交",
         ]
 
-    def _trade_link_segments(self, actions: list[SessionAction], markers: list[TradeMarker]) -> list[TradeLink]:
+    def _trade_link_segments(
+        self,
+        actions: list[SessionAction],
+        markers: list[TradeMarker],
+        trade_numbers_by_action_id: dict[int, int] | None = None,
+    ) -> list[TradeLink]:
         marker_lookup: dict[tuple[int, ActionType, float], list[TradeMarker]] = {}
         for marker in markers:
             marker_lookup.setdefault((marker.action.bar_index, marker.action.action_type, float(marker.action.quantity)), []).append(marker)
@@ -3908,14 +3938,41 @@ class ChartWidget(QWidget):
         for action in actions:
             price = float(action.price or 0.0)
             if action.action_type is ActionType.OPEN_LONG:
-                open_lots.append({"direction": "long", "quantity": float(action.quantity), "bar_index": action.bar_index, "price": price, "timestamp": action.timestamp})
+                open_lots.append(
+                    {
+                        "direction": "long",
+                        "quantity": float(action.quantity),
+                        "bar_index": action.bar_index,
+                        "price": price,
+                        "timestamp": action.timestamp,
+                        "note": action.note,
+                    }
+                )
                 continue
             if action.action_type is ActionType.OPEN_SHORT:
-                open_lots.append({"direction": "short", "quantity": float(action.quantity), "bar_index": action.bar_index, "price": price, "timestamp": action.timestamp})
+                open_lots.append(
+                    {
+                        "direction": "short",
+                        "quantity": float(action.quantity),
+                        "bar_index": action.bar_index,
+                        "price": price,
+                        "timestamp": action.timestamp,
+                        "note": action.note,
+                    }
+                )
                 continue
             if action.action_type is ActionType.ADD and open_lots:
                 direction = str(open_lots[-1]["direction"])
-                open_lots.append({"direction": direction, "quantity": float(action.quantity), "bar_index": action.bar_index, "price": price, "timestamp": action.timestamp})
+                open_lots.append(
+                    {
+                        "direction": direction,
+                        "quantity": float(action.quantity),
+                        "bar_index": action.bar_index,
+                        "price": price,
+                        "timestamp": action.timestamp,
+                        "note": action.note,
+                    }
+                )
                 continue
             if action.action_type not in {ActionType.CLOSE, ActionType.REDUCE}:
                 continue
@@ -3936,9 +3993,11 @@ class ChartWidget(QWidget):
                     exit_marker.outcome = self._merge_trade_outcome(exit_marker.outcome, outcome)
                     qty_text = int(matched_qty) if float(matched_qty).is_integer() else round(matched_qty, 2)
                     pnl_text = f"{pnl:+.2f}"
+                    entry_note = str(lot.get("note") or "").strip() or "未记录"
+                    review_note = action.note.strip() or "未记录"
                     links.append(
                         TradeLink(
-                            trade_number=None,
+                            trade_number=(trade_numbers_by_action_id or {}).get(id(action), len(links) + 1),
                             direction=direction,
                             outcome=outcome,
                             x1=entry_marker.x,
@@ -3951,7 +4010,8 @@ class ChartWidget(QWidget):
                                 f"开 {format_price(entry_price, self._tick_size)} -> 平 {format_price(price, self._tick_size)}",
                                 f"手数 {qty_text}",
                                 f"PnL {pnl_text}",
-                                "交易连线",
+                                f"开仓想法 {entry_note}",
+                                f"复盘总结 {review_note}",
                             ],
                         )
                     )
@@ -4149,11 +4209,6 @@ class ChartWidget(QWidget):
             return "day", timestamp.replace(hour=9, minute=0, second=0, microsecond=0)
         previous_day = timestamp - timedelta(days=1)
         return "night", previous_day.replace(hour=21, minute=0, second=0, microsecond=0)
-
-    def _annotation_y_position(self, offset_ratio: float) -> float:
-        y_min, y_max = self.price_plot.viewRange()[1]
-        span = max(float(y_max) - float(y_min), 1.0)
-        return float(y_min) + span * float(offset_ratio)
 
     def _bar_count_label_y(self, bar_index: int) -> float:
         y_min, y_max = self.price_plot.viewRange()[1]

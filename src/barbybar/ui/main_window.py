@@ -2096,6 +2096,68 @@ class TradeReviewSidebar(QWidget):
         )
         self.refresh_items()
 
+
+class TradeLinkNoteDialog(QDialog):
+    def __init__(self, trade: TradeReviewItem, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.trade = trade
+        self.setWindowTitle("记录交易复盘")
+        self.resize(560, 460)
+        self.setStyleSheet(dialog_stylesheet())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        direction_text = "多单" if trade.direction == "long" else "空单"
+        quantity_text = int(trade.quantity) if float(trade.quantity).is_integer() else round(float(trade.quantity), 2)
+        summary = QLabel(
+            "\n".join(
+                [
+                    f"#{trade.trade_number} {direction_text} {quantity_text}手 | PnL {trade.pnl:.2f}",
+                    f"{trade.entry_time:%Y-%m-%d %H:%M} -> {trade.exit_time:%Y-%m-%d %H:%M}",
+                    f"开 {trade.entry_price:g} -> 平 {trade.exit_price:g} | {format_exit_reason(trade.exit_reason)}",
+                ]
+            )
+        )
+        summary.setProperty("role", "muted")
+        layout.addWidget(summary)
+
+        layout.addWidget(QLabel("开仓想法"))
+        self.entry_note_edit = QTextEdit()
+        self.entry_note_edit.setPlaceholderText("记录开仓前/开仓当时的想法、计划、理由")
+        self.entry_note_edit.setPlainText(trade.entry_note)
+        self.entry_note_edit.setMinimumHeight(110)
+        layout.addWidget(self.entry_note_edit, 1)
+
+        layout.addWidget(QLabel("复盘总结"))
+        self.review_note_edit = QTextEdit()
+        self.review_note_edit.setPlaceholderText("记录出场后的复盘总结、问题、改进点")
+        self.review_note_edit.setPlainText(trade.review_note)
+        self.review_note_edit.setMinimumHeight(130)
+        layout.addWidget(self.review_note_edit, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        self.cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if self.save_button is not None:
+            self.save_button.setText("保存")
+        if self.cancel_button is not None:
+            self.cancel_button.setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        save_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
+        save_shortcut.activated.connect(self.accept)
+
+    def entry_note(self) -> str:
+        return self.entry_note_edit.toPlainText()
+
+    def review_note(self) -> str:
+        return self.review_note_edit.toPlainText()
+
+
 class LogViewerDialog(QDialog):
     def __init__(self, parent: QWidget | None = None, logs_path: Path | None = None) -> None:
         super().__init__(parent)
@@ -2778,6 +2840,7 @@ class MainWindow(QMainWindow):
         self.chart_widget.protectiveOrderCreated.connect(self._handle_chart_protective_order_created)
         self.chart_widget.orderPreviewConfirmed.connect(self._handle_order_preview_confirmed)
         self.chart_widget.orderLineActionRequested.connect(self._handle_order_line_action_requested)
+        self.chart_widget.tradeLinkNoteRequested.connect(self._handle_trade_link_note_requested)
         self._apply_drawing_style_presets()
         layout.addWidget(self.chart_widget, 1)
 
@@ -4093,6 +4156,28 @@ class MainWindow(QMainWindow):
         self._trade_review_controller.select_trade(trade_number, focus_mode=self._selected_trade_view)
         self._selected_trade_number = trade_number
         self.save_session(trigger="trade_note")
+        self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
+        self.chart_widget.refresh_cursor_dependent_overlays()
+        if self._trade_history_dialog is not None:
+            self._trade_history_dialog.refresh_items()
+        if self.trade_review_sidebar is not None and self.trade_review_sidebar.isVisible():
+            self.trade_review_sidebar.refresh_items()
+
+    def _handle_trade_link_note_requested(self, trade_number: int) -> None:
+        if not self.engine:
+            return
+        item = next((review for review in self._trade_review_items if review.trade_number == trade_number), None)
+        if item is None:
+            return
+        self.select_trade_review_item(item, focus_view=self._selected_trade_view, focus_chart=False)
+        dialog = TradeLinkNoteDialog(item, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.update_trade_history_notes(
+            trade_number,
+            entry_note=dialog.entry_note(),
+            review_note=dialog.review_note(),
+        )
 
     def toggle_selected_trade_focus(self) -> None:
         if self._trade_review_controller.selected_trade_number is None:

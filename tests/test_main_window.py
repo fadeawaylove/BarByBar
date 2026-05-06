@@ -35,6 +35,7 @@ from barbybar.ui.main_window import (
     SessionSaveWorker,
     SessionLibraryDialog,
     SettingsDialog,
+    TradeLinkNoteDialog,
     UpdateActionDialog,
 )
 from barbybar.ui.theme import AppTheme
@@ -3507,6 +3508,61 @@ def test_trade_history_saves_entry_and_review_notes_to_actions(window: MainWindo
     assert window._selected_trade_number == 1
     assert sidebar.entry_note_edit.toPlainText() == "突破回踩有效，准备跟随"
     assert sidebar.review_note_edit.toPlainText() == "出场及时，但仓位可以更轻"
+
+
+def test_trade_link_note_dialog_loads_and_saves_entry_and_review_notes(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=125.5, note="旧开仓想法")
+    window.engine.step_forward()
+    window.engine.step_forward()
+    window.engine.record_action(ActionType.CLOSE, quantity=1, price=128.5, note="旧复盘总结")
+    window._update_ui_from_engine()
+    save_triggers: list[str] = []
+    trade_action_refreshes: list[list[str]] = []
+    monkeypatch.setattr(window, "save_session", lambda *, trigger="manual": save_triggers.append(trigger))
+
+    def fake_set_trade_actions(actions, trades=None):  # noqa: ANN001
+        trade_action_refreshes.append([action.note for action in actions])
+
+    monkeypatch.setattr(window.chart_widget, "set_trade_actions", fake_set_trade_actions)
+
+    captured: dict[str, str] = {}
+
+    def fake_exec(self) -> int:
+        captured["entry_loaded"] = self.entry_note_edit.toPlainText()
+        captured["review_loaded"] = self.review_note_edit.toPlainText()
+        self.entry_note_edit.setPlainText("双击连线补充开仓计划")
+        self.review_note_edit.setPlainText("双击连线补充复盘心得")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(TradeLinkNoteDialog, "exec", fake_exec)
+
+    window._handle_trade_link_note_requested(1)
+
+    assert captured == {"entry_loaded": "旧开仓想法", "review_loaded": "旧复盘总结"}
+    assert window.engine.actions[0].note == "双击连线补充开仓计划"
+    assert window.engine.actions[1].note == "双击连线补充复盘心得"
+    assert save_triggers == ["trade_note"]
+    assert window._selected_trade_number == 1
+    assert trade_action_refreshes[-1] == ["双击连线补充开仓计划", "双击连线补充复盘心得"]
+
+
+def test_trade_link_note_dialog_cancel_keeps_notes_unchanged(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=125.5, note="原开仓")
+    window.engine.step_forward()
+    window.engine.step_forward()
+    window.engine.record_action(ActionType.CLOSE, quantity=1, price=128.5, note="原复盘")
+    window._update_ui_from_engine()
+    save_triggers: list[str] = []
+    monkeypatch.setattr(window, "save_session", lambda *, trigger="manual": save_triggers.append(trigger))
+    monkeypatch.setattr(TradeLinkNoteDialog, "exec", lambda self: QDialog.DialogCode.Rejected)
+
+    window._handle_trade_link_note_requested(1)
+
+    assert window.engine.actions[0].note == "原开仓"
+    assert window.engine.actions[1].note == "原复盘"
+    assert save_triggers == []
 
 
 def test_tick_size_change_snaps_price_input(window: MainWindow) -> None:
