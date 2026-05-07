@@ -986,6 +986,55 @@ def test_trade_review_items_render_trade_links(widget: ChartWidget) -> None:
     assert widget._trade_links[0].outcome == "win"
 
 
+def test_trade_review_links_use_trade_times_when_bar_indices_are_stale(widget: ChartWidget) -> None:
+    bars = _bars()
+    widget.set_full_data(bars)
+    widget.set_cursor(40)
+    widget.set_trade_review_items(
+        [
+            TradeReviewItem(
+                trade_number=1,
+                entry_time=bars[5].timestamp,
+                exit_time=bars[8].timestamp,
+                direction="long",
+                quantity=1,
+                entry_price=101.0,
+                exit_price=103.0,
+                pnl=2.0,
+                entry_bar_index=14,
+                exit_bar_index=26,
+                holding_bars=12,
+                exit_reason="manual_close",
+                is_manual=True,
+                had_stop_protection=False,
+                had_adverse_add=False,
+                is_planned=False,
+                entry_action_index=0,
+                exit_action_index=1,
+                entry_legs=[TradeEntryLeg(14, bars[5].timestamp, 101.0, 1, 0, "stale entry index")],
+            )
+        ]
+    )
+
+    assert len(widget._trade_links) == 1
+    assert widget._trade_links[0].x1 == pytest.approx(5.0)
+    assert widget._trade_links[0].x2 == pytest.approx(8.0)
+
+
+def test_trade_markers_use_action_times_when_bar_indices_are_stale(widget: ChartWidget) -> None:
+    bars = _bars()
+    widget.set_full_data(bars)
+    widget.set_cursor(40)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 14, bars[5].timestamp, price=101.0, quantity=1),
+            SessionAction(ActionType.CLOSE, 26, bars[8].timestamp, price=103.0, quantity=1),
+        ]
+    )
+
+    assert [marker.x for marker in widget._trade_markers] == [5.0, 8.0]
+
+
 def test_trade_review_item_with_multiple_entry_legs_renders_multiple_links(widget: ChartWidget) -> None:
     start = datetime(2025, 1, 1, 9, 0)
     widget.set_full_data(_bars())
@@ -1037,6 +1086,87 @@ def test_trade_review_item_legacy_fallback_updates_to_entry_leg_links(widget: Ch
 
     assert [link.trade_number for link in widget._trade_links] == [3, 3]
     assert [(link.x1, link.y1) for link in widget._trade_links] == [(5.0, 101.0), (7.0, 102.0)]
+
+
+def test_legacy_trade_review_link_recovers_entry_legs_from_actions(widget: ChartWidget) -> None:
+    bars = _bars()
+    widget.set_full_data(bars)
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, bars[5].timestamp, price=101.0, quantity=1, note="首仓"),
+            SessionAction(ActionType.ADD, 7, bars[7].timestamp, price=102.0, quantity=1, note="加仓"),
+            SessionAction(ActionType.CLOSE, 9, bars[9].timestamp, price=103.0, quantity=2, note="出场"),
+        ]
+    )
+    widget.set_trade_review_items(
+        [
+            TradeReviewItem(
+                trade_number=1,
+                entry_time=bars[5].timestamp,
+                exit_time=bars[9].timestamp,
+                direction="long",
+                quantity=2,
+                entry_price=101.5,
+                exit_price=103.0,
+                pnl=3.0,
+                entry_bar_index=5,
+                exit_bar_index=9,
+                holding_bars=4,
+                exit_reason="manual_close",
+                is_manual=True,
+                had_stop_protection=False,
+                had_adverse_add=False,
+                is_planned=False,
+                entry_action_index=0,
+                exit_action_index=2,
+            )
+        ]
+    )
+
+    assert [(link.x1, link.y1) for link in widget._trade_links] == [(5.0, 101.0), (7.0, 102.0)]
+    assert [round(link.x2) for link in widget._trade_links] == [9, 9]
+
+
+def test_legacy_trade_review_link_recovers_fifo_legs_after_partial_exit(widget: ChartWidget) -> None:
+    bars = _bars()
+    widget.set_full_data(bars)
+    widget.set_cursor(20)
+    widget.set_trade_actions(
+        [
+            SessionAction(ActionType.OPEN_LONG, 5, bars[5].timestamp, price=101.0, quantity=1, note="首仓"),
+            SessionAction(ActionType.ADD, 7, bars[7].timestamp, price=102.0, quantity=2, note="加仓"),
+            SessionAction(ActionType.REDUCE, 8, bars[8].timestamp, price=103.0, quantity=1, note="先减一手"),
+            SessionAction(ActionType.CLOSE, 10, bars[10].timestamp, price=104.0, quantity=2, note="剩余出场"),
+        ]
+    )
+    widget.set_trade_review_items(
+        [
+            TradeReviewItem(
+                trade_number=2,
+                entry_time=bars[7].timestamp,
+                exit_time=bars[10].timestamp,
+                direction="long",
+                quantity=2,
+                entry_price=102.0,
+                exit_price=104.0,
+                pnl=4.0,
+                entry_bar_index=7,
+                exit_bar_index=10,
+                holding_bars=3,
+                exit_reason="manual_close",
+                is_manual=True,
+                had_stop_protection=False,
+                had_adverse_add=False,
+                is_planned=False,
+                entry_action_index=1,
+                exit_action_index=3,
+            )
+        ]
+    )
+
+    assert [(link.x1, link.y1, link.x2, link.y2) for link in widget._trade_links] == [(7.0, 102.0, 10.0, 104.0)]
+    assert "本段手数 2" in widget._trade_links[0].detail_lines
 
 
 def test_double_click_any_entry_leg_link_requests_same_trade_number(widget: ChartWidget, app: QApplication) -> None:

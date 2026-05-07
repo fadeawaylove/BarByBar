@@ -3789,11 +3789,12 @@ class ChartWidget(QWidget):
             return
         visible_start, visible_stop = self._overlay_visible_index_bounds()
         visible_actions = [
-            action
+            (action, chart_index)
             for action in self._trade_actions
-            if visible_start - 2 <= action.bar_index <= visible_stop + 2
-            and self._global_start_index <= action.bar_index <= self._cursor
-            and action.action_type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT, ActionType.CLOSE, ActionType.ADD, ActionType.REDUCE}
+            if action.action_type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT, ActionType.CLOSE, ActionType.ADD, ActionType.REDUCE}
+            and (chart_index := self._trade_chart_index_for_time(action.timestamp, action.bar_index)) is not None
+            and visible_start - 2 <= chart_index <= visible_stop + 2
+            and self._global_start_index <= chart_index <= self._cursor
         ]
         y_min, y_max = self.price_plot.viewRange()[1]
         y_span = max(y_max - y_min, 1.0)
@@ -3801,14 +3802,14 @@ class ChartWidget(QWidget):
         markers: list[TradeMarker] = []
         active_direction = "flat"
         trade_exit_action_ids = self._valid_trade_exit_action_ids(trades)
-        for action in visible_actions:
+        for action, chart_index in visible_actions:
             if trades is not None and action.action_type in {ActionType.CLOSE, ActionType.REDUCE} and id(action) not in trade_exit_action_ids:
                 continue
-            local_index = action.bar_index - self._global_start_index
+            local_index = chart_index - self._global_start_index
             if not (0 <= local_index < len(self._bars)):
                 continue
             bar = self._bars[local_index]
-            x = float(action.bar_index)
+            x = float(chart_index)
             y = self._trade_marker_y(action, bar)
             role, direction = self._trade_marker_role(action, active_direction)
             if direction in {"long", "short"}:
@@ -3993,23 +3994,25 @@ class ChartWidget(QWidget):
         exit_stacks: dict[tuple[int, float], int] = {}
         for item in self._trade_review_items:
             entry_legs = self._trade_entry_legs_for_link(item)
-            if item.exit_bar_index > self._cursor:
+            exit_bar_index = self._trade_chart_index_for_time(item.exit_time, item.exit_bar_index)
+            if exit_bar_index is None or exit_bar_index > self._cursor:
                 continue
             direction = item.direction if item.direction in {"long", "short"} else "long"
             outcome = self._trade_outcome_from_pnl(float(item.pnl))
             entry_note = item.entry_note.strip() or "未记录"
             review_note = item.review_note.strip() or "未记录"
             for leg in entry_legs:
-                if leg["bar_index"] > self._cursor:
+                entry_bar_index = self._trade_chart_index_for_time(leg["timestamp"], int(leg["bar_index"]))
+                if entry_bar_index is None or entry_bar_index > self._cursor:
                     continue
-                left = min(int(leg["bar_index"]), item.exit_bar_index)
-                right = max(int(leg["bar_index"]), item.exit_bar_index)
+                left = min(entry_bar_index, exit_bar_index)
+                right = max(entry_bar_index, exit_bar_index)
                 if not self._x_range_intersects(float(left), float(right), x_bounds):
                     continue
                 leg_quantity = float(leg["quantity"])
                 qty_text = int(leg_quantity) if leg_quantity.is_integer() else round(leg_quantity, 2)
-                x1 = self._trade_review_endpoint_x(int(leg["bar_index"]), float(leg["price"]), entry_stacks)
-                x2 = self._trade_review_endpoint_x(item.exit_bar_index, item.exit_price, exit_stacks)
+                x1 = self._trade_review_endpoint_x(entry_bar_index, float(leg["price"]), entry_stacks)
+                x2 = self._trade_review_endpoint_x(exit_bar_index, item.exit_price, exit_stacks)
                 links.append(
                     TradeLink(
                         trade_number=item.trade_number,
@@ -4031,8 +4034,22 @@ class ChartWidget(QWidget):
                 )
         return links
 
-    @staticmethod
-    def _trade_entry_legs_for_link(item: TradeReviewItem) -> list[dict[str, object]]:
+    def _trade_chart_index_for_time(self, timestamp: datetime, fallback_index: int | None) -> int | None:
+        if not self._bars:
+            return fallback_index
+        for local_index, bar in enumerate(self._bars):
+            if bar.timestamp == timestamp or bar.open_timestamp == timestamp:
+                return self._global_start_index + local_index
+        if fallback_index is None:
+            return None
+        local_index = int(fallback_index) - self._global_start_index
+        if 0 <= local_index < len(self._bars):
+            fallback_bar = self._bars[local_index]
+            if fallback_bar.timestamp == timestamp or fallback_bar.open_timestamp == timestamp:
+                return int(fallback_index)
+        return int(fallback_index)
+
+    def _trade_entry_legs_for_link(self, item: TradeReviewItem) -> list[dict[str, object]]:
         if item.entry_legs:
             return [
                 {
@@ -4044,6 +4061,12 @@ class ChartWidget(QWidget):
                 }
                 for leg in item.entry_legs
             ]
+        trade_legs = self._matching_trade_entry_legs_for_link(item)
+        if trade_legs:
+            return trade_legs
+        action_legs = self._trade_entry_legs_from_actions(item)
+        if action_legs:
+            return action_legs
         return [
             {
                 "bar_index": item.entry_bar_index,
@@ -4053,6 +4076,104 @@ class ChartWidget(QWidget):
                 "note": item.entry_note,
             }
         ]
+
+    def _matching_trade_entry_legs_for_link(self, item: TradeReviewItem) -> list[dict[str, object]]:
+        if not self._trades:
+            return []
+        trade_index = item.trade_number - 1
+        candidates: list[Trade] = []
+        if 0 <= trade_index < len(self._trades):
+            candidates.append(self._trades[trade_index])
+        candidates.extend(
+            trade
+            for trade in self._trades
+            if trade not in candidates
+            and trade.exit_time == item.exit_time
+            and abs(float(trade.exit_price) - float(item.exit_price)) <= 0.0001
+            and abs(float(trade.quantity) - float(item.quantity)) <= 0.0001
+        )
+        for trade in candidates:
+            if not trade.entry_legs:
+                continue
+            return [
+                {
+                    "bar_index": leg.bar_index,
+                    "timestamp": leg.timestamp,
+                    "price": leg.price,
+                    "quantity": leg.quantity,
+                    "note": leg.note,
+                }
+                for leg in trade.entry_legs
+            ]
+        return []
+
+    def _trade_entry_legs_from_actions(self, item: TradeReviewItem) -> list[dict[str, object]]:
+        if not self._trade_actions:
+            return []
+        open_lots: list[dict[str, object]] = []
+        position_quantity = 0.0
+        position_direction: str | None = None
+        for action_index, action in enumerate(self._trade_actions):
+            price = float(action.price if action.price is not None else 0.0)
+            quantity = max(float(action.quantity), 0.0)
+            if action.action_type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+                direction = "long" if action.action_type is ActionType.OPEN_LONG else "short"
+                if position_quantity <= 0 or position_direction != direction:
+                    position_direction = direction
+                    position_quantity = quantity
+                    open_lots = [self._trade_action_entry_lot(action, action_index, price, quantity)]
+                else:
+                    position_quantity += quantity
+                    open_lots.append(self._trade_action_entry_lot(action, action_index, price, quantity))
+                continue
+            if action.action_type is ActionType.ADD and position_quantity > 0:
+                position_quantity += quantity
+                open_lots.append(self._trade_action_entry_lot(action, action_index, price, quantity))
+                continue
+            if action.action_type not in {ActionType.CLOSE, ActionType.REDUCE} or position_quantity <= 0:
+                continue
+            close_quantity = min(quantity, position_quantity) if quantity > 0 else position_quantity
+            is_target_exit = self._trade_action_matches_review_exit(action, action_index, item)
+            consumed = self._consume_trade_link_lots(open_lots, close_quantity)
+            position_quantity = max(position_quantity - close_quantity, 0.0)
+            if position_quantity <= 0:
+                position_direction = None
+                open_lots = []
+            if is_target_exit:
+                return consumed
+        return []
+
+    @staticmethod
+    def _trade_action_entry_lot(action: SessionAction, action_index: int, price: float, quantity: float) -> dict[str, object]:
+        return {
+            "bar_index": action.bar_index,
+            "timestamp": action.timestamp,
+            "price": price,
+            "quantity": quantity,
+            "action_index": action_index,
+            "note": action.note,
+        }
+
+    @staticmethod
+    def _trade_action_matches_review_exit(action: SessionAction, action_index: int, item: TradeReviewItem) -> bool:
+        if item.exit_action_index is not None:
+            return action_index == item.exit_action_index
+        return action.timestamp == item.exit_time and abs(float(action.price or 0.0) - float(item.exit_price)) <= 0.0001
+
+    @staticmethod
+    def _consume_trade_link_lots(open_lots: list[dict[str, object]], quantity: float) -> list[dict[str, object]]:
+        remaining = max(float(quantity), 0.0)
+        consumed: list[dict[str, object]] = []
+        while remaining > 0.0001 and open_lots:
+            lot = open_lots[0]
+            lot_quantity = float(lot["quantity"])
+            matched_quantity = min(remaining, lot_quantity)
+            consumed.append({**lot, "quantity": matched_quantity})
+            remaining -= matched_quantity
+            lot["quantity"] = lot_quantity - matched_quantity
+            if float(lot["quantity"]) <= 0.0001:
+                open_lots.pop(0)
+        return consumed
 
     @staticmethod
     def _trade_review_endpoint_x(bar_index: int, price: float, stacks: dict[tuple[int, float], int]) -> float:
