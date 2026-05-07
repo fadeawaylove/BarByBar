@@ -35,6 +35,8 @@ from barbybar.domain.models import (
     SessionAction,
     SessionStats,
     SessionStatus,
+    TradeEntryLeg,
+    TradeReviewItem,
     WindowBars,
 )
 from barbybar.storage.database import connect
@@ -283,8 +285,9 @@ class Repository:
         actions: list[SessionAction] | None,
         order_lines: list[OrderLine] | None = None,
         drawings: list[ChartDrawing] | None = None,
+        trade_review_items: list[TradeReviewItem] | None = None,
     ) -> ReviewSession:
-        self.save_session_state(session, actions, order_lines, drawings)
+        self.save_session_state(session, actions, order_lines, drawings, trade_review_items)
         return self.get_session(session.id)
 
     def save_session_state(
@@ -293,6 +296,7 @@ class Repository:
         actions: list[SessionAction] | None,
         order_lines: list[OrderLine] | None = None,
         drawings: list[ChartDrawing] | None = None,
+        trade_review_items: list[TradeReviewItem] | None = None,
     ) -> None:
         if session.id is None:
             raise ValueError("Session must have an id before it can be saved.")
@@ -343,6 +347,8 @@ class Repository:
                     for action in actions
                 ],
             )
+            if trade_review_items is not None:
+                self.save_trade_review_items(session.id, trade_timeframe, trade_review_items, commit=False)
         if order_lines is not None:
             persisted_lines = [line for line in order_lines if line.order_type is not OrderLineType.AVERAGE_PRICE]
             incoming_ids = {line.id for line in persisted_lines if line.id is not None}
@@ -450,6 +456,146 @@ class Repository:
                     (drawing_timeframe, drawing.tool_type.value, anchors_json, style_json, drawing.id, session.id, drawing_timeframe),
                 )
         self.conn.commit()
+
+    def save_trade_review_items(
+        self,
+        session_id: int,
+        chart_timeframe: str,
+        items: list[TradeReviewItem],
+        *,
+        commit: bool = True,
+    ) -> None:
+        normalized_timeframe = normalize_timeframe(chart_timeframe)
+        existing_ids = [
+            row["id"]
+            for row in self.conn.execute(
+                "SELECT id FROM trades WHERE session_id = ? AND chart_timeframe = ?",
+                (session_id, normalized_timeframe),
+            ).fetchall()
+        ]
+        if existing_ids:
+            self.conn.executemany("DELETE FROM trade_entry_legs WHERE trade_id = ?", [(trade_id,) for trade_id in existing_ids])
+            self.conn.executemany("DELETE FROM trades WHERE id = ?", [(trade_id,) for trade_id in existing_ids])
+        for item in items:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO trades(
+                    session_id, chart_timeframe, trade_number, entry_time, exit_time, direction, quantity,
+                    entry_price, exit_price, pnl, entry_bar_index, exit_bar_index, holding_bars, exit_reason,
+                    is_manual, had_stop_protection, had_adverse_add, is_planned, entry_action_index,
+                    exit_action_index, entry_note, review_note, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    session_id,
+                    normalized_timeframe,
+                    item.trade_number,
+                    item.entry_time.isoformat(),
+                    item.exit_time.isoformat(),
+                    item.direction,
+                    item.quantity,
+                    item.entry_price,
+                    item.exit_price,
+                    item.pnl,
+                    item.entry_bar_index,
+                    item.exit_bar_index,
+                    item.holding_bars,
+                    item.exit_reason,
+                    int(item.is_manual),
+                    int(item.had_stop_protection),
+                    int(item.had_adverse_add),
+                    int(item.is_planned),
+                    item.entry_action_index,
+                    item.exit_action_index,
+                    item.entry_note,
+                    item.review_note,
+                ),
+            )
+            trade_id = int(cursor.lastrowid)
+            self.conn.executemany(
+                """
+                INSERT INTO trade_entry_legs(trade_id, leg_number, bar_index, ts, price, quantity, action_index, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        trade_id,
+                        leg_number,
+                        leg.bar_index,
+                        leg.timestamp.isoformat(),
+                        leg.price,
+                        leg.quantity,
+                        leg.action_index,
+                        leg.note,
+                    )
+                    for leg_number, leg in enumerate(item.entry_legs, start=1)
+                ],
+            )
+        if commit:
+            self.conn.commit()
+
+    def get_trade_review_items(self, session_id: int, chart_timeframe: str) -> list[TradeReviewItem]:
+        normalized_timeframe = normalize_timeframe(chart_timeframe)
+        trade_rows = self.conn.execute(
+            """
+            SELECT *
+            FROM trades
+            WHERE session_id = ? AND chart_timeframe = ?
+            ORDER BY trade_number
+            """,
+            (session_id, normalized_timeframe),
+        ).fetchall()
+        if not trade_rows:
+            return []
+        leg_rows_by_trade_id: dict[int, list] = {}
+        leg_rows = self.conn.execute(
+            """
+            SELECT *
+            FROM trade_entry_legs
+            WHERE trade_id IN ({})
+            ORDER BY trade_id, leg_number
+            """.format(",".join("?" for _ in trade_rows)),
+            [row["id"] for row in trade_rows],
+        ).fetchall()
+        for row in leg_rows:
+            leg_rows_by_trade_id.setdefault(row["trade_id"], []).append(row)
+        return [
+            TradeReviewItem(
+                trade_number=row["trade_number"],
+                entry_time=datetime.fromisoformat(row["entry_time"]),
+                exit_time=datetime.fromisoformat(row["exit_time"]),
+                direction=row["direction"],
+                quantity=row["quantity"],
+                entry_price=row["entry_price"],
+                exit_price=row["exit_price"],
+                pnl=row["pnl"],
+                entry_bar_index=row["entry_bar_index"],
+                exit_bar_index=row["exit_bar_index"],
+                holding_bars=row["holding_bars"],
+                exit_reason=row["exit_reason"],
+                is_manual=bool(row["is_manual"]),
+                had_stop_protection=bool(row["had_stop_protection"]),
+                had_adverse_add=bool(row["had_adverse_add"]),
+                is_planned=bool(row["is_planned"]),
+                entry_action_index=row["entry_action_index"],
+                exit_action_index=row["exit_action_index"],
+                entry_note=row["entry_note"],
+                review_note=row["review_note"],
+                entry_legs=[
+                    TradeEntryLeg(
+                        bar_index=leg["bar_index"],
+                        timestamp=datetime.fromisoformat(leg["ts"]),
+                        price=leg["price"],
+                        quantity=leg["quantity"],
+                        action_index=leg["action_index"],
+                        note=leg["note"],
+                    )
+                    for leg in leg_rows_by_trade_id.get(row["id"], [])
+                ],
+            )
+            for row in trade_rows
+        ]
 
     def get_session(self, session_id: int) -> ReviewSession:
         row = self.conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()

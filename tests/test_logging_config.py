@@ -27,14 +27,62 @@ def test_setup_logging_creates_log_files() -> None:
         setup_logging(log_path)
         logger.info("hello loguru")
         logger.debug("debug only")
+        logger.warning("warning visible in debug")
+        logger.error("error visible in debug")
         logger.complete()
+
+        app_log = (log_path / "app.log").read_text(encoding="utf-8")
+        debug_log = (log_path / "debug.log").read_text(encoding="utf-8")
 
         assert (log_path / "app.log").exists()
         assert (log_path / "debug.log").exists()
         assert (log_path / "error.log").exists()
-        assert "hello loguru" in (log_path / "app.log").read_text(encoding="utf-8")
-        assert "debug only" not in (log_path / "app.log").read_text(encoding="utf-8")
-        assert "debug only" in (log_path / "debug.log").read_text(encoding="utf-8")
+        assert "hello loguru" in app_log
+        assert "debug only" not in app_log
+        assert "debug only" in debug_log
+        assert "hello loguru" in debug_log
+        assert "warning visible in debug" in debug_log
+        assert "error visible in debug" in debug_log
+    finally:
+        shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_file_logging_policy_is_uniform() -> None:
+    assert logging_config.LOG_ROTATION == "5 MB"
+    assert logging_config.LOG_RETENTION == 5
+    assert not hasattr(logging_config, "LOG_COMPRESSION")
+
+
+def test_setup_logging_configures_file_sink_policy(monkeypatch) -> None:
+    case_dir = _case_dir()
+    log_path = case_dir / "logs"
+    added_sinks: list[tuple[object, dict]] = []
+
+    class BoundLogger:
+        def info(self, *args, **kwargs) -> None:
+            return None
+
+    try:
+        monkeypatch.setattr(logging_config.logger, "remove", lambda: None)
+        monkeypatch.setattr(logging_config.logger, "add", lambda sink, **kwargs: added_sinks.append((sink, kwargs)))
+        monkeypatch.setattr(logging_config.logger, "bind", lambda **kwargs: BoundLogger())
+        monkeypatch.setattr(logging_config, "_install_exception_hooks", lambda: None)
+
+        setup_logging(log_path)
+
+        file_sinks = {
+            Path(sink).name: kwargs
+            for sink, kwargs in added_sinks
+            if isinstance(sink, Path) and Path(sink).name in {"app.log", "debug.log", "error.log"}
+        }
+        assert set(file_sinks) == {"app.log", "debug.log", "error.log"}
+        assert all(kwargs["rotation"] == "5 MB" for kwargs in file_sinks.values())
+        assert all(kwargs["retention"] == 5 for kwargs in file_sinks.values())
+        assert all("compression" not in kwargs for kwargs in file_sinks.values())
+        assert file_sinks["app.log"]["level"] == "INFO"
+        assert file_sinks["debug.log"]["level"] == "DEBUG"
+        assert "filter" not in file_sinks["debug.log"]
+        assert file_sinks["error.log"]["level"] == "ERROR"
     finally:
         shutil.rmtree(case_dir, ignore_errors=True)
 

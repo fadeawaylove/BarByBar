@@ -14,9 +14,8 @@ from barbybar import __version__
 from barbybar.paths import default_db_path, default_log_dir
 
 
-LOG_ROTATION = "10 MB"
-LOG_RETENTION = "14 days"
-LOG_COMPRESSION = "zip"
+LOG_ROTATION = "5 MB"
+LOG_RETENTION = 5
 CONSOLE_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
     "<level>{level: <8}</level> | "
@@ -161,7 +160,6 @@ def setup_logging(base_log_dir: str | Path | None = None):
         format=FILE_FORMAT,
         rotation=LOG_ROTATION,
         retention=LOG_RETENTION,
-        compression=LOG_COMPRESSION,
         enqueue=False,
         backtrace=True,
         diagnose=False,
@@ -173,12 +171,10 @@ def setup_logging(base_log_dir: str | Path | None = None):
         format=FILE_FORMAT,
         rotation=LOG_ROTATION,
         retention=LOG_RETENTION,
-        compression=LOG_COMPRESSION,
         enqueue=False,
         backtrace=True,
         diagnose=False,
         encoding="utf-8",
-        filter=lambda record: record["level"].no < 20,
     )
     logger.add(
         target_dir / "error.log",
@@ -186,7 +182,6 @@ def setup_logging(base_log_dir: str | Path | None = None):
         format=FILE_FORMAT,
         rotation=LOG_ROTATION,
         retention=LOG_RETENTION,
-        compression=LOG_COMPRESSION,
         enqueue=False,
         backtrace=True,
         diagnose=False,

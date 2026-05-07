@@ -14,7 +14,7 @@ from barbybar import paths
 from barbybar.data.csv_importer import MissingColumnsError
 from barbybar.data.tick_size import default_tick_size_for_symbol, format_average_price, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLine, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, TradeReviewItem, WindowBars
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLine, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, TradeEntryLeg, TradeReviewItem, WindowBars
 from barbybar.performance_metrics import clear_metrics, recent_metrics, record_metric
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
@@ -1620,6 +1620,110 @@ def test_main_window_keeps_trade_state_isolated_when_switching_timeframes(app: Q
         window.close()
         window.deleteLater()
         app.processEvents()
+
+
+def test_save_session_persists_trade_review_items_with_entry_legs(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    assert window.engine is not None
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=100, note="首仓计划")
+    window.engine.step_forward()
+    window.engine.record_action(ActionType.ADD, quantity=1, price=102, note="加仓确认")
+    window.engine.step_forward()
+    window.engine.record_action(ActionType.CLOSE, quantity=2, price=104, note="整体复盘")
+    captured: dict[str, object] = {}
+
+    def fake_save_session(session, actions, order_lines=None, drawings=None, trade_review_items=None):
+        captured["trade_review_items"] = trade_review_items
+        return session
+
+    monkeypatch.setattr(window.repo, "save_session", fake_save_session)
+
+    window.save_session()
+
+    items = captured["trade_review_items"]
+    assert isinstance(items, list)
+    assert len(items) == 1
+    assert [(leg.bar_index, leg.price, leg.quantity, leg.action_index, leg.note) for leg in items[0].entry_legs] == [
+        (25, 100, 1, 0, "首仓计划"),
+        (26, 102, 1, 1, "加仓确认"),
+    ]
+    assert items[0].review_note == "整体复盘"
+
+
+def test_build_engine_prefers_persisted_trade_review_items(window: MainWindow) -> None:
+    bars = [
+        Bar(
+            timestamp=datetime(2025, 1, 1, 9, index),
+            open=100 + index,
+            high=101 + index,
+            low=99 + index,
+            close=100.5 + index,
+            volume=1000 + index,
+        )
+        for index in range(10)
+    ]
+    session = ReviewSession(
+        id=1,
+        dataset_id=1,
+        symbol="IF",
+        timeframe="1m",
+        chart_timeframe="1m",
+        start_index=0,
+        current_index=5,
+        current_bar_time=bars[5].timestamp,
+        status=SessionStatus.ACTIVE,
+        title="Persisted trade",
+        notes="",
+        tags=[],
+        position=PositionState(),
+        stats=SessionStats(),
+        created_at=bars[0].timestamp,
+        updated_at=bars[0].timestamp,
+    )
+    persisted = TradeReviewItem(
+        trade_number=1,
+        entry_time=bars[2].timestamp,
+        exit_time=bars[5].timestamp,
+        direction="long",
+        quantity=2,
+        entry_price=101,
+        exit_price=105,
+        pnl=8,
+        entry_bar_index=2,
+        exit_bar_index=5,
+        holding_bars=3,
+        exit_reason="manual_close",
+        is_manual=True,
+        had_stop_protection=False,
+        had_adverse_add=False,
+        is_planned=True,
+        entry_action_index=0,
+        exit_action_index=2,
+        entry_note="DB 首仓",
+        review_note="DB 复盘",
+        entry_legs=[
+            TradeEntryLeg(2, bars[2].timestamp, 100, 1, 0, "DB 首仓"),
+            TradeEntryLeg(4, bars[4].timestamp, 102, 1, 1, "DB 加仓"),
+        ],
+    )
+
+    engine = window._build_engine(
+        session,
+        actions=[],
+        order_lines=[],
+        chart_timeframe="1m",
+        anchor_time=bars[5].timestamp,
+        window=WindowBars(bars, 0, len(bars) - 1, 5, len(bars)),
+        trade_review_items=[persisted],
+    )
+
+    loaded = engine.trade_review_items()
+    assert len(loaded) == 1
+    assert loaded[0].review_note == "DB 复盘"
+    assert [(leg.bar_index, leg.price, leg.quantity, leg.note) for leg in loaded[0].entry_legs] == [
+        (2, 100, 1, "DB 首仓"),
+        (4, 102, 1, "DB 加仓"),
+    ]
 
 
 def test_clicking_drawing_template_button_activates_tool_and_style(window: MainWindow) -> None:
@@ -3908,7 +4012,7 @@ def test_session_save_worker_skips_stale_requests(monkeypatch: pytest.MonkeyPatc
         def __init__(self, db_path) -> None:
             opened_db_paths.append(Path(db_path) if db_path is not None else None)
 
-        def save_session_state(self, session, actions, order_lines, drawings) -> None:
+        def save_session_state(self, session, actions, order_lines, drawings, trade_review_items=None) -> None:
             saved_generations.append(session.current_index)
 
     monkeypatch.setattr(main_window_module, "Repository", FakeRepo)
@@ -3934,11 +4038,12 @@ def test_session_save_worker_skips_stale_requests(monkeypatch: pytest.MonkeyPatc
         created_at=datetime(2025, 1, 1, 9, 0),
         updated_at=datetime(2025, 1, 1, 9, 0),
     )
-    first = SessionSaveRequest(1, "step_forward", session, [], [], [])
+    first = SessionSaveRequest(1, "step_forward", session, [], [], [], [])
     second = SessionSaveRequest(
         2,
         "step_forward",
         replace(session, current_index=11, current_bar_time=datetime(2025, 1, 1, 9, 11)),
+        [],
         [],
         [],
         [],

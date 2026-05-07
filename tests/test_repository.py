@@ -7,7 +7,7 @@ from uuid import uuid4
 from barbybar.data.tick_size import default_tick_size_for_symbol
 from barbybar.data.timeframe import aggregate_bars, default_chart_timeframe, find_bar_index_for_timestamp, normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
-from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, SessionStatus
+from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, SessionStatus, TradeEntryLeg, TradeReviewItem
 from barbybar.storage.database import connect
 from barbybar.storage.repository import Repository
 
@@ -61,6 +61,85 @@ def test_repository_roundtrip() -> None:
         assert loaded_drawings[0].style["width"] == 3
         assert order_lines[0].order_type is OrderLineType.STOP_LOSS
         assert order_lines[0].active_from_bar_index == 1
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_repository_persists_trade_review_items_with_entry_legs() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        start = datetime(2025, 1, 1, 9, 0)
+        item = TradeReviewItem(
+            trade_number=1,
+            entry_time=start,
+            exit_time=start + timedelta(minutes=10),
+            direction="long",
+            quantity=2,
+            entry_price=101.5,
+            exit_price=103,
+            pnl=3,
+            entry_bar_index=5,
+            exit_bar_index=9,
+            holding_bars=4,
+            exit_reason="manual_close",
+            is_manual=True,
+            had_stop_protection=True,
+            had_adverse_add=False,
+            is_planned=True,
+            entry_action_index=0,
+            exit_action_index=2,
+            entry_note="首仓计划",
+            review_note="按计划出场",
+            entry_legs=[
+                TradeEntryLeg(5, start + timedelta(minutes=5), 101, 1, 0, "首仓计划"),
+                TradeEntryLeg(7, start + timedelta(minutes=7), 102, 1, 1, "加仓确认"),
+            ],
+        )
+
+        repo.save_session(session, [], [], [], [item])
+        loaded = repo.get_trade_review_items(session.id or 0, session.chart_timeframe)
+
+        assert len(loaded) == 1
+        assert loaded[0].entry_note == "首仓计划"
+        assert loaded[0].review_note == "按计划出场"
+        assert loaded[0].is_manual is True
+        assert loaded[0].had_stop_protection is True
+        assert loaded[0].is_planned is True
+        assert [(leg.bar_index, leg.price, leg.quantity, leg.action_index, leg.note) for leg in loaded[0].entry_legs] == [
+            (5, 101, 1, 0, "首仓计划"),
+            (7, 102, 1, 1, "加仓确认"),
+        ]
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_repository_trade_review_items_replace_current_timeframe_only() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1")
+        session = repo.create_session(dataset.id or 0, start_index=1)
+        start = datetime(2025, 1, 1, 9, 0)
+        first = TradeReviewItem(1, start, start + timedelta(minutes=1), "long", 1, 100, 101, 1, 1, 2, 1, "manual_close", True, False, False, True, entry_legs=[TradeEntryLeg(1, start, 100, 1)])
+        second = TradeReviewItem(2, start, start + timedelta(minutes=2), "long", 1, 102, 103, 1, 3, 4, 1, "manual_close", True, False, False, True, entry_legs=[TradeEntryLeg(3, start, 102, 1)])
+        other_timeframe = TradeReviewItem(1, start, start + timedelta(minutes=5), "short", 1, 110, 108, 2, 10, 11, 1, "manual_close", True, False, False, True, entry_legs=[TradeEntryLeg(10, start, 110, 1)])
+
+        session.chart_timeframe = "5m"
+        repo.save_session(session, [], [], [], [first, second])
+        session.chart_timeframe = "15m"
+        repo.save_session(session, [], [], [], [other_timeframe])
+        session.chart_timeframe = "5m"
+        repo.save_session(session, [], [], [], [first])
+
+        assert [item.trade_number for item in repo.get_trade_review_items(session.id or 0, "5m")] == [1]
+        assert [item.direction for item in repo.get_trade_review_items(session.id or 0, "15m")] == ["short"]
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

@@ -79,6 +79,7 @@ from barbybar.domain.models import (
     SessionAction,
     SessionStats,
     SessionStatus,
+    Trade,
     TradeReviewItem,
     WindowBars,
     normalize_drawing_style,
@@ -185,6 +186,7 @@ class SessionSaveRequest:
     actions: list[SessionAction]
     order_lines: list[OrderLine]
     drawings: list[ChartDrawing]
+    trade_review_items: list[TradeReviewItem]
 
 
 class SessionSaveWorker(QObject):
@@ -238,7 +240,13 @@ class SessionSaveWorker(QObject):
     def _save_request(self, request: SessionSaveRequest) -> None:
         if self._repo is None:
             self._repo = Repository(self.db_path)
-        self._repo.save_session_state(request.session, request.actions, request.order_lines, request.drawings)
+        self._repo.save_session_state(
+            request.session,
+            request.actions,
+            request.order_lines,
+            request.drawings,
+            request.trade_review_items,
+        )
 
 
 def _thread_id() -> int:
@@ -437,6 +445,13 @@ class SessionLoadWorker(QObject):
             drawing_step = perf_counter()
             drawings = repo.get_drawings(session.id or 0, timeframe)
             log.debug("event=get_drawings elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - drawing_step) * 1000)
+            trade_step = perf_counter()
+            trade_review_items = repo.get_trade_review_items(session.id or 0, timeframe)
+            log.debug(
+                "event=get_trade_review_items elapsed_ms={elapsed_ms:.3f} items={items}",
+                elapsed_ms=(perf_counter() - trade_step) * 1000,
+                items=len(trade_review_items),
+            )
             window_step = perf_counter()
             window = repo.get_chart_window(
                 session.id or 0,
@@ -479,6 +494,7 @@ class SessionLoadWorker(QObject):
                     "actions": actions,
                     "order_lines": order_lines,
                     "drawings": drawings,
+                    "trade_review_items": trade_review_items,
                     "chart_timeframe": timeframe,
                     "anchor_time": self.anchor_time or session.current_bar_time,
                     "window": window,
@@ -4606,6 +4622,7 @@ class MainWindow(QMainWindow):
             self.engine.actions if persist_trades else None,
             self.engine.order_lines if persist_trades else None,
             self.chart_widget.drawings() if persist_drawings else None,
+            self.engine.trade_review_items() if persist_trades else None,
         )
         self.engine.session = saved
         if persist_trades:
@@ -4676,6 +4693,7 @@ class MainWindow(QMainWindow):
         chart_timeframe: str,
         anchor_time,
         window: WindowBars,
+        trade_review_items: list[TradeReviewItem] | None = None,
     ) -> ReviewEngine:
         bars = window.bars
         if not bars:
@@ -4710,6 +4728,22 @@ class MainWindow(QMainWindow):
             engine.actions.append(action)
         engine.order_lines = list(order_lines)
         engine._invalidate_trade_review_cache()
+        if trade_review_items:
+            engine.trades = [
+                Trade(
+                    entry_time=item.entry_time,
+                    exit_time=item.exit_time,
+                    direction=item.direction,
+                    quantity=item.quantity,
+                    entry_price=item.entry_price,
+                    exit_price=item.exit_price,
+                    pnl=item.pnl,
+                    entry_legs=list(item.entry_legs),
+                )
+                for item in trade_review_items
+            ]
+            engine._trade_review_items_cache = list(trade_review_items)
+            engine._trade_review_dirty = False
         engine._reconcile_state()
         if bars:
             engine.session.current_bar_time = anchor_time or engine.current_bar.timestamp
@@ -5091,6 +5125,7 @@ class MainWindow(QMainWindow):
             actions = payload["actions"]
             order_lines = payload["order_lines"]
             drawings = payload["drawings"]
+            persisted_trade_review_items = payload.get("trade_review_items") or []
             dataset = payload["dataset"]
             chart_timeframe = payload["chart_timeframe"]
             anchor_time = payload["anchor_time"]
@@ -5107,7 +5142,15 @@ class MainWindow(QMainWindow):
                 elapsed_ms=(perf_counter() - choice_step) * 1000,
             )
             engine_step = perf_counter()
-            self.engine = self._build_engine(session, actions, order_lines, chart_timeframe, session.current_bar_time, window)
+            self.engine = self._build_engine(
+                session,
+                actions,
+                order_lines,
+                chart_timeframe,
+                session.current_bar_time,
+                window,
+                persisted_trade_review_items,
+            )
             log.bind(session_id=session.id, dataset_id=dataset.id).debug(
                 "event=build_engine elapsed_ms={elapsed_ms:.3f}",
                 elapsed_ms=(perf_counter() - engine_step) * 1000,
@@ -5198,6 +5241,7 @@ class MainWindow(QMainWindow):
             actions=deepcopy(self.engine.actions),
             order_lines=deepcopy(self.engine.order_lines),
             drawings=deepcopy(self.chart_widget.drawings()),
+            trade_review_items=deepcopy(self.engine.trade_review_items()),
         )
 
     def _enqueue_step_forward_save(self, trigger: str = "step_forward") -> None:
