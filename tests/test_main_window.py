@@ -36,6 +36,7 @@ from barbybar.ui.main_window import (
     SessionLibraryDialog,
     SettingsDialog,
     TradeLinkNoteDialog,
+    TradeHistoryDialog,
     UpdateActionDialog,
 )
 from barbybar.ui.theme import AppTheme
@@ -373,6 +374,8 @@ def test_right_panel_uses_compact_trade_layout_sections(window: MainWindow) -> N
     assert window.splitter.widget(1).minimumWidth() == 288
     assert trade_group.findChild(QWidget, "directTradeSection") is not None
     assert trade_group.findChild(QWidget, "limitTradeSection") is not None
+    assert trade_group.findChild(QWidget, "directTradeSection").property("priority") == "primary"
+    assert trade_group.findChild(QWidget, "limitTradeSection").property("priority") == "secondary"
     assert trade_group.findChild(QWidget, "directTradeFieldsRow") is not None
     assert trade_group.findChild(QWidget, "directTradeButtonsRow") is not None
     assert trade_group.findChild(QWidget, "limitTradeFieldsRow") is not None
@@ -391,17 +394,42 @@ def test_right_panel_uses_compact_trade_layout_sections(window: MainWindow) -> N
     assert window.price_spin.parentWidget() is trade_group.findChild(QWidget, "directTradeFieldsRow")
     assert window.draw_quantity_spin.parentWidget() is trade_group.findChild(QWidget, "limitTradeFieldsRow")
     assert window.tick_size_spin.parentWidget() is trade_group.findChild(QWidget, "limitTradeFieldsRow")
+    assert window.quantity_spin.width() == AppTheme.sidebar_input_width_sm
+    assert window.draw_quantity_spin.width() == AppTheme.sidebar_input_width_sm
+    assert window.price_spin.width() == AppTheme.sidebar_input_width_md
+    assert window.tick_size_spin.width() == AppTheme.sidebar_input_width_md
 
 
 def test_right_panel_display_section_collects_low_priority_chart_toggles(window: MainWindow) -> None:
     display_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "显示")
+    display_toggle_row = display_group.findChild(QWidget, "displayToggleRow")
+    session_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "会话")
+    session_action_row = session_group.findChild(QWidget, "sessionActionRow")
     button_texts = [button.text() for button in display_group.findChildren(QPushButton)]
 
     assert button_texts[:3] == ["K线序号", "隐藏画线", "不过夜"]
     assert "历史交易" not in button_texts
-    assert window.bar_count_toggle_button.parentWidget() is display_group
-    assert window.hide_drawings_toggle_button.parentWidget() is display_group
-    assert window.flatten_at_session_end_toggle_button.parentWidget() is display_group
+    assert display_toggle_row is not None
+    assert window.bar_count_toggle_button.parentWidget() is display_toggle_row
+    assert window.hide_drawings_toggle_button.parentWidget() is display_toggle_row
+    assert window.flatten_at_session_end_toggle_button.parentWidget() is display_toggle_row
+    assert session_action_row is not None
+    assert [button.text() for button in session_action_row.findChildren(QPushButton)] == ["保存会话", "标记完成"]
+
+
+def test_position_readout_uses_state_property_for_scanability(window: MainWindow) -> None:
+    assert window.stats_label.property("state") == "flat"
+
+    _seed_engine(window)
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=101)
+    window._update_ui_from_engine_sync()
+
+    assert window.stats_label.property("state") == "long"
+
+    window.engine.session.status = SessionStatus.COMPLETED
+    window._update_ui_from_engine_sync()
+
+    assert window.stats_label.property("state") == "completed"
 
 
 def test_right_panel_uses_training_and_history_tabs(window: MainWindow) -> None:
@@ -685,6 +713,21 @@ def test_toolbar_buttons_define_checked_feedback_in_stylesheet(window: MainWindo
     stylesheet = window.styleSheet()
 
     assert "QPushButton[role='toolbar']:checked" in stylesheet
+    assert "QPushButton[role='toolbar']:disabled" in stylesheet
+    assert "QPushButton[role='timeframe']:disabled" in stylesheet
+    assert "QPushButton[role='sidebarTab']:disabled" in stylesheet
+    assert "QPushButton:disabled" in stylesheet
+    assert AppTheme.text_disabled in stylesheet
+
+
+def test_theme_styles_tables_and_common_scrollbars(window: MainWindow) -> None:
+    stylesheet = window.styleSheet()
+
+    assert "QTableView {" in stylesheet
+    assert "QHeaderView::section" in stylesheet
+    assert "QScrollBar::handle:vertical" in stylesheet
+    assert AppTheme.table_header in stylesheet
+    assert AppTheme.table_selected in stylesheet
 
 
 def test_timeframe_and_quiet_buttons_do_not_draw_outer_borders(window: MainWindow) -> None:
@@ -700,6 +743,25 @@ def test_top_toolbar_visual_families_share_aligned_vertical_sizes(window: MainWi
     assert all(button.minimumHeight() >= 30 or button.height() >= 30 for button in window._drawing_template_buttons.values())
     assert all(button.minimumHeight() >= 30 or button.height() >= 30 for button in [window.dataset_button, window.session_button, window.settings_button, window.log_viewer_button, window.check_update_button])
     assert all(button.width() == 28 for button in window._drawing_tool_buttons.values())
+    assert window.settings_button.minimumWidth() >= AppTheme.toolbar_action_width_sm
+    assert window.dataset_button.minimumWidth() >= AppTheme.toolbar_action_width_md
+    assert window.session_button.minimumWidth() >= AppTheme.toolbar_action_width_md
+    assert window.log_viewer_button.minimumWidth() >= AppTheme.toolbar_action_width_lg
+    assert window.check_update_button.minimumWidth() >= AppTheme.toolbar_action_width_lg
+    assert all(button.minimumWidth() >= 42 for button in window.timeframe_buttons.values())
+
+
+def test_top_toolbar_separates_workspace_and_diagnostics_actions(window: MainWindow) -> None:
+    management_group = window.findChild(QWidget, "workspaceManagementActions")
+    diagnostics_group = window.findChild(QWidget, "workspaceDiagnosticsActions")
+
+    assert management_group is not None
+    assert diagnostics_group is not None
+    assert window.dataset_button.parentWidget() is management_group
+    assert window.session_button.parentWidget() is management_group
+    assert window.settings_button.parentWidget() is management_group
+    assert window.log_viewer_button.parentWidget() is diagnostics_group
+    assert window.check_update_button.parentWidget() is diagnostics_group
 
 
 def test_bottom_bar_controls_share_safe_minimum_heights(window: MainWindow) -> None:
@@ -708,16 +770,23 @@ def test_bottom_bar_controls_share_safe_minimum_heights(window: MainWindow) -> N
     assert window.jump_spin.minimumHeight() >= 26 or window.jump_spin.height() >= 26
     assert window.reset_view_button.minimumHeight() >= 26 or window.reset_view_button.height() >= 26
     assert window.clear_lines_button.minimumHeight() >= 26 or window.clear_lines_button.height() >= 26
+    assert window.prev_button.minimumWidth() >= AppTheme.status_button_width_md
+    assert window.next_button.minimumWidth() >= AppTheme.status_button_width_lg - 6
+    assert window.reset_view_button.minimumWidth() >= AppTheme.status_button_width_lg
+    assert window.clear_lines_button.minimumWidth() >= AppTheme.status_button_width_lg
 
 
 def test_bottom_bar_removes_vertical_padding_but_keeps_horizontal_gutter(window: MainWindow) -> None:
     bottom_bar = window.centralWidget().findChild(QWidget, "replayControlBar")
     margins = bottom_bar.layout().contentsMargins()
+    primary_actions = window.centralWidget().findChild(QWidget, "replayPrimaryActions")
 
     assert margins.left() == 8
     assert margins.top() == 0
     assert margins.right() == 8
     assert margins.bottom() == 0
+    assert primary_actions is not None
+    assert primary_actions.layout().contentsMargins().top() == 2
 
 
 def test_status_bar_is_hidden_when_transient_messages_move_to_progress_label(window: MainWindow) -> None:
@@ -784,6 +853,11 @@ def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWi
         assert dialog.reset_candle_colors_button.text() == "恢复默认配色"
         assert dialog.default_order_quantity_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
         assert dialog.default_draw_order_quantity_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
+        assert dialog.reset_candle_colors_button.property("role") == "secondary"
+        assert dialog.open_log_button.property("role") == "primary"
+        assert dialog.open_log_dir_button.property("role") == "secondary"
+        assert dialog.copy_log_dir_button.property("role") == "secondary"
+        assert dialog.refresh_performance_button.property("role") == "secondary"
         label_texts = {label.text() for label in dialog.findChildren(QLabel)}
         assert "Alt + 左键拖拽" in label_texts
         assert "悬停 K 线时显示开盘时间和收盘时间" in label_texts
@@ -952,9 +1026,26 @@ def test_log_viewer_dialog_reads_selected_log_file(app: QApplication, tmp_path: 
     dialog = LogViewerDialog(logs_path=logs_dir)
     try:
         assert "app line" in dialog.log_text.toPlainText()
+        assert dialog.refresh_log_button.property("role") == "secondary"
+        assert dialog.status_label.property("role") == "statusMuted"
+        assert dialog.status_label.text().startswith("正在查看 | ")
         dialog.log_file_combo.setCurrentText("debug.log")
         app.processEvents()
         assert "debug line" in dialog.log_text.toPlainText()
+        assert dialog.status_label.text().startswith("正在查看 | ")
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_log_viewer_dialog_shows_missing_log_status(app: QApplication, tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+
+    dialog = LogViewerDialog(logs_path=logs_dir)
+    try:
+        assert "日志文件不存在" in dialog.log_text.toPlainText()
+        assert dialog.status_label.text().startswith("未找到日志文件 | ")
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -3432,7 +3523,8 @@ def test_trade_history_sidebar_uses_right_panel_tabs(window: MainWindow) -> None
     assert sidebar.objectName() == "tradeReviewSidebar"
     assert sidebar.trade_card_list.objectName() == "tradeReviewCardList"
     assert sidebar.trade_card_list.count() == 1
-    assert "#1 多  PnL 2.00" in sidebar.trade_card_list.item(0).text()
+    assert "#1 多  PnL +2.00 · 盈利" in sidebar.trade_card_list.item(0).text()
+    assert "2根 · 手动平仓" in sidebar.trade_card_list.item(0).text()
     header_buttons = [button.text() for button in sidebar.findChildren(QPushButton)]
     assert "上一笔" in header_buttons
     assert "下一笔" in header_buttons
@@ -3499,6 +3591,36 @@ def test_trade_history_previous_next_navigation_updates_selection_and_readout(wi
     assert sidebar.next_trade_button.isEnabled() is True
     assert sidebar.trade_card_list.currentItem().data(Qt.ItemDataRole.UserRole) == 1
     assert focus_calls[-1] == (1, 1, 3)
+
+
+def test_full_trade_history_dialog_shows_empty_and_filtered_states(window: MainWindow) -> None:
+    dialog = TradeHistoryDialog(window)
+    try:
+        assert dialog.empty_state_label.isHidden() is False
+        assert dialog.empty_state_label.text() == "暂无历史交易"
+        assert dialog.clear_filters_button.isEnabled() is False
+
+        start = datetime(2025, 1, 1, 9, 0)
+        window._trade_review_items = [
+            TradeReviewItem(1, start, start + timedelta(minutes=2), "long", 1, 100, 101, 1, 1, 3, 2, "manual_close", True, False, False, True),
+        ]
+        dialog.refresh_items()
+        assert dialog.empty_state_label.isHidden()
+
+        dialog.outcome_filter.setCurrentIndex(dialog.outcome_filter.findData("loss"))
+
+        assert dialog.trade_history_model.rowCount() == 0
+        assert dialog.empty_state_label.isHidden() is False
+        assert dialog.empty_state_label.text() == "没有符合筛选的交易"
+        assert dialog.clear_filters_button.isEnabled() is True
+
+        dialog.clear_filters_button.click()
+
+        assert dialog.trade_history_model.rowCount() == 1
+        assert dialog.empty_state_label.isHidden()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
 
 
 def test_trade_history_navigation_disables_at_last_visible_trade(window: MainWindow) -> None:
@@ -3582,6 +3704,7 @@ def test_trade_history_previous_next_preserves_entry_focus_mode(window: MainWind
     assert window._selected_trade_number == 2
     assert window._selected_trade_view == "entry"
     assert sidebar.entry_focus_button.isChecked() is True
+    assert sidebar.focus_state_label.text() == "当前聚焦：入场"
     assert focus_calls[-1] == (2, "entry", 5)
 
 
@@ -3612,6 +3735,7 @@ def test_trade_history_saves_entry_and_review_notes_to_actions(window: MainWindo
     assert window._selected_trade_number == 1
     assert sidebar.entry_note_edit.toPlainText() == "突破回踩有效，准备跟随"
     assert sidebar.review_note_edit.toPlainText() == "出场及时，但仓位可以更轻"
+    assert sidebar.note_status_label.text() == "想法已保存"
 
 
 def test_trade_link_note_dialog_loads_and_saves_entry_and_review_notes(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4353,6 +4477,11 @@ def test_dataset_manager_filters_by_display_name_and_symbol(window: MainWindow) 
     try:
         assert dataset_dialog.dataset_filter.placeholderText() == "按名称或品种筛选"
         assert dataset_dialog.dataset_list.count() == 3
+        assert dataset_dialog.empty_state_label.isHidden() is True
+        assert dataset_dialog._import_button.property("role") == "primary"
+        assert dataset_dialog._import_folder_button.property("role") == "secondary"
+        assert dataset_dialog._delete_button.property("role") == "danger"
+        assert dataset_dialog._close_button.property("role") == "quiet"
 
         dataset_dialog.dataset_filter.setText("silver")
         assert dataset_dialog.dataset_list.count() == 1
@@ -4362,8 +4491,14 @@ def test_dataset_manager_filters_by_display_name_and_symbol(window: MainWindow) 
         assert dataset_dialog.dataset_list.count() == 1
         assert "silver-contract.csv" in dataset_dialog.dataset_list.item(0).text()
 
+        dataset_dialog.dataset_filter.setText("missing")
+        assert dataset_dialog.dataset_list.count() == 0
+        assert dataset_dialog.empty_state_label.text() == "没有符合筛选的数据集"
+        assert dataset_dialog.empty_state_label.isHidden() is False
+
         dataset_dialog.dataset_filter.setText("")
         assert dataset_dialog.dataset_list.count() == 3
+        assert dataset_dialog.empty_state_label.isHidden() is True
     finally:
         dataset_dialog.close()
         dataset_dialog.deleteLater()
@@ -4393,8 +4528,14 @@ def test_session_library_filters_by_title_symbol_and_tags(window: MainWindow) ->
         assert session_dialog.session_list.count() == 1
         assert "午后整理观察" in session_dialog.session_list.item(0).text()
 
+        session_dialog.session_filter.setText("missing")
+        assert session_dialog.session_list.count() == 0
+        assert session_dialog.empty_state_label.text() == "没有符合筛选的案例"
+        assert session_dialog.empty_state_label.isHidden() is False
+
         session_dialog.session_filter.setText("")
         assert session_dialog.session_list.count() == 2
+        assert session_dialog.empty_state_label.isHidden() is True
     finally:
         session_dialog.close()
         session_dialog.deleteLater()

@@ -28,14 +28,25 @@ class AppTheme:
     border = "#d7d0c5"
     border_strong = "#b6ad9e"
     border_focus = "#24466d"
+    border_soft = "#e4ded5"
     text = "#1f2730"
     text_muted = "#66707b"
     text_faint = "#8a928f"
     text_inverse = "#ffffff"
+    text_disabled = "#a6adb4"
     primary = "#24466d"
     primary_hover = "#1a3859"
     primary_soft = "#dfe7ef"
     primary_tint = "#edf4fb"
+    focus = border_focus
+    hover = surface_elevated
+    pressed = surface_muted
+    checked = primary_soft
+    checked_border = primary
+    selected = primary_tint
+    selected_border = primary
+    disabled = "#edf0f2"
+    disabled_border = "#d8dde2"
     info = "#2d628f"
     success = "#386854"
     success_soft = "#e5f0ea"
@@ -49,6 +60,9 @@ class AppTheme:
     danger_soft = "#f8e3e0"
     accent = "#f0c36b"
     accent_soft = "#fff3d6"
+    table_header = "#ede8df"
+    table_row_alt = "#f8f5ef"
+    table_selected = primary_tint
     radius_sm = 8
     radius_md = 12
     radius_lg = 16
@@ -67,17 +81,24 @@ class AppTheme:
     toolbar_icon_button_size = 28
     toolbar_vertical_margin = 3
     toolbar_button_radius = 6
+    toolbar_action_width_sm = 50
+    toolbar_action_width_md = 64
+    toolbar_action_width_lg = 76
     status_strip_height = 32
     status_button_height = 26
+    status_button_width_md = 64
+    status_button_width_lg = 78
+    sidebar_input_width_sm = 58
+    sidebar_input_width_md = 82
     flat_group_gap = 8
     sidebar_compact_width = 288
     sidebar_width = sidebar_compact_width
-    chart_axis = "#b3ab9d"
-    chart_preview = "#6e665b"
-    chart_measure = "#2f6590"
+    chart_axis = "#c0b8ac"
+    chart_preview = "#575048"
+    chart_measure = "#255f86"
     chart_marker = "#ded8cf"
-    chart_label = "#9a9388"
-    chart_label_soft = "#b4ab9c"
+    chart_label = "#8f887d"
+    chart_label_soft = "#aaa194"
     chart_session_end = "#8e8679"
     chart_average = "#5f6b7a"
     chart_entry_long = "#2979ff"
@@ -126,9 +147,21 @@ QWidget#replayControlBar {{
     background: {rgba(AppTheme.surface_elevated, 188)};
     border-radius: {AppTheme.radius_sm}px;
 }}
+QWidget#replayPrimaryActions {{
+    background: {rgba(AppTheme.primary_tint, 145)};
+    border: 1px solid {rgba(AppTheme.primary, 80)};
+    border-radius: {AppTheme.radius_sm}px;
+}}
+QWidget#replaySecondaryActions {{
+    background: transparent;
+    border: none;
+}}
 QWidget#workspaceTools,
 QWidget#workspaceActions,
+QWidget#workspaceManagementActions,
+QWidget#workspaceDiagnosticsActions,
 QWidget#replayUtilityActions,
+QWidget#replayStatusGroup,
 QWidget#rightSidebarTabs,
 QWidget#positionSummaryCard,
 QWidget#trainingSummaryCard {{
@@ -144,16 +177,24 @@ QWidget[toolbarGroup='true'] {{
 QWidget[segmented='true'] {{
     background: {rgba(AppTheme.surface_soft, 228)};
     border: 1px solid {AppTheme.border};
-    border-radius: {AppTheme.radius_md}px;
+    border-radius: {AppTheme.radius_sm}px;
 }}
 QWidget[card='true'] {{
-    background: {rgba(AppTheme.surface_elevated, 168)};
-    border: 1px solid {rgba(AppTheme.border, 128)};
-    border-radius: {AppTheme.radius_md}px;
+    background: {rgba(AppTheme.surface_elevated, 146)};
+    border: 1px solid {rgba(AppTheme.border, 98)};
+    border-radius: {AppTheme.radius_sm}px;
+}}
+QWidget#directTradeSection[priority='primary'] {{
+    background: {rgba(AppTheme.surface_elevated, 210)};
+    border: 1px solid {rgba(AppTheme.primary, 72)};
+}}
+QWidget#limitTradeSection[priority='secondary'] {{
+    background: {rgba(AppTheme.surface_elevated, 118)};
+    border: 1px solid {rgba(AppTheme.border, 82)};
 }}
 ChartWidget[card='true'] {{
     background: {AppTheme.canvas};
-    border: 1px solid {rgba(AppTheme.border, 92)};
+    border: 1px solid {rgba(AppTheme.border, 72)};
     border-radius: 6px;
 }}
 QGroupBox,
@@ -222,6 +263,26 @@ QLabel[role='positionReadout'] {{
     padding: 8px 10px;
     font-weight: 700;
 }}
+QLabel[role='positionReadout'][state='flat'] {{
+    background: {rgba(AppTheme.surface_elevated, 108)};
+    border-color: {rgba(AppTheme.border, 168)};
+    color: {AppTheme.text_muted};
+}}
+QLabel[role='positionReadout'][state='long'] {{
+    background: {rgba(AppTheme.long_soft, 210)};
+    border-color: {rgba(AppTheme.long, 120)};
+    color: {AppTheme.long};
+}}
+QLabel[role='positionReadout'][state='short'] {{
+    background: {rgba(AppTheme.short_soft, 210)};
+    border-color: {rgba(AppTheme.short, 120)};
+    color: {AppTheme.short};
+}}
+QLabel[role='positionReadout'][state='completed'] {{
+    background: {rgba(AppTheme.success_soft, 224)};
+    border-color: {rgba(AppTheme.success, 126)};
+    color: {AppTheme.success};
+}}
 QLabel[role='trainingStats'] {{
     color: {AppTheme.text_muted};
     padding: 1px 1px 0px 1px;
@@ -279,16 +340,21 @@ QPushButton:hover {{
     border-color: #9d9384;
 }}
 QPushButton:pressed {{
-    background: {AppTheme.surface_muted};
+    background: {AppTheme.pressed};
 }}
 QPushButton:focus {{
-    border-color: {AppTheme.border_focus};
+    border-color: {AppTheme.focus};
 }}
 QPushButton:checked {{
-    background: {AppTheme.primary_soft};
-    border-color: {AppTheme.primary};
+    background: {AppTheme.checked};
+    border-color: {AppTheme.checked_border};
     color: #153e91;
     font-weight: 700;
+}}
+QPushButton:disabled {{
+    background: {AppTheme.disabled};
+    border-color: {AppTheme.disabled_border};
+    color: {AppTheme.text_disabled};
 }}
 QPushButton[role='toolbar'] {{
     background: transparent;
@@ -300,15 +366,20 @@ QPushButton[role='toolbar'] {{
     min-height: {AppTheme.toolbar_button_height}px;
 }}
 QPushButton[role='toolbar']:hover {{
-    background: {rgba(AppTheme.surface_elevated, 220)};
+    background: {rgba(AppTheme.hover, 220)};
     border-color: {rgba(AppTheme.border, 180)};
     color: {AppTheme.text};
 }}
 QPushButton[role='toolbar']:checked {{
-    background: {AppTheme.primary_soft};
-    border-color: {AppTheme.primary};
+    background: {AppTheme.checked};
+    border-color: {AppTheme.checked_border};
     color: #153e91;
     font-weight: 800;
+}}
+QPushButton[role='toolbar']:disabled {{
+    background: transparent;
+    border-color: transparent;
+    color: {AppTheme.text_disabled};
 }}
 QPushButton[role='timeframe'] {{
     background: transparent;
@@ -319,15 +390,20 @@ QPushButton[role='timeframe'] {{
     min-height: {AppTheme.toolbar_button_height}px;
 }}
 QPushButton[role='timeframe']:hover {{
-    background: {rgba(AppTheme.surface_elevated, 218)};
+    background: {rgba(AppTheme.hover, 218)};
     border-color: transparent;
     color: {AppTheme.text};
 }}
 QPushButton[role='timeframe']:checked {{
-    background: {AppTheme.primary_tint};
+    background: {AppTheme.selected};
     border-color: transparent;
     color: {AppTheme.primary};
     font-weight: 800;
+}}
+QPushButton[role='timeframe']:disabled {{
+    background: transparent;
+    border-color: transparent;
+    color: {AppTheme.text_disabled};
 }}
 QPushButton[role='primary'] {{
     background: {AppTheme.primary};
@@ -339,6 +415,11 @@ QPushButton[role='primary'] {{
 QPushButton[role='primary']:hover {{
     background: {AppTheme.primary_hover};
     border-color: {AppTheme.primary_hover};
+}}
+QPushButton[role='primary']:disabled {{
+    background: {AppTheme.disabled_border};
+    border-color: {AppTheme.disabled_border};
+    color: {AppTheme.text_disabled};
 }}
 QPushButton[role='primary'][tone='plain'] {{
     background: transparent;
@@ -366,6 +447,12 @@ QPushButton[role='quiet']:hover {{
     color: {AppTheme.text};
     border-color: transparent;
 }}
+QPushButton[role='utility']:disabled,
+QPushButton[role='quiet']:disabled {{
+    background: transparent;
+    color: {AppTheme.text_disabled};
+    border-color: transparent;
+}}
 QPushButton[role='danger'] {{
     background: {AppTheme.danger};
     border-color: {AppTheme.danger};
@@ -376,17 +463,32 @@ QPushButton[role='danger']:hover {{
     background: #92382d;
     border-color: #92382d;
 }}
+QPushButton[role='danger']:disabled {{
+    background: {AppTheme.disabled_border};
+    border-color: {AppTheme.disabled_border};
+    color: {AppTheme.text_disabled};
+}}
 QPushButton[role='long'] {{
     background: {AppTheme.long_soft};
     border-color: #d4b0ac;
     color: {AppTheme.long};
     font-weight: 800;
 }}
+QPushButton[role='long']:disabled {{
+    background: {rgba(AppTheme.long_soft, 136)};
+    border-color: {rgba("#d4b0ac", 130)};
+    color: {AppTheme.text_disabled};
+}}
 QPushButton[role='short'] {{
     background: {AppTheme.short_soft};
     border-color: #aac4b6;
     color: {AppTheme.short};
     font-weight: 800;
+}}
+QPushButton[role='short']:disabled {{
+    background: {rgba(AppTheme.short_soft, 136)};
+    border-color: {rgba("#aac4b6", 130)};
+    color: {AppTheme.text_disabled};
 }}
 QPushButton[compactAction='true'] {{
     border-radius: 10px;
@@ -402,15 +504,20 @@ QPushButton[role='toggle'] {{
     padding: 3px 8px;
 }}
 QPushButton[role='toggle']:hover {{
-    background: {rgba(AppTheme.surface_elevated, 214)};
+    background: {rgba(AppTheme.hover, 214)};
     border-color: {AppTheme.border};
     color: {AppTheme.text};
 }}
 QPushButton[role='toggle']:checked {{
-    background: {AppTheme.primary_soft};
-    border-color: {AppTheme.primary};
+    background: {AppTheme.checked};
+    border-color: {AppTheme.checked_border};
     color: {AppTheme.primary};
     font-weight: 800;
+}}
+QPushButton[role='toggle']:disabled {{
+    background: transparent;
+    border-color: {AppTheme.disabled_border};
+    color: {AppTheme.text_disabled};
 }}
 QPushButton[role='sidebarTab'] {{
     background: transparent;
@@ -422,14 +529,19 @@ QPushButton[role='sidebarTab'] {{
     min-height: 24px;
 }}
 QPushButton[role='sidebarTab']:hover {{
-    background: {rgba(AppTheme.surface_elevated, 210)};
+    background: {rgba(AppTheme.hover, 210)};
     color: {AppTheme.text};
 }}
 QPushButton[role='sidebarTab']:checked {{
-    background: {AppTheme.primary_tint};
-    border-color: {rgba(AppTheme.primary, 120)};
+    background: {AppTheme.selected};
+    border-color: {rgba(AppTheme.selected_border, 120)};
     color: {AppTheme.primary};
     font-weight: 900;
+}}
+QPushButton[role='sidebarTab']:disabled {{
+    background: transparent;
+    border-color: transparent;
+    color: {AppTheme.text_disabled};
 }}
 QPushButton[compactAction='true']:hover {{
     border-color: {AppTheme.primary};
@@ -475,6 +587,11 @@ QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QTextEdi
     border-color: {AppTheme.primary};
     background: #fffefb;
 }}
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled, QTextEdit:disabled {{
+    background: {AppTheme.disabled};
+    border-color: {AppTheme.disabled_border};
+    color: {AppTheme.text_disabled};
+}}
 QSpinBox::up-button, QSpinBox::down-button,
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
     width: 0px;
@@ -500,9 +617,59 @@ QListWidget::item {{
     color: {AppTheme.text_muted};
 }}
 QListWidget::item:selected {{
-    background: {AppTheme.primary_soft};
+    background: {AppTheme.selected};
     color: #153e91;
     font-weight: 800;
+}}
+QTableView {{
+    background: {AppTheme.surface};
+    alternate-background-color: {AppTheme.table_row_alt};
+    border: 1px solid {AppTheme.border_soft};
+    border-radius: {AppTheme.radius_sm}px;
+    color: {AppTheme.text};
+    gridline-color: {rgba(AppTheme.border, 118)};
+    selection-background-color: {AppTheme.table_selected};
+    selection-color: {AppTheme.text};
+}}
+QTableView::item {{
+    padding: 5px 7px;
+    border: none;
+}}
+QTableView::item:selected {{
+    background: {AppTheme.table_selected};
+    color: {AppTheme.primary};
+}}
+QHeaderView::section {{
+    background: {AppTheme.table_header};
+    border: 0;
+    border-right: 1px solid {AppTheme.border_soft};
+    border-bottom: 1px solid {AppTheme.border};
+    color: {AppTheme.text_muted};
+    font-weight: 800;
+    padding: 6px 8px;
+}}
+QScrollBar:vertical, QScrollBar:horizontal {{
+    background: transparent;
+    border: none;
+    margin: 0px;
+}}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+    background: {rgba(AppTheme.border_strong, 165)};
+    border-radius: 4px;
+    min-height: 28px;
+    min-width: 28px;
+}}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{
+    background: {rgba(AppTheme.primary, 145)};
+}}
+QScrollBar::add-line, QScrollBar::sub-line {{
+    width: 0px;
+    height: 0px;
+    border: none;
+    background: transparent;
+}}
+QScrollBar::add-page, QScrollBar::sub-page {{
+    background: transparent;
 }}
 QSplitter::handle {{
     background: transparent;

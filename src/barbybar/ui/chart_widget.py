@@ -497,6 +497,7 @@ class ChartWidget(QWidget):
         self._deferred_overlay_refresh_pending = False
         self._pending_viewport_changed = False
         self._hover_card_content_cache: tuple[str, ...] | None = None
+        self._interaction_hint_cache: str | None = None
         self._order_lines_signature: tuple[object, ...] | None = None
         self._trade_actions_signature: tuple[object, ...] | None = None
         self._trade_review_items_signature: tuple[object, ...] | None = None
@@ -577,6 +578,7 @@ class ChartWidget(QWidget):
         layout.addWidget(self.graphics)
         self._build_hover_card()
         self._build_axis_price_label()
+        self._build_interaction_hint()
         self.setMouseTracking(True)
         self.graphics.setMouseTracking(True)
         self._axis_price_label.setMouseTracking(True)
@@ -687,6 +689,7 @@ class ChartWidget(QWidget):
             self._set_interaction_mode(InteractionMode.DRAWING)
         elif self._interaction_mode is InteractionMode.DRAWING:
             self._set_interaction_mode(InteractionMode.BROWSE)
+        self._sync_interaction_hint()
         self._rebuild_line_items()
         self.drawingToolChanged.emit(tool)
         self._log_interaction("set_active_drawing_tool_done", active_tool=tool.value if tool else None)
@@ -782,9 +785,11 @@ class ChartWidget(QWidget):
         self._set_dragging(False)
         self._suppress_next_left_click = False
         self._set_interaction_mode(InteractionMode.ORDER_PREVIEW)
+        self._preview_line.setPen(pg.mkPen(self._order_preview_color(order_type), width=1.8, style=Qt.PenStyle.DashLine))
         if self._last_hover_price is not None:
             self._preview_line.setPos(self._snap_price(self._last_hover_price))
         self._preview_line.show()
+        self._sync_interaction_hint()
         self._log_interaction("begin_order_preview_done", order_type=order_type, quantity=self._preview_quantity)
 
     def cancel_order_preview(self) -> None:
@@ -793,9 +798,12 @@ class ChartWidget(QWidget):
         self._active_drag_target = ActiveDragTarget()
         self._clear_protective_drag_state()
         self._preview_line.hide()
+        self._preview_line.setPen(pg.mkPen(AppTheme.chart_preview, width=1, style=Qt.PenStyle.DashLine))
         self._hide_drag_order_label()
         if self._interaction_mode is InteractionMode.ORDER_PREVIEW:
             self._set_interaction_mode(InteractionMode.BROWSE)
+        else:
+            self._sync_interaction_hint()
         self._log_interaction("cancel_order_preview_done")
 
     def set_order_lines(self, order_lines: list[OrderLine]) -> None:
@@ -1067,6 +1075,7 @@ class ChartWidget(QWidget):
                 self._viewport.bars_in_view = clamped_bars
                 self._apply_viewport()
         self._position_hover_card()
+        self._position_interaction_hint()
 
     def _max_readable_bars_in_view(self) -> int:
         plot_width = self.price_plot.sceneBoundingRect().width()
@@ -1369,29 +1378,37 @@ class ChartWidget(QWidget):
                         style=Qt.PenStyle.SolidLine,
                     ),
                 )
-                item.setOpacity(0.9 if is_highlighted else 0.55)
+                link_opacity = 0.9 if is_highlighted else 0.48
+                item.setOpacity(link_opacity)
                 item._barbybar_trade_marker = True
                 item._barbybar_trade_link_highlighted = is_highlighted
+                item._barbybar_trade_link_opacity = link_opacity
                 item.setZValue(15 if is_highlighted else 13)
                 self.price_plot.addItem(item)
         if self._trade_markers_visible:
             for marker in self._trade_markers:
                 is_focused = marker.trade_number is not None and marker.trade_number == self._focused_trade_number
+                is_hovered = (
+                    self._hover_target.target_type is HoverTargetType.TRADE_MARKER
+                    and self._hover_target.trade_marker is marker
+                )
+                is_highlighted = is_focused or is_hovered
                 marker.symbol, marker.brush, marker.size = self._trade_marker_visual(marker.role, marker.direction, marker.outcome)
-                marker_color = self._trade_marker_qcolor(marker.brush, focused=is_focused)
+                marker_color = self._trade_marker_qcolor(marker.brush, focused=is_highlighted)
                 item = pg.ScatterPlotItem(
                     [marker.x],
                     [marker.y],
                     symbol=marker.symbol,
-                    size=marker.size + (3.0 if is_focused else 0.0),
+                    size=marker.size + (3.0 if is_highlighted else 0.0),
                     brush=pg.mkBrush(marker_color),
-                    pen=pg.mkPen(marker_color, width=2 if is_focused else 1),
+                    pen=pg.mkPen(marker_color, width=2 if is_highlighted else 1),
                 )
                 item._barbybar_trade_marker = True
                 item._barbybar_trade_marker_role = marker.role
                 item._barbybar_trade_marker_direction = marker.direction
                 item._barbybar_trade_marker_trade_number = marker.trade_number
-                item.setZValue(16 if is_focused else 14)
+                item._barbybar_trade_marker_highlighted = is_highlighted
+                item.setZValue(16 if is_highlighted else 14)
                 self.price_plot.addItem(item)
         if self._focused_trade_points is not None:
             entry_bar_index, entry_price, exit_bar_index, exit_price = self._focused_trade_points
@@ -2313,6 +2330,51 @@ class ChartWidget(QWidget):
         )
         self._axis_price_label.hide()
 
+    def _build_interaction_hint(self) -> None:
+        self._interaction_hint = QLabel(self)
+        self._interaction_hint.setObjectName("chartInteractionHint")
+        self._interaction_hint.setStyleSheet(
+            "#chartInteractionHint {"
+            "background: rgba(252, 251, 247, 232);"
+            f"border: 1px solid {AppTheme.border_soft};"
+            "border-radius: 8px;"
+            "padding: 4px 9px;"
+            f"color: {AppTheme.text_muted};"
+            "font-size: 11px;"
+            "font-weight: 800;"
+            "}"
+        )
+        self._interaction_hint.hide()
+
+    def _position_interaction_hint(self) -> None:
+        if not hasattr(self, "_interaction_hint") or self._interaction_hint.isHidden():
+            return
+        width = max(self._interaction_hint.sizeHint().width(), 88)
+        height = max(self._interaction_hint.sizeHint().height(), 24)
+        self._interaction_hint.resize(width, height)
+        self._interaction_hint.move(max(8, self.width() - width - 12), 12)
+        self._interaction_hint.raise_()
+
+    def _sync_interaction_hint(self) -> None:
+        if not hasattr(self, "_interaction_hint"):
+            return
+        text = ""
+        if self._interaction_mode is InteractionMode.DRAWING and self._active_drawing_tool is not None:
+            text = f"画线中 · {self._drawing_tool_label(self._active_drawing_tool)}"
+        elif self._interaction_mode is InteractionMode.ORDER_PREVIEW and self._preview_order_type is not None:
+            text = f"图上下单 · {self._order_preview_label(self._preview_order_type)}"
+        if text == self._interaction_hint_cache:
+            self._position_interaction_hint()
+            return
+        self._interaction_hint_cache = text
+        if not text:
+            self._interaction_hint.hide()
+            return
+        self._interaction_hint.setText(text)
+        self._position_interaction_hint()
+        self._interaction_hint.show()
+        self._interaction_hint.raise_()
+
     def _position_axis_price_label(self, price: float) -> None:
         width = max(self._axis_price_label.sizeHint().width(), 52)
         height = max(self._axis_price_label.sizeHint().height(), 22)
@@ -2936,6 +2998,39 @@ class ChartWidget(QWidget):
             diff_text = f"+{diff_text}" if diff > 0 else f"-{diff_text}"
         return f"{label} ({diff_text})"
 
+    @staticmethod
+    def _drawing_tool_label(tool: DrawingToolType) -> str:
+        return {
+            DrawingToolType.TREND_LINE: "线段",
+            DrawingToolType.RAY: "箭头线",
+            DrawingToolType.FIB_RETRACEMENT: "斐波那契",
+            DrawingToolType.HORIZONTAL_LINE: "水平线",
+            DrawingToolType.RECTANGLE: "矩形",
+            DrawingToolType.TEXT: "文字",
+        }.get(tool, tool.value)
+
+    @staticmethod
+    def _order_preview_label(order_type: str) -> str:
+        return {
+            OrderLineType.ENTRY_LONG.value: "买入线",
+            OrderLineType.ENTRY_SHORT.value: "卖出线",
+            OrderLineType.EXIT.value: "平仓线",
+            OrderLineType.REVERSE.value: "反手线",
+            OrderLineType.STOP_LOSS.value: "止损线",
+            OrderLineType.TAKE_PROFIT.value: "止盈线",
+        }.get(str(order_type), str(order_type))
+
+    @staticmethod
+    def _order_preview_color(order_type: str) -> str:
+        return {
+            OrderLineType.ENTRY_LONG.value: ENTRY_LONG_LINE_COLOR,
+            OrderLineType.ENTRY_SHORT.value: ENTRY_SHORT_LINE_COLOR,
+            OrderLineType.EXIT.value: AppTheme.chart_average,
+            OrderLineType.REVERSE.value: AppTheme.chart_reverse,
+            OrderLineType.STOP_LOSS.value: STOP_LOSS_LINE_COLOR,
+            OrderLineType.TAKE_PROFIT.value: TAKE_PROFIT_LINE_COLOR,
+        }.get(str(order_type), AppTheme.chart_preview)
+
     def _average_price_pnl_text(self, line: OrderLine) -> str | None:
         if line.order_type is not OrderLineType.AVERAGE_PRICE:
             return None
@@ -3169,8 +3264,11 @@ class ChartWidget(QWidget):
         self._temporary_measure_handles.setData([start.x, end.x], [start.y, end.y])
         self._temporary_measure_handles.show()
         self._temporary_measure_label.setText(self._temporary_measure_label_text(start, end))
+        x_range, y_range = self.price_plot.viewRange()
         label_x = max(start.x, end.x) + self._TEMP_MEASURE_LABEL_X_OFFSET
         label_y = max(start.y, end.y) + self._TEMP_MEASURE_LABEL_Y_OFFSET
+        label_x = min(max(label_x, float(x_range[0]) + 0.4), float(x_range[1]) - 0.8)
+        label_y = min(max(label_y, float(y_range[0]) + (float(y_range[1]) - float(y_range[0])) * 0.04), float(y_range[1]) - (float(y_range[1]) - float(y_range[0])) * 0.04)
         self._temporary_measure_label.setPos(label_x, label_y)
         self._temporary_measure_label.show()
 
@@ -4273,6 +4371,7 @@ class ChartWidget(QWidget):
             self._hide_crosshair()
         self._log_interaction("set_interaction_mode", previous_mode=previous_mode.value, mode=mode.value)
         self._sync_cursor()
+        self._sync_interaction_hint()
         self.interactionModeChanged.emit(mode)
 
     def _clear_drawing_preview_state(self) -> None:

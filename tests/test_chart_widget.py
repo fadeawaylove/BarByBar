@@ -19,6 +19,7 @@ from barbybar.ui.chart_widget import (
     ChartWidget,
     DRAWING_SNAP_DISTANCE_PX,
     DOWN_CANDLE_COLOR,
+    ENTRY_LONG_LINE_COLOR,
     HoverTarget,
     HoverTargetType,
     InteractionMode,
@@ -501,6 +502,27 @@ def test_chart_uses_refined_stage_background_and_axis_price_label(widget: ChartW
     assert widget.graphics.backgroundBrush().color().name().lower() == AppTheme.canvas.lower()
     assert "font-weight: 700" in widget._axis_price_label.styleSheet()
     assert "rgba(252, 251, 247, 246)" in widget._axis_price_label.styleSheet()
+    assert widget._v_line.pen.color().name().lower() == AppTheme.chart_axis.lower()
+    assert widget._h_line.pen.color().name().lower() == AppTheme.chart_axis.lower()
+
+
+def test_chart_interaction_hint_tracks_drawing_and_order_preview(widget: ChartWidget) -> None:
+    assert widget._interaction_hint.isHidden()
+
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+
+    assert widget._interaction_hint.isHidden() is False
+    assert widget._interaction_hint.text() == "画线中 · 线段"
+
+    widget.begin_order_preview(OrderLineType.ENTRY_LONG.value, 2)
+
+    assert widget._interaction_hint.isHidden() is False
+    assert widget._interaction_hint.text() == "图上下单 · 买入线"
+    assert widget._preview_line.pen.color().name().lower() == ENTRY_LONG_LINE_COLOR.lower()
+
+    widget.cancel_order_preview()
+
+    assert widget._interaction_hint.isHidden()
 
 
 def test_session_open_markers_render_for_0900_and_2100(widget: ChartWidget) -> None:
@@ -1531,6 +1553,42 @@ def test_trade_link_highlight_preserves_original_color(widget: ChartWidget, app:
     assert all(item.opts["pen"].color().name() == TRADE_LINK_WIN_COLOR for item in highlighted_link_items)
 
 
+def test_resting_trade_links_stay_subdued_until_hovered(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_review_items([_review_item()])
+
+    link_items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_trade_marker", False)
+        and hasattr(item, "_barbybar_trade_link_opacity")
+    ]
+
+    assert link_items
+    assert all(item._barbybar_trade_link_opacity == pytest.approx(0.48) for item in link_items)
+    assert all(not item._barbybar_trade_link_highlighted for item in link_items)
+
+
+def test_hovered_trade_marker_gets_highlight_state(widget: ChartWidget, app: QApplication) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_actions([SessionAction(ActionType.OPEN_LONG, 5, datetime(2025, 1, 1, 9, 5), price=101.0, quantity=1)])
+    app.processEvents()
+    marker = widget._trade_markers[0]
+
+    widget._apply_hover_target(HoverTarget(target_type=HoverTargetType.TRADE_MARKER, trade_marker=marker))
+
+    marker_items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_trade_marker_role", None) == "entry"
+    ]
+
+    assert marker_items
+    assert any(getattr(item, "_barbybar_trade_marker_highlighted", False) for item in marker_items)
+
+
 def test_trade_marker_focus_color_uses_higher_alpha_but_stays_translucent(widget: ChartWidget) -> None:
     normal = widget._trade_marker_qcolor(TRADE_ENTRY_LONG_COLOR, focused=False)
     focused = widget._trade_marker_qcolor(TRADE_ENTRY_LONG_COLOR, focused=True)
@@ -2186,6 +2244,25 @@ def test_temporary_measurement_updates_when_tick_size_changes(widget: ChartWidge
     widget.set_tick_size(0.25)
 
     assert widget._temporary_measure_label.toPlainText() == "+2.25"
+
+
+def test_temporary_measurement_label_stays_inside_visible_range(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(150)
+    app.processEvents()
+    x_range, y_range = widget.price_plot.viewRange()
+    widget._temporary_measure_active = True
+    widget._temporary_measure_start_anchor = DrawingAnchor(float(x_range[1]) - 0.1, float(y_range[1]) - 0.1)
+    widget._temporary_measure_end_anchor = DrawingAnchor(float(x_range[1]) + 20.0, float(y_range[1]) + 20.0)
+
+    widget._refresh_temporary_measurement_overlay()
+
+    label_pos = widget._temporary_measure_label.pos()
+    refreshed_x_range, refreshed_y_range = widget.price_plot.viewRange()
+    assert float(refreshed_x_range[0]) <= label_pos.x() <= float(refreshed_x_range[1])
+    assert float(refreshed_y_range[0]) <= label_pos.y() <= float(refreshed_y_range[1])
 
 
 def test_ctrl_snap_applies_to_temporary_measurement(widget: ChartWidget, app: QApplication, monkeypatch) -> None:

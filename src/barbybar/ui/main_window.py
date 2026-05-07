@@ -1269,14 +1269,20 @@ class DataSetManagerDialog(QDialog):
         self._batch_import_active = False
 
         layout = QVBoxLayout(self)
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(6)
         import_button = QPushButton("导入单个 CSV")
+        import_button.setProperty("role", "primary")
         import_button.clicked.connect(self._import_csv)
-        layout.addWidget(import_button)
+        actions_row.addWidget(import_button)
         self._import_button = import_button
         import_folder_button = QPushButton("导入文件夹")
+        import_folder_button.setProperty("role", "secondary")
         import_folder_button.clicked.connect(self._import_csv_folder)
-        layout.addWidget(import_folder_button)
+        actions_row.addWidget(import_folder_button)
         self._import_folder_button = import_folder_button
+        actions_row.addStretch(1)
+        layout.addLayout(actions_row)
 
         self.dataset_filter = QLineEdit()
         self.dataset_filter.setPlaceholderText("按名称或品种筛选")
@@ -1287,13 +1293,21 @@ class DataSetManagerDialog(QDialog):
         self.dataset_list = QListWidget()
         self.dataset_list.itemDoubleClicked.connect(lambda _: self._create_session())
         layout.addWidget(self.dataset_list)
+        self.empty_state_label = QLabel("")
+        self.empty_state_label.setObjectName("datasetManagerEmptyState")
+        self.empty_state_label.setProperty("role", "statusMuted")
+        self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_state_label.setWordWrap(True)
+        layout.addWidget(self.empty_state_label)
 
         create_button = QPushButton("基于所选数据创建复盘")
+        create_button.setProperty("role", "primary")
         create_button.clicked.connect(self._create_session)
         layout.addWidget(create_button)
         self._create_button = create_button
 
         delete_button = QPushButton("删除所选数据集")
+        delete_button.setProperty("role", "danger")
         delete_button.clicked.connect(self._delete_dataset)
         layout.addWidget(delete_button)
         self._delete_button = delete_button
@@ -1319,6 +1333,7 @@ class DataSetManagerDialog(QDialog):
         layout.addWidget(self._batch_progress_panel)
 
         close_button = QPushButton("关闭")
+        close_button.setProperty("role", "quiet")
         close_button.clicked.connect(self.reject)
         layout.addWidget(close_button)
         self._close_button = close_button
@@ -1339,6 +1354,12 @@ class DataSetManagerDialog(QDialog):
             )
             item.setData(32, dataset.id)
             self.dataset_list.addItem(item)
+        if self.dataset_list.count() == 0:
+            self.empty_state_label.setText("没有符合筛选的数据集" if filter_text else "暂无数据集")
+            self.empty_state_label.setVisible(True)
+        else:
+            self.empty_state_label.clear()
+            self.empty_state_label.setVisible(False)
 
     def _selected_dataset_id(self) -> int | None:
         item = self.dataset_list.currentItem()
@@ -1487,16 +1508,25 @@ class SessionLibraryDialog(QDialog):
         self.session_list = QListWidget()
         self.session_list.itemDoubleClicked.connect(lambda _: self._open_session())
         layout.addWidget(self.session_list)
+        self.empty_state_label = QLabel("")
+        self.empty_state_label.setObjectName("sessionLibraryEmptyState")
+        self.empty_state_label.setProperty("role", "statusMuted")
+        self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_state_label.setWordWrap(True)
+        layout.addWidget(self.empty_state_label)
 
         open_button = QPushButton("打开所选案例")
+        open_button.setProperty("role", "primary")
         open_button.clicked.connect(self._open_session)
         layout.addWidget(open_button)
 
         delete_button = QPushButton("删除所选案例")
+        delete_button.setProperty("role", "danger")
         delete_button.clicked.connect(self._delete_session)
         layout.addWidget(delete_button)
 
         close_button = QPushButton("关闭")
+        close_button.setProperty("role", "quiet")
         close_button.clicked.connect(self.reject)
         layout.addWidget(close_button)
 
@@ -1512,6 +1542,12 @@ class SessionLibraryDialog(QDialog):
             )
             item.setData(32, session.id)
             self.session_list.addItem(item)
+        if self.session_list.count() == 0:
+            self.empty_state_label.setText("没有符合筛选的案例" if filter_text else "暂无案例")
+            self.empty_state_label.setVisible(True)
+        else:
+            self.empty_state_label.clear()
+            self.empty_state_label.setVisible(False)
 
     def _open_session(self) -> None:
         item = self.session_list.currentItem()
@@ -1631,11 +1667,18 @@ class TradeHistoryDialog(QDialog):
         self.max_pnl_filter.valueChanged.connect(self._handle_filters_changed)
         filter_layout.addWidget(self.max_pnl_filter, 2, 2, 1, 2)
 
-        clear_filters_button = QPushButton("清除筛选")
-        clear_filters_button.clicked.connect(self._clear_filters)
-        filter_layout.addWidget(clear_filters_button, 2, 6, 1, 2)
+        self.clear_filters_button = QPushButton("清除筛选")
+        self.clear_filters_button.setProperty("role", "quiet")
+        self.clear_filters_button.clicked.connect(self._clear_filters)
+        filter_layout.addWidget(self.clear_filters_button, 2, 6, 1, 2)
 
         layout.addLayout(filter_layout)
+        self.empty_state_label = QLabel("")
+        self.empty_state_label.setObjectName("tradeHistoryEmptyState")
+        self.empty_state_label.setProperty("role", "statusMuted")
+        self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_state_label.setWordWrap(True)
+        layout.addWidget(self.empty_state_label)
 
         self.trade_history_model = TradeHistoryTableModel()
         self.trade_history_table = QTableView()
@@ -1665,6 +1708,8 @@ class TradeHistoryDialog(QDialog):
 
         self.save_trade_note_button = QPushButton("保存想法")
         self.save_trade_note_button.clicked.connect(self._save_selected_trade_notes)
+        self.note_status_label = QLabel("")
+        self.note_status_label.setProperty("role", "statusMuted")
 
         detail_panel = QWidget()
         detail_layout = QVBoxLayout(detail_panel)
@@ -1677,6 +1722,7 @@ class TradeHistoryDialog(QDialog):
         detail_layout.addWidget(QLabel("复盘总结"))
         detail_layout.addWidget(self.review_note_edit, 1)
         detail_layout.addWidget(self.save_trade_note_button)
+        detail_layout.addWidget(self.note_status_label)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.trade_history_table)
@@ -1688,6 +1734,8 @@ class TradeHistoryDialog(QDialog):
         focus_layout = QHBoxLayout()
         self.entry_focus_button = QPushButton("看入场")
         self.exit_focus_button = QPushButton("看出场")
+        self.focus_state_label = QLabel("当前聚焦：出场")
+        self.focus_state_label.setProperty("role", "statusMuted")
         self.focus_button_group = QButtonGroup(self)
         self.focus_button_group.setExclusive(True)
         for button, mode in (
@@ -1696,6 +1744,7 @@ class TradeHistoryDialog(QDialog):
         ):
             button.setCheckable(True)
             button.setFixedHeight(28)
+            button.setProperty("role", "toggle")
             button.setProperty("focus_mode", mode)
             self.focus_button_group.addButton(button)
             focus_layout.addWidget(button)
@@ -1704,11 +1753,15 @@ class TradeHistoryDialog(QDialog):
 
         self.trade_history_toggle_button = QPushButton("切换入场/出场")
         self.trade_history_toggle_button.setFixedHeight(28)
+        self.trade_history_toggle_button.setProperty("role", "quiet")
         self.trade_history_toggle_button.clicked.connect(self._toggle_selected_trade_focus)
         focus_layout.addWidget(self.trade_history_toggle_button)
+        focus_layout.addWidget(self.focus_state_label)
         layout.addLayout(focus_layout)
 
         close_button = QPushButton("关闭")
+        close_button.setProperty("role", "quiet")
+        close_button.setProperty("role", "quiet")
         close_button.clicked.connect(self.accept)
         layout.addWidget(close_button)
 
@@ -1724,6 +1777,7 @@ class TradeHistoryDialog(QDialog):
         self.trade_history_model.set_items(self.owner._trade_review_items)
         self.trade_history_model.set_filters(self._filters_from_controls())
         self.trade_history_model.set_sort_key(self.trade_history_sort.currentData())
+        self._refresh_empty_state()
         self.owner._trade_review_controller.set_filters(self.trade_history_model.filters)
         visible_numbers = self.trade_history_model.trade_numbers()
         all_numbers = [row.trade_number for row in self.trade_history_model.all_rows()]
@@ -1739,6 +1793,23 @@ class TradeHistoryDialog(QDialog):
         self.trade_history_table.verticalScrollBar().setValue(previous_scroll)
         self._refresh_focus_buttons()
         self._refresh_detail()
+
+    def _refresh_empty_state(self) -> None:
+        total_count = len(self.trade_history_model.all_rows())
+        visible_count = len(self.trade_history_model.rows())
+        if total_count == 0:
+            self.empty_state_label.setText("暂无历史交易")
+            self.empty_state_label.setVisible(True)
+            self.clear_filters_button.setEnabled(False)
+            return
+        if visible_count == 0:
+            self.empty_state_label.setText("没有符合筛选的交易")
+            self.empty_state_label.setVisible(True)
+            self.clear_filters_button.setEnabled(True)
+            return
+        self.empty_state_label.clear()
+        self.empty_state_label.setVisible(False)
+        self.clear_filters_button.setEnabled(not self.trade_history_model.filters.is_empty())
 
     def _handle_table_clicked(self, index: QModelIndex) -> None:
         item = self.trade_history_model.trade_item_at(index)
@@ -1796,6 +1867,7 @@ class TradeHistoryDialog(QDialog):
             self.trade_detail.setPlainText("选择一笔交易查看复盘细节")
             self.entry_note_edit.clear()
             self.review_note_edit.clear()
+            self.note_status_label.clear()
             self.entry_note_edit.setEnabled(False)
             self.review_note_edit.setEnabled(False)
             self.save_trade_note_button.setEnabled(False)
@@ -1810,6 +1882,7 @@ class TradeHistoryDialog(QDialog):
         self.review_note_edit.setPlainText(row.review_note)
         self.entry_note_edit.blockSignals(False)
         self.review_note_edit.blockSignals(False)
+        self.note_status_label.clear()
 
     def _refresh_focus_buttons(self) -> None:
         has_selection = self.owner._selected_trade_number is not None
@@ -1818,6 +1891,7 @@ class TradeHistoryDialog(QDialog):
         mode = self.owner._selected_trade_view
         self.entry_focus_button.setChecked(mode == "entry")
         self.exit_focus_button.setChecked(mode == "exit")
+        self.focus_state_label.setText(f"当前聚焦：{'入场' if mode == 'entry' else '出场'}")
 
     def _save_selected_trade_notes(self) -> None:
         selected_trade_number = self.owner._selected_trade_number
@@ -1829,6 +1903,7 @@ class TradeHistoryDialog(QDialog):
             review_note=self.review_note_edit.toPlainText(),
         )
         self.refresh_items()
+        self.note_status_label.setText("想法已保存")
 
     def _refresh_exit_reason_options(self) -> None:
         current_reason = self.exit_reason_filter.currentData() or "all"
@@ -1896,7 +1971,7 @@ class TradeReviewSidebar(QWidget):
 
         header = QHBoxLayout()
         title = QLabel("历史交易")
-        title.setProperty("section", "title")
+        title.setProperty("role", "sidebarCardTitle")
         header.addWidget(title)
         header.addStretch(1)
         layout.addLayout(header)
@@ -1935,14 +2010,19 @@ class TradeReviewSidebar(QWidget):
         focus_layout = QHBoxLayout()
         self.entry_focus_button = QPushButton("看入场")
         self.exit_focus_button = QPushButton("看出场")
+        self.focus_state_label = QLabel("当前聚焦：出场")
+        self.focus_state_label.setProperty("role", "statusMuted")
         self.focus_button_group = QButtonGroup(self)
         self.focus_button_group.setExclusive(True)
         for button, mode in ((self.entry_focus_button, "entry"), (self.exit_focus_button, "exit")):
             button.setCheckable(True)
+            button.setFixedHeight(26)
+            button.setProperty("role", "toggle")
             button.setProperty("focus_mode", mode)
             button.clicked.connect(self._handle_focus_button_clicked)
             self.focus_button_group.addButton(button)
             focus_layout.addWidget(button)
+        focus_layout.addWidget(self.focus_state_label)
         layout.addLayout(focus_layout)
 
         self.trade_detail = QTextEdit()
@@ -1965,8 +2045,12 @@ class TradeReviewSidebar(QWidget):
         layout.addWidget(self.review_note_edit, 1)
 
         self.save_trade_note_button = QPushButton("保存想法")
+        self.save_trade_note_button.setProperty("role", "primary")
         self.save_trade_note_button.clicked.connect(self._save_selected_trade_notes)
         layout.addWidget(self.save_trade_note_button)
+        self.note_status_label = QLabel("")
+        self.note_status_label.setProperty("role", "statusMuted")
+        layout.addWidget(self.note_status_label)
 
         save_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
         save_shortcut.activated.connect(self._save_selected_trade_notes)
@@ -1997,6 +2081,8 @@ class TradeReviewSidebar(QWidget):
             item = QListWidgetItem(self._card_text(row))
             item.setData(Qt.ItemDataRole.UserRole, row.trade_number)
             item.setData(TRADE_REVIEW_ITEM_ROLE, row.item)
+            item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, row.outcome)
+            item.setForeground(QColor(AppTheme.long if row.item.pnl > 0 else AppTheme.short if row.item.pnl < 0 else AppTheme.text_muted))
             item.setToolTip(row.detail_text)
             self.trade_card_list.addItem(item)
             if row.trade_number == selected_trade_number:
@@ -2012,9 +2098,11 @@ class TradeReviewSidebar(QWidget):
     def _card_text(self, row) -> str:  # noqa: ANN001
         item = row.item
         direction = "多" if item.direction == "long" else "空"
+        outcome = "盈利" if row.outcome == "win" else "亏损" if row.outcome == "loss" else "持平"
+        pnl_text = f"+{item.pnl:.2f}" if item.pnl > 0 else f"{item.pnl:.2f}"
         return (
-            f"#{item.trade_number} {direction}  PnL {item.pnl:.2f}\n"
-            f"{item.entry_time:%m-%d %H:%M} -> {item.exit_time:%H:%M} · {format_exit_reason(item.exit_reason)}"
+            f"#{item.trade_number} {direction}  PnL {pnl_text} · {outcome}\n"
+            f"{item.entry_time:%m-%d %H:%M} -> {item.exit_time:%H:%M} · {item.holding_bars}根 · {format_exit_reason(item.exit_reason)}"
         )
 
     def _handle_card_clicked(self, item: QListWidgetItem) -> None:
@@ -2078,6 +2166,7 @@ class TradeReviewSidebar(QWidget):
         mode = self.owner._selected_trade_view
         self.entry_focus_button.setChecked(mode == "entry")
         self.exit_focus_button.setChecked(mode == "exit")
+        self.focus_state_label.setText(f"当前聚焦：{'入场' if mode == 'entry' else '出场'}")
 
     def _refresh_detail(self) -> None:
         selected_trade_number = self.owner._selected_trade_number
@@ -2086,6 +2175,7 @@ class TradeReviewSidebar(QWidget):
             self.trade_detail.setPlainText("选择一笔交易查看复盘细节")
             self.entry_note_edit.clear()
             self.review_note_edit.clear()
+            self.note_status_label.clear()
             self.entry_note_edit.setEnabled(False)
             self.review_note_edit.setEnabled(False)
             self.save_trade_note_button.setEnabled(False)
@@ -2100,6 +2190,7 @@ class TradeReviewSidebar(QWidget):
         self.review_note_edit.setPlainText(row.review_note)
         self.entry_note_edit.blockSignals(False)
         self.review_note_edit.blockSignals(False)
+        self.note_status_label.clear()
 
     def _save_selected_trade_notes(self) -> None:
         selected_trade_number = self.owner._selected_trade_number
@@ -2111,6 +2202,7 @@ class TradeReviewSidebar(QWidget):
             review_note=self.review_note_edit.toPlainText(),
         )
         self.refresh_items()
+        self.note_status_label.setText("想法已保存")
 
 
 class TradeLinkNoteDialog(QDialog):
@@ -2196,6 +2288,7 @@ class LogViewerDialog(QDialog):
         self.log_file_combo.currentTextChanged.connect(self._load_selected_log)
         toolbar.addWidget(self.log_file_combo, 1)
         self.refresh_log_button = QPushButton("刷新")
+        self.refresh_log_button.setProperty("role", "secondary")
         self.refresh_log_button.clicked.connect(self._load_selected_log)
         toolbar.addWidget(self.refresh_log_button)
         layout.addLayout(toolbar)
@@ -2206,6 +2299,8 @@ class LogViewerDialog(QDialog):
         layout.addWidget(self.log_text, 1)
 
         self.status_label = QLabel("")
+        self.status_label.setObjectName("logViewerStatus")
+        self.status_label.setProperty("role", "statusMuted")
         self.status_label.setStyleSheet(muted_status_stylesheet())
         layout.addWidget(self.status_label)
 
@@ -2234,11 +2329,15 @@ class LogViewerDialog(QDialog):
         path = self._selected_log_path()
         if not path.exists():
             text = f"日志文件不存在：{path}"
+            status_text = f"未找到日志文件 | {path}"
         else:
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:
                 text = f"读取日志失败：{exc}"
+                status_text = f"读取失败 | {path}"
+            else:
+                status_text = f"正在查看 | {path}"
         modified = text != self._current_text
         self._current_text = text
         if modified:
@@ -2247,7 +2346,7 @@ class LogViewerDialog(QDialog):
                 cursor = self.log_text.textCursor()
                 cursor.movePosition(cursor.MoveOperation.End)
                 self.log_text.setTextCursor(cursor)
-        self.status_label.setText(str(path))
+        self.status_label.setText(status_text)
 
 
 class SettingsDialog(QDialog):
@@ -2329,6 +2428,7 @@ class SettingsDialog(QDialog):
         candle_layout.addRow("下跌影线/边框", self.candle_down_wick_button)
         candle_layout.addRow("图表背景", self.chart_background_button)
         self.reset_candle_colors_button = QPushButton("恢复默认配色")
+        self.reset_candle_colors_button.setProperty("role", "secondary")
         self.reset_candle_colors_button.clicked.connect(self.owner._reset_chart_color_settings)
         candle_layout.addRow("", self.reset_candle_colors_button)
         layout.addWidget(candle_group)
@@ -2387,10 +2487,13 @@ class SettingsDialog(QDialog):
         log_layout.setContentsMargins(10, 14, 10, 10)
         log_layout.setSpacing(8)
         self.open_log_button = QPushButton("查看日志")
+        self.open_log_button.setProperty("role", "primary")
         self.open_log_button.clicked.connect(self.owner.open_log_viewer)
         self.open_log_dir_button = QPushButton("打开日志目录")
+        self.open_log_dir_button.setProperty("role", "secondary")
         self.open_log_dir_button.clicked.connect(self.owner.open_log_directory)
         self.copy_log_dir_button = QPushButton("复制日志目录路径")
+        self.copy_log_dir_button.setProperty("role", "secondary")
         self.copy_log_dir_button.clicked.connect(self.owner.copy_log_directory_path)
         self.log_dir_label = QLabel(str(log_dir()))
         self.log_dir_label.setWordWrap(True)
@@ -2424,6 +2527,7 @@ class SettingsDialog(QDialog):
         performance_toolbar = QHBoxLayout()
         performance_toolbar.setSpacing(6)
         self.refresh_performance_button = QPushButton("刷新性能指标")
+        self.refresh_performance_button.setProperty("role", "secondary")
         self.refresh_performance_button.clicked.connect(self.refresh_performance_metrics)
         performance_toolbar.addWidget(self.refresh_performance_button)
         performance_toolbar.addStretch(1)
@@ -2646,22 +2750,27 @@ class MainWindow(QMainWindow):
         self.dataset_button = QPushButton("数据集")
         self.dataset_button.setProperty("role", "toolbar")
         self.dataset_button.setMinimumHeight(AppTheme.toolbar_button_height)
+        self.dataset_button.setMinimumWidth(AppTheme.toolbar_action_width_md)
         self.dataset_button.clicked.connect(self.open_dataset_manager)
         self.session_button = QPushButton("案例库")
         self.session_button.setProperty("role", "toolbar")
         self.session_button.setMinimumHeight(AppTheme.toolbar_button_height)
+        self.session_button.setMinimumWidth(AppTheme.toolbar_action_width_md)
         self.session_button.clicked.connect(self.open_session_library)
         self.check_update_button = QPushButton("检查更新")
         self.check_update_button.setProperty("role", "toolbar")
         self.check_update_button.setMinimumHeight(AppTheme.toolbar_button_height)
+        self.check_update_button.setMinimumWidth(AppTheme.toolbar_action_width_lg)
         self.check_update_button.clicked.connect(self._start_update_check)
         self.log_viewer_button = QPushButton("查看日志")
         self.log_viewer_button.setProperty("role", "toolbar")
         self.log_viewer_button.setMinimumHeight(AppTheme.toolbar_button_height)
+        self.log_viewer_button.setMinimumWidth(AppTheme.toolbar_action_width_lg)
         self.log_viewer_button.clicked.connect(self.open_log_viewer)
         self.settings_button = QPushButton("设置")
         self.settings_button.setProperty("role", "toolbar")
         self.settings_button.setMinimumHeight(AppTheme.toolbar_button_height)
+        self.settings_button.setMinimumWidth(AppTheme.toolbar_action_width_sm)
         self.settings_button.clicked.connect(self.open_settings_dialog)
 
         container_layout.addWidget(self._build_top_nav_bar_container())
@@ -2725,6 +2834,7 @@ class MainWindow(QMainWindow):
             button.setProperty("role", "timeframe")
             button.setCheckable(True)
             button.setMinimumHeight(AppTheme.toolbar_button_height)
+            button.setMinimumWidth(42 if timeframe != "1d" else 48)
             button.clicked.connect(lambda _, tf=timeframe: self.change_chart_timeframe(tf))
             self.timeframe_button_group.addButton(button)
             self.timeframe_buttons[timeframe] = button
@@ -2743,6 +2853,7 @@ class MainWindow(QMainWindow):
         self.template_library_button = QPushButton("模板库")
         self.template_library_button.setProperty("role", "toolbar")
         self.template_library_button.setMinimumHeight(AppTheme.toolbar_button_height)
+        self.template_library_button.setMinimumWidth(62)
         self.template_library_button.clicked.connect(self.open_drawing_template_manager)
         template_toolbar.addWidget(self.template_library_button)
         for label, tool in [
@@ -2784,12 +2895,27 @@ class MainWindow(QMainWindow):
         workspace_actions.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         workspace_actions_layout = QHBoxLayout(workspace_actions)
         workspace_actions_layout.setContentsMargins(0, 0, 0, 0)
-        workspace_actions_layout.setSpacing(4)
-        workspace_actions_layout.addWidget(self.dataset_button)
-        workspace_actions_layout.addWidget(self.session_button)
-        workspace_actions_layout.addWidget(self.settings_button)
-        workspace_actions_layout.addWidget(self.log_viewer_button)
-        workspace_actions_layout.addWidget(self.check_update_button)
+        workspace_actions_layout.setSpacing(AppTheme.flat_group_gap)
+
+        workspace_management_actions = QWidget()
+        workspace_management_actions.setObjectName("workspaceManagementActions")
+        workspace_management_layout = QHBoxLayout(workspace_management_actions)
+        workspace_management_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_management_layout.setSpacing(4)
+        workspace_management_layout.addWidget(self.dataset_button)
+        workspace_management_layout.addWidget(self.session_button)
+        workspace_management_layout.addWidget(self.settings_button)
+
+        workspace_diagnostics_actions = QWidget()
+        workspace_diagnostics_actions.setObjectName("workspaceDiagnosticsActions")
+        workspace_diagnostics_layout = QHBoxLayout(workspace_diagnostics_actions)
+        workspace_diagnostics_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_diagnostics_layout.setSpacing(4)
+        workspace_diagnostics_layout.addWidget(self.log_viewer_button)
+        workspace_diagnostics_layout.addWidget(self.check_update_button)
+
+        workspace_actions_layout.addWidget(workspace_management_actions)
+        workspace_actions_layout.addWidget(workspace_diagnostics_actions)
 
         layout.addWidget(workspace_tools, 1)
         layout.addWidget(workspace_actions, 0, alignment=Qt.AlignmentFlag.AlignRight)
@@ -2882,12 +3008,13 @@ class MainWindow(QMainWindow):
         primary_actions = QWidget()
         primary_actions.setObjectName("replayPrimaryActions")
         primary_layout = QHBoxLayout(primary_actions)
-        primary_layout.setContentsMargins(0, 0, 0, 0)
+        primary_layout.setContentsMargins(3, 2, 3, 2)
         primary_layout.setSpacing(4)
         primary_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.prev_button = QPushButton("上一步")
         self.prev_button.setProperty("role", "quiet")
         self.prev_button.setMinimumHeight(AppTheme.status_button_height)
+        self.prev_button.setMinimumWidth(AppTheme.status_button_width_md)
         self.prev_button.clicked.connect(self.step_back)
         primary_layout.addWidget(self.prev_button)
 
@@ -2927,12 +3054,14 @@ class MainWindow(QMainWindow):
         self.reset_view_button = QPushButton("重置视图")
         self.reset_view_button.setProperty("role", "quiet")
         self.reset_view_button.setMinimumHeight(AppTheme.status_button_height)
+        self.reset_view_button.setMinimumWidth(AppTheme.status_button_width_lg)
         self.reset_view_button.clicked.connect(lambda: self.chart_widget.reset_viewport(follow_latest=True))
         utility_layout.addWidget(self.reset_view_button, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.clear_lines_button = QPushButton("清除画线")
         self.clear_lines_button.setProperty("role", "quiet")
         self.clear_lines_button.setMinimumHeight(AppTheme.status_button_height)
+        self.clear_lines_button.setMinimumWidth(AppTheme.status_button_width_lg)
         self.clear_lines_button.clicked.connect(self.confirm_clear_drawings)
         utility_layout.addWidget(self.clear_lines_button, alignment=Qt.AlignmentFlag.AlignVCenter)
         secondary_layout.addWidget(utility_actions)
@@ -3211,6 +3340,7 @@ class MainWindow(QMainWindow):
         direct_trade_section = QWidget()
         direct_trade_section.setObjectName("directTradeSection")
         direct_trade_section.setProperty("card", True)
+        direct_trade_section.setProperty("priority", "primary")
         direct_trade_layout = QVBoxLayout(direct_trade_section)
         direct_trade_layout.setContentsMargins(6, 6, 6, 6)
         direct_trade_layout.setSpacing(5)
@@ -3230,15 +3360,17 @@ class MainWindow(QMainWindow):
         self.quantity_spin.setValue(self._default_order_quantity())
         self.quantity_spin.setSingleStep(1)
         self.quantity_spin.setFixedHeight(24)
+        self.quantity_spin.setFixedWidth(AppTheme.sidebar_input_width_sm)
         self.quantity_spin.valueChanged.connect(self._handle_default_order_quantity_changed)
-        action_fields_layout.addWidget(self.quantity_spin, 1)
+        action_fields_layout.addWidget(self.quantity_spin, 0)
         action_fields_layout.addWidget(QLabel("价格"))
         self.price_spin = configure_spinbox(QDoubleSpinBox())
         self.price_spin.setDecimals(2)
         self.price_spin.setRange(-999999.0, 999999.0)
         self.price_spin.setValue(0.0)
         self.price_spin.setFixedHeight(24)
-        action_fields_layout.addWidget(self.price_spin, 1)
+        self.price_spin.setFixedWidth(AppTheme.sidebar_input_width_md)
+        action_fields_layout.addWidget(self.price_spin, 0)
         direct_trade_layout.addWidget(action_fields_row)
 
         action_buttons_row = QWidget()
@@ -3280,6 +3412,7 @@ class MainWindow(QMainWindow):
         limit_trade_section = QWidget()
         limit_trade_section.setObjectName("limitTradeSection")
         limit_trade_section.setProperty("card", True)
+        limit_trade_section.setProperty("priority", "secondary")
         limit_trade_layout = QVBoxLayout(limit_trade_section)
         limit_trade_layout.setContentsMargins(6, 6, 6, 6)
         limit_trade_layout.setSpacing(5)
@@ -3299,8 +3432,9 @@ class MainWindow(QMainWindow):
         self.draw_quantity_spin.setValue(self._default_draw_order_quantity())
         self.draw_quantity_spin.setSingleStep(1)
         self.draw_quantity_spin.setFixedHeight(24)
+        self.draw_quantity_spin.setFixedWidth(AppTheme.sidebar_input_width_sm)
         self.draw_quantity_spin.valueChanged.connect(self._handle_default_draw_order_quantity_changed)
-        draw_fields_layout.addWidget(self.draw_quantity_spin, 1)
+        draw_fields_layout.addWidget(self.draw_quantity_spin, 0)
         draw_fields_layout.addWidget(QLabel("最小跳动"))
         self.tick_size_spin = configure_spinbox(QDoubleSpinBox())
         self.tick_size_spin.setDecimals(2)
@@ -3308,8 +3442,9 @@ class MainWindow(QMainWindow):
         self.tick_size_spin.setValue(1.0)
         self.tick_size_spin.setSingleStep(0.01)
         self.tick_size_spin.setFixedHeight(24)
+        self.tick_size_spin.setFixedWidth(AppTheme.sidebar_input_width_md)
         self.tick_size_spin.valueChanged.connect(self._handle_tick_size_changed)
-        draw_fields_layout.addWidget(self.tick_size_spin, 1)
+        draw_fields_layout.addWidget(self.tick_size_spin, 0)
         limit_trade_layout.addWidget(draw_fields_row)
 
         draw_buttons_row = QWidget()
@@ -3359,6 +3494,7 @@ class MainWindow(QMainWindow):
         self.stats_label.setWordWrap(True)
         self.stats_label.setObjectName("positionReadout")
         self.stats_label.setProperty("role", "positionReadout")
+        self.stats_label.setProperty("state", "flat")
         position_layout.addWidget(position_title)
         position_layout.addWidget(self.stats_label)
         layout.addWidget(position_card)
@@ -3393,6 +3529,11 @@ class MainWindow(QMainWindow):
         display_layout.setContentsMargins(8, 14, 8, 8)
         display_layout.setSpacing(4)
 
+        display_toggle_row = QWidget()
+        display_toggle_row.setObjectName("displayToggleRow")
+        display_toggle_layout = QHBoxLayout(display_toggle_row)
+        display_toggle_layout.setContentsMargins(0, 0, 0, 0)
+        display_toggle_layout.setSpacing(4)
         for toggle_button in (
             self.bar_count_toggle_button,
             self.hide_drawings_toggle_button,
@@ -3400,7 +3541,8 @@ class MainWindow(QMainWindow):
         ):
             toggle_button.setProperty("role", "toggle")
             toggle_button.setFixedHeight(24)
-            display_layout.addWidget(toggle_button)
+            display_toggle_layout.addWidget(toggle_button, 1)
+        display_layout.addWidget(display_toggle_row)
 
         self.show_trade_markers_check = QCheckBox("显示成交点")
         self.show_trade_markers_check.setChecked(self._trade_markers_visible)
@@ -3419,17 +3561,24 @@ class MainWindow(QMainWindow):
         session_layout.setContentsMargins(8, 14, 8, 8)
         session_layout.setSpacing(4)
 
+        session_action_row = QWidget()
+        session_action_row.setObjectName("sessionActionRow")
+        session_action_layout = QHBoxLayout(session_action_row)
+        session_action_layout.setContentsMargins(0, 0, 0, 0)
+        session_action_layout.setSpacing(4)
+
         save_button = QPushButton("保存会话")
         save_button.setFixedHeight(26)
         save_button.setProperty("role", "quiet")
         save_button.clicked.connect(self.save_session)
-        session_layout.addWidget(save_button)
+        session_action_layout.addWidget(save_button, 1)
 
         complete_button = QPushButton("标记完成")
         complete_button.setFixedHeight(26)
         complete_button.setProperty("role", "primary")
         complete_button.clicked.connect(self.complete_session)
-        session_layout.addWidget(complete_button)
+        session_action_layout.addWidget(complete_button, 1)
+        session_layout.addWidget(session_action_row)
         layout.addWidget(session_box)
         self._sync_draw_order_controls()
         layout.addStretch(1)
@@ -3793,6 +3942,7 @@ class MainWindow(QMainWindow):
         self.jump_spin.setValue(0)
         self.jump_spin.blockSignals(False)
         self.stats_label.setText("方向 空仓\n仓位 0 · 均价 0\n已实现盈亏 0.00")
+        self._set_position_readout_state("flat")
         self.training_stats_headline.setText("总交易 0 · 胜率 -- · 盈亏比 --")
         self.training_stats_meta.clear()
         self.training_stats_meta.hide()
@@ -4013,6 +4163,8 @@ class MainWindow(QMainWindow):
                 ]
             )
         )
+        position_state = "completed" if self.engine.session.status is SessionStatus.COMPLETED else direction
+        self._set_position_readout_state(position_state if position_state in {"flat", "long", "short", "completed"} else "flat")
         self._sync_draw_order_controls()
         self.tick_size_spin.blockSignals(True)
         self.tick_size_spin.setValue(self.engine.session.tick_size)
@@ -4149,6 +4301,12 @@ class MainWindow(QMainWindow):
         )
         if focus_chart:
             self._focus_selected_trade_view(item)
+
+    def _set_position_readout_state(self, state: str) -> None:
+        self.stats_label.setProperty("state", state)
+        self.stats_label.style().unpolish(self.stats_label)
+        self.stats_label.style().polish(self.stats_label)
+        self.stats_label.update()
 
     def set_trade_history_focus(self, focus_view: TradeFocusMode, *, focus_chart: bool = True) -> None:
         self._trade_review_controller.set_focus_mode(focus_view)
