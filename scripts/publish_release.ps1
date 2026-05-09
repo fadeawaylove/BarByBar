@@ -176,10 +176,47 @@ function Confirm-ReleasePublish {
     if ($Yes) {
         return
     }
-    $answer = Read-Host "Publish $Tag now? Type 'yes' to push master and the release tag"
-    if ($answer -ne 'yes') {
+    $answer = Read-Host "Publish $Tag now? Press Enter to push master and the release tag, or type 'no' to cancel"
+    if (-not [string]::IsNullOrWhiteSpace($answer) -and $answer.Trim().ToLowerInvariant() -ne 'no') {
+        throw "Unrecognized response '$answer'. Release publishing cancelled before pushing refs."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($answer) -and $answer.Trim().ToLowerInvariant() -eq 'no') {
         throw 'Release publishing cancelled before pushing refs.'
     }
+}
+
+function Confirm-WorkingTreeCommit {
+    if ($Yes) {
+        throw 'Working tree is not clean. Commit or stash changes before using -Yes for release publishing.'
+    }
+
+    $message = Read-Host "Working tree is not clean. Enter a commit message to commit all changes before publishing, or type 'no' to cancel"
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        throw 'Release publishing cancelled because no commit message was provided for the dirty working tree.'
+    }
+    if ($message.Trim().ToLowerInvariant() -eq 'no') {
+        throw 'Release publishing cancelled before auto-committing the working tree.'
+    }
+    return $message.Trim()
+}
+
+function Commit-WorkingTreeChanges {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    Invoke-Git -Arguments @('add', '-A')
+    $null = & git diff --cached --quiet
+    $diffExitCode = $LASTEXITCODE
+    if ($diffExitCode -eq 1) {
+        Invoke-Git -Arguments @('commit', '-m', $Message)
+        return
+    }
+    if ($diffExitCode -eq 0) {
+        throw 'Working tree appeared dirty, but no staged changes were found to commit.'
+    }
+    throw "git diff --cached --quiet failed with exit code $diffExitCode."
 }
 
 function Test-ReleaseAssetNames {
@@ -327,11 +364,6 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw 'git was not found on PATH.'
 }
 
-$statusLines = @(Get-GitOutput -Arguments @('status', '--porcelain'))
-if ($statusLines.Count -gt 0) {
-    throw 'Working tree is not clean. Commit or stash changes before publishing a release tag.'
-}
-
 $versionFile = Join-Path $repoRoot 'src\barbybar\__init__.py'
 if (-not (Test-Path $versionFile)) {
     throw "Version file not found: $versionFile"
@@ -366,6 +398,15 @@ if ($existingTag) {
 
 if ($remoteTagExists) {
     throw "Release tag $tag already exists on origin."
+}
+
+$statusLines = @(Get-GitOutput -Arguments @('status', '--porcelain'))
+if ($statusLines.Count -gt 0) {
+    if ($Preview) {
+        throw 'Working tree is not clean. Commit or stash changes before running release preview.'
+    }
+    $workingTreeCommitMessage = Confirm-WorkingTreeCommit
+    Commit-WorkingTreeChanges -Message $workingTreeCommitMessage
 }
 
 $repoUrl = if ($null -ne $githubRepo) { $githubRepo.BaseUrl } else { 'https://github.com/local/BarByBar' }

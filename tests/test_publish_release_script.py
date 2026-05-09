@@ -29,3 +29,28 @@ def test_publish_release_script_confirms_before_writing_version_file() -> None:
     commit_index = text.index("Invoke-Git -Arguments @('commit', '-m', \"Release $tag\")")
 
     assert preview_index < confirm_index < write_index < commit_index
+
+
+def test_publish_release_script_accepts_enter_and_uses_no_to_cancel() -> None:
+    text = _script_text()
+
+    assert "Press Enter to push master and the release tag" in text
+    assert "type 'no' to cancel" in text
+    assert ".Trim().ToLowerInvariant() -ne 'no'" in text
+
+
+def test_publish_release_script_can_auto_commit_dirty_worktree_before_publish() -> None:
+    text = _script_text()
+
+    assert "function Confirm-WorkingTreeCommit" in text
+    assert "function Commit-WorkingTreeChanges" in text
+    assert "git add', '-A" in text or "@('add', '-A')" in text
+    assert "Working tree is not clean. Enter a commit message" in text
+    assert "Commit-WorkingTreeChanges -Message $workingTreeCommitMessage" in text
+
+
+def test_publish_release_script_keeps_preview_non_mutating_and_blocks_dirty_yes_mode() -> None:
+    text = _script_text()
+
+    assert "Commit or stash changes before running release preview." in text
+    assert "Commit or stash changes before using -Yes for release publishing." in text
