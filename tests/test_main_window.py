@@ -327,7 +327,8 @@ def test_manager_dialogs_include_delete_actions(window: MainWindow) -> None:
 def test_main_window_removes_session_info_panel(window: MainWindow) -> None:
     group_titles = {group.title() for group in window.findChildren(QGroupBox)}
     assert "会话信息" not in group_titles
-    assert "交易" in group_titles
+    assert "快捷交易" in group_titles
+    assert "订单工具" in group_titles
     assert "历史交易" not in group_titles
     assert window.findChild(QWidget, "trainingSummaryCard") is not None
 
@@ -366,34 +367,38 @@ def test_right_panel_uses_compact_trade_layout(window: MainWindow) -> None:
 
 
 def test_right_panel_uses_compact_trade_layout_sections(window: MainWindow) -> None:
-    trade_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "交易")
+    trade_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "快捷交易")
+    order_tools_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "订单工具")
     trade_layout = trade_group.layout()
 
     assert isinstance(trade_layout, QVBoxLayout)
     assert window.splitter.widget(1).maximumWidth() == 288
     assert window.splitter.widget(1).minimumWidth() == 288
     assert trade_group.findChild(QWidget, "directTradeSection") is not None
-    assert trade_group.findChild(QWidget, "limitTradeSection") is not None
     assert trade_group.findChild(QWidget, "directTradeSection").property("priority") == "primary"
-    assert trade_group.findChild(QWidget, "limitTradeSection").property("priority") == "secondary"
+    assert order_tools_group.findChild(QWidget, "limitTradeSection") is not None
+    assert order_tools_group.findChild(QWidget, "limitTradeSection").property("priority") == "secondary"
     assert trade_group.findChild(QWidget, "directTradeFieldsRow") is not None
     assert trade_group.findChild(QWidget, "directTradeButtonsRow") is not None
-    assert trade_group.findChild(QWidget, "limitTradeFieldsRow") is not None
-    assert trade_group.findChild(QWidget, "limitTradeButtonsRow") is not None
+    assert order_tools_group.findChild(QWidget, "limitTradeFieldsRow") is not None
+    assert order_tools_group.findChild(QWidget, "limitTradeButtonsRow") is not None
     label_texts = [label.text() for label in trade_group.findChildren(QLabel)]
+    order_label_texts = [label.text() for label in order_tools_group.findChildren(QLabel)]
     assert "直接下单" in label_texts
-    assert "限价单" in label_texts
+    assert "订单线预演" in order_label_texts
 
     button_texts = [button.text() for button in trade_group.findChildren(QPushButton)]
+    order_button_texts = [button.text() for button in order_tools_group.findChildren(QPushButton)]
     for label in ["买", "卖", "平", "反"]:
-        assert button_texts.count(label) == 2
+        assert button_texts.count(label) == 1
+        assert order_button_texts.count(label) == 1
     assert "取消画线下单" not in button_texts
     assert window.findChild(QWidget, "positionSummaryCard") is not None
     assert window.findChild(QWidget, "trainingSummaryCard") is not None
     assert window.quantity_spin.parentWidget() is trade_group.findChild(QWidget, "directTradeFieldsRow")
     assert window.price_spin.parentWidget() is trade_group.findChild(QWidget, "directTradeFieldsRow")
-    assert window.draw_quantity_spin.parentWidget() is trade_group.findChild(QWidget, "limitTradeFieldsRow")
-    assert window.tick_size_spin.parentWidget() is trade_group.findChild(QWidget, "limitTradeFieldsRow")
+    assert window.draw_quantity_spin.parentWidget() is order_tools_group.findChild(QWidget, "limitTradeFieldsRow")
+    assert window.tick_size_spin.parentWidget() is order_tools_group.findChild(QWidget, "limitTradeFieldsRow")
     assert window.quantity_spin.width() == AppTheme.sidebar_input_width_sm
     assert window.draw_quantity_spin.width() == AppTheme.sidebar_input_width_sm
     assert window.price_spin.width() == AppTheme.sidebar_input_width_md
@@ -403,17 +408,21 @@ def test_right_panel_uses_compact_trade_layout_sections(window: MainWindow) -> N
 def test_right_panel_display_section_collects_low_priority_chart_toggles(window: MainWindow) -> None:
     display_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "显示")
     display_toggle_row = display_group.findChild(QWidget, "displayToggleRow")
-    session_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "会话")
+    session_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "辅助")
+    behavior_row = session_group.findChild(QWidget, "sessionBehaviorRow")
     session_action_row = session_group.findChild(QWidget, "sessionActionRow")
     button_texts = [button.text() for button in display_group.findChildren(QPushButton)]
+    utility_button_texts = [button.text() for button in session_group.findChildren(QPushButton)]
 
-    assert button_texts[:3] == ["K线序号", "隐藏画线", "不过夜"]
+    assert button_texts[:2] == ["K线序号", "隐藏画线"]
     assert "历史交易" not in button_texts
     assert display_toggle_row is not None
     assert window.bar_count_toggle_button.parentWidget() is display_toggle_row
     assert window.hide_drawings_toggle_button.parentWidget() is display_toggle_row
-    assert window.flatten_at_session_end_toggle_button.parentWidget() is display_toggle_row
+    assert behavior_row is not None
+    assert window.flatten_at_session_end_toggle_button.parentWidget() is behavior_row
     assert session_action_row is not None
+    assert "不过夜" in utility_button_texts
     assert [button.text() for button in session_action_row.findChildren(QPushButton)] == ["保存会话", "标记完成"]
 
 
@@ -473,9 +482,10 @@ def test_right_panel_is_fixed_and_splitter_handle_is_disabled(window: MainWindow
 
 
 def test_trade_buttons_use_single_row_fixed_size_layout(window: MainWindow) -> None:
-    trade_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "交易")
+    trade_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "快捷交易")
+    order_tools_group = next(group for group in window.findChildren(QGroupBox) if group.title() == "订单工具")
     direct_row = trade_group.findChild(QWidget, "directTradeButtonsRow")
-    limit_row = trade_group.findChild(QWidget, "limitTradeButtonsRow")
+    limit_row = order_tools_group.findChild(QWidget, "limitTradeButtonsRow")
 
     assert direct_row is not None
     assert limit_row is not None
@@ -762,6 +772,11 @@ def test_top_toolbar_separates_workspace_and_diagnostics_actions(window: MainWin
     assert window.settings_button.parentWidget() is management_group
     assert window.log_viewer_button.parentWidget() is diagnostics_group
     assert window.check_update_button.parentWidget() is diagnostics_group
+    assert window.dataset_button.property("tone") == "workspace"
+    assert window.session_button.property("tone") == "workspace"
+    assert window.settings_button.property("tone") == "workspace"
+    assert window.log_viewer_button.property("tone") == "diagnostic"
+    assert window.check_update_button.property("tone") == "diagnostic"
 
 
 def test_bottom_bar_controls_share_safe_minimum_heights(window: MainWindow) -> None:
@@ -1019,16 +1034,20 @@ def test_settings_dialog_log_directory_actions(window: MainWindow, app: QApplica
 def test_log_viewer_dialog_reads_selected_log_file(app: QApplication, tmp_path: Path) -> None:
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
+    settings_path = tmp_path / "ui-settings.json"
     (logs_dir / "app.log").write_text("app line", encoding="utf-8")
     (logs_dir / "debug.log").write_text("debug line", encoding="utf-8")
     (logs_dir / "error.log").write_text("error line", encoding="utf-8")
 
-    dialog = LogViewerDialog(logs_path=logs_dir)
+    dialog = LogViewerDialog(logs_path=logs_dir, settings_path=settings_path)
     try:
         assert "app line" in dialog.log_text.toPlainText()
         assert dialog.refresh_log_button.property("role") == "secondary"
         assert dialog.status_label.property("role") == "statusMuted"
         assert dialog.status_label.text().startswith("正在查看 | ")
+        assert dialog.follow_latest_check.isChecked() is True
+        assert dialog._refresh_timer.isActive() is True
+        assert dialog.error_only_check.isChecked() is False
         dialog.log_file_combo.setCurrentText("debug.log")
         app.processEvents()
         assert "debug line" in dialog.log_text.toPlainText()
@@ -1041,14 +1060,129 @@ def test_log_viewer_dialog_reads_selected_log_file(app: QApplication, tmp_path: 
 def test_log_viewer_dialog_shows_missing_log_status(app: QApplication, tmp_path: Path) -> None:
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
+    settings_path = tmp_path / "ui-settings.json"
 
-    dialog = LogViewerDialog(logs_path=logs_dir)
+    dialog = LogViewerDialog(logs_path=logs_dir, settings_path=settings_path)
     try:
         assert "日志文件不存在" in dialog.log_text.toPlainText()
         assert dialog.status_label.text().startswith("未找到日志文件 | ")
     finally:
         dialog.close()
         dialog.deleteLater()
+
+
+def test_log_viewer_dialog_tails_large_log_file(app: QApplication, tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    settings_path = tmp_path / "ui-settings.json"
+    lines = [f"line {index:04d}" for index in range(3000)]
+    (logs_dir / "app.log").write_text("\n".join(lines), encoding="utf-8")
+
+    dialog = LogViewerDialog(logs_path=logs_dir, settings_path=settings_path)
+    try:
+        text = dialog.log_text.toPlainText()
+        assert "line 0000" not in text
+        assert "line 2999" in text
+        assert "仅显示最近内容" in dialog.status_label.text()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_log_viewer_dialog_follow_latest_reads_appended_content(app: QApplication, tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    settings_path = tmp_path / "ui-settings.json"
+    log_path = logs_dir / "app.log"
+    log_path.write_text("start", encoding="utf-8")
+
+    dialog = LogViewerDialog(logs_path=logs_dir, settings_path=settings_path)
+    try:
+        dialog.follow_latest_check.setChecked(True)
+        app.processEvents()
+        assert dialog._refresh_timer.isActive() is True
+
+        with log_path.open("a", encoding="utf-8") as stream:
+            stream.write("\nnext line")
+        dialog._load_selected_log()
+        app.processEvents()
+
+        assert "next line" in dialog.log_text.toPlainText()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_log_viewer_dialog_appends_new_records_on_new_line(app: QApplication, tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    settings_path = tmp_path / "ui-settings.json"
+    log_path = logs_dir / "app.log"
+    lines = [f"line {index:04d}" for index in range(3000)]
+    log_path.write_text("\n".join(lines), encoding="utf-8")
+
+    dialog = LogViewerDialog(logs_path=logs_dir, settings_path=settings_path)
+    try:
+        assert "line 2999" in dialog.log_text.toPlainText()
+        with log_path.open("a", encoding="utf-8") as stream:
+            stream.write("NEXT_RECORD")
+        dialog._load_selected_log()
+        app.processEvents()
+
+        text = dialog.log_text.toPlainText()
+        assert "line 2999NEXT_RECORD" not in text
+        assert "line 2999\nNEXT_RECORD" in text
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_log_viewer_dialog_missing_debug_log_uses_debug_specific_status(app: QApplication, tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    settings_path = tmp_path / "ui-settings.json"
+    (logs_dir / "app.log").write_text("app line", encoding="utf-8")
+
+    dialog = LogViewerDialog(logs_path=logs_dir, settings_path=settings_path)
+    try:
+        dialog.log_file_combo.setCurrentText("debug.log")
+        app.processEvents()
+        assert "当前没有调试日志" in dialog.log_text.toPlainText()
+        assert dialog.status_label.text().startswith("调试日志未生成 | ")
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_log_viewer_dialog_persists_follow_latest_and_error_only_preferences(app: QApplication, tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    settings_path = tmp_path / "ui-settings.json"
+    (logs_dir / "app.log").write_text("INFO line\nERROR failure", encoding="utf-8")
+
+    dialog = LogViewerDialog(logs_path=logs_dir, settings_path=settings_path)
+    try:
+        assert dialog.follow_latest_check.isChecked() is True
+        assert dialog.error_only_check.isChecked() is False
+        dialog.follow_latest_check.setChecked(False)
+        dialog.error_only_check.setChecked(True)
+        app.processEvents()
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["log_viewer_follow_latest"] is False
+        assert saved["log_viewer_error_only"] is True
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+    reloaded = LogViewerDialog(logs_path=logs_dir, settings_path=settings_path)
+    try:
+        assert reloaded.follow_latest_check.isChecked() is False
+        assert reloaded.error_only_check.isChecked() is True
+        assert "ERROR failure" in reloaded.log_text.toPlainText()
+        assert "INFO line" not in reloaded.log_text.toPlainText()
+    finally:
+        reloaded.close()
+        reloaded.deleteLater()
 
 
 def test_main_window_loads_bar_count_toggle_from_global_ui_settings(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3523,8 +3657,8 @@ def test_trade_history_sidebar_uses_right_panel_tabs(window: MainWindow) -> None
     assert sidebar.objectName() == "tradeReviewSidebar"
     assert sidebar.trade_card_list.objectName() == "tradeReviewCardList"
     assert sidebar.trade_card_list.count() == 1
-    assert "#1 多  PnL +2.00 · 盈利" in sidebar.trade_card_list.item(0).text()
-    assert "2根 · 手动平仓" in sidebar.trade_card_list.item(0).text()
+    assert "#1 · 多 · PnL +2.00 · 盈利" in sidebar.trade_card_list.item(0).text()
+    assert "持仓 2根 · 手动平仓" in sidebar.trade_card_list.item(0).text()
     header_buttons = [button.text() for button in sidebar.findChildren(QPushButton)]
     assert "上一笔" in header_buttons
     assert "下一笔" in header_buttons
@@ -3735,7 +3869,7 @@ def test_trade_history_saves_entry_and_review_notes_to_actions(window: MainWindo
     assert window._selected_trade_number == 1
     assert sidebar.entry_note_edit.toPlainText() == "突破回踩有效，准备跟随"
     assert sidebar.review_note_edit.toPlainText() == "出场及时，但仓位可以更轻"
-    assert sidebar.note_status_label.text() == "想法已保存"
+    assert sidebar.note_status_label.text() == "复盘记录已保存"
 
 
 def test_trade_link_note_dialog_loads_and_saves_entry_and_review_notes(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:

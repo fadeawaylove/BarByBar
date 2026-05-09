@@ -202,6 +202,15 @@ QGroupBox[sidebarSection='true'] {{
     background: {rgba(AppTheme.surface_elevated, 172)};
     margin-top: 8px;
 }}
+QGroupBox#quickTradeBox {{
+    background: {rgba(AppTheme.surface_elevated, 190)};
+    border-color: {rgba(AppTheme.primary, 92)};
+}}
+QGroupBox#orderToolsBox,
+QGroupBox#displayBox,
+QGroupBox#sessionUtilityBox {{
+    background: {rgba(AppTheme.surface_elevated, 156)};
+}}
 QGroupBox::title {{
     subcontrol-origin: margin;
     left: 10px;
@@ -209,6 +218,9 @@ QGroupBox::title {{
     color: {AppTheme.text_faint};
     font-weight: 800;
     letter-spacing: 0.3px;
+}}
+QGroupBox#quickTradeBox::title {{
+    color: {AppTheme.primary};
 }}
 QWidget#settingsSidebar {{
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {AppTheme.surface_elevated}, stop:1 {AppTheme.surface_soft});
@@ -380,6 +392,24 @@ QPushButton[role='toolbar']:disabled {{
     background: transparent;
     border-color: transparent;
     color: {AppTheme.text_disabled};
+}}
+QPushButton[role='toolbar'][tone='workspace'] {{
+    color: {AppTheme.text};
+    font-weight: 800;
+}}
+QPushButton[role='toolbar'][tone='workspace']:hover {{
+    border-color: {rgba(AppTheme.border, 210)};
+}}
+QPushButton[role='toolbar'][tone='diagnostic'] {{
+    color: {AppTheme.text_faint};
+    font-weight: 700;
+}}
+QPushButton[role='toolbar'][tone='diagnostic']:hover {{
+    color: {AppTheme.text_muted};
+    border-color: {rgba(AppTheme.border, 136)};
+}}
+QPushButton[role='toolbar'][tone='diagnostic']:checked {{
+    color: {AppTheme.primary};
 }}
 QPushButton[role='timeframe'] {{
     background: transparent;
@@ -612,12 +642,15 @@ QListWidget {{
     padding: 6px;
 }}
 QListWidget::item {{
+    background: {rgba(AppTheme.surface_elevated, 110)};
+    border: 1px solid transparent;
     border-radius: 8px;
     padding: 9px 10px;
     color: {AppTheme.text_muted};
 }}
 QListWidget::item:selected {{
     background: {AppTheme.selected};
+    border-color: {rgba(AppTheme.selected_border, 124)};
     color: #153e91;
     font-weight: 800;
 }}

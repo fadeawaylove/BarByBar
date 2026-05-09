@@ -23,6 +23,7 @@ from barbybar.ui.chart_widget import (
     HoverTarget,
     HoverTargetType,
     InteractionMode,
+    ORDER_LABEL_MIN_VERTICAL_GAP_PX,
     STOP_LOSS_LINE_COLOR,
     TRADE_ENTRY_LONG_COLOR,
     TRADE_ENTRY_SHORT_COLOR,
@@ -4022,6 +4023,108 @@ def test_protective_order_label_falls_back_to_reference_price() -> None:
     widget.deleteLater()
 
 
+def test_order_line_labels_render_on_left_annotation_band(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.STOP_LOSS,
+                price=98.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=1,
+                created_at=datetime(2025, 1, 1, 9, 0),
+                id=12,
+            )
+        ]
+    )
+    app.processEvents()
+
+    label = widget._order_line_labels[12]
+    left, right = widget.current_x_range()
+
+    assert label.pos().x() == pytest.approx(widget._order_label_x(), abs=0.25)
+    assert label.pos().x() < (left + right) / 2
+
+
+def test_average_price_label_renders_on_left_annotation_band(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_position_direction("long")
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.AVERAGE_PRICE,
+                price=100.0,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=0,
+                created_at=datetime(2025, 1, 1, 9, 0),
+            )
+        ]
+    )
+    app.processEvents()
+
+    assert widget._static_order_line_labels
+    line, label = widget._static_order_line_labels[0]
+    assert line.order_type is OrderLineType.AVERAGE_PRICE
+    assert label.toPlainText().startswith("多单 1手 100")
+    assert label.pos().x() == pytest.approx(widget._order_label_x(), abs=0.25)
+
+
+def test_order_line_labels_avoid_vertical_overlap_for_close_prices(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(40)
+    widget.set_order_lines(
+        [
+            OrderLine(
+                order_type=OrderLineType.STOP_LOSS,
+                price=99.8,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=1,
+                created_at=datetime(2025, 1, 1, 9, 0),
+                id=12,
+            ),
+            OrderLine(
+                order_type=OrderLineType.TAKE_PROFIT,
+                price=99.85,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=1,
+                created_at=datetime(2025, 1, 1, 9, 0),
+                id=13,
+            ),
+            OrderLine(
+                order_type=OrderLineType.EXIT,
+                price=99.9,
+                quantity=1,
+                created_bar_index=0,
+                active_from_bar_index=1,
+                created_at=datetime(2025, 1, 1, 9, 0),
+                id=14,
+            ),
+        ]
+    )
+    app.processEvents()
+
+    scene_positions = sorted(
+        widget.price_plot.vb.mapViewToScene(label.pos()).y()
+        for label in widget._order_line_labels.values()
+    )
+
+    gaps = [scene_positions[index + 1] - scene_positions[index] for index in range(len(scene_positions) - 1)]
+    assert gaps
+    assert min(gaps) >= ORDER_LABEL_MIN_VERTICAL_GAP_PX - 0.5
+
+
 def test_crosshair_price_label_follows_tick_precision(widget: ChartWidget) -> None:
     widget.set_tick_size(0.2)
 
@@ -4341,6 +4444,7 @@ def test_hovered_editable_order_line_drag_moves_line_instead_of_panning_chart(wi
     assert widget.is_dragging is True
     assert widget._drag_order_label.isVisible() is True
     assert widget._drag_order_label.toPlainText() == "止损 1手 98.2"
+    assert widget._drag_order_label.pos().x() == pytest.approx(widget._order_label_x(), abs=0.25)
     assert 12 not in widget._order_line_labels
 
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
@@ -4447,6 +4551,7 @@ def test_hovered_transient_stop_loss_line_drag_emits_protective_upsert(widget: C
     assert widget._axis_price_label.text() == "98.2"
     assert widget._drag_order_label.isVisible() is True
     assert widget._drag_order_label.toPlainText() == "止损 1手 98.2"
+    assert widget._drag_order_label.pos().x() == pytest.approx(widget._order_label_x(), abs=0.25)
 
     widget.view_box.mouseDragEvent(_FakeDragEvent(move, move, is_finish=True))
 

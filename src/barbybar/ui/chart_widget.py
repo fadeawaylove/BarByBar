@@ -44,6 +44,8 @@ DRAWING_HIT_DISTANCE_PX = 10.0
 DRAWING_ANCHOR_HIT_DISTANCE_PX = 12.0
 TRADE_MARKER_HIT_DISTANCE_PX = 12.0
 ORDER_LINE_HIT_DISTANCE_PX = 16.0
+ORDER_LABEL_LEFT_PADDING_PX = 14.0
+ORDER_LABEL_MIN_VERTICAL_GAP_PX = 18.0
 TRADE_LINK_WIN_COLOR = AppTheme.chart_trade_win
 TRADE_LINK_LOSS_COLOR = AppTheme.chart_trade_loss
 TRADE_LINK_FLAT_COLOR = AppTheme.chart_trade_flat
@@ -434,6 +436,7 @@ class ChartWidget(QWidget):
         self._order_line_scene_positions: dict[int, float] = {}
         self._order_line_items: dict[int, pg.InfiniteLine] = {}
         self._order_line_labels: dict[int, pg.TextItem] = {}
+        self._static_order_line_labels: list[tuple[OrderLine, pg.TextItem]] = []
         self._trade_actions: list[SessionAction] = []
         self._trades: list[Trade] | None = None
         self._trade_review_items: list[TradeReviewItem] = []
@@ -552,7 +555,7 @@ class ChartWidget(QWidget):
         self._preview_line.setZValue(19)
         self.price_plot.addItem(self._preview_line)
         self._preview_line.isHidden = lambda item=self._preview_line: not item.isVisible()
-        self._drag_order_label = pg.TextItem("", color=AppTheme.text, fill=pg.mkBrush(252, 251, 247, 246), anchor=(1, 0.5))
+        self._drag_order_label = pg.TextItem("", color=AppTheme.text, fill=pg.mkBrush(252, 251, 247, 246), anchor=(0, 0.5))
         self._drag_order_label.setZValue(22)
         self.price_plot.addItem(self._drag_order_label)
         self._temporary_measure_line = pg.PlotCurveItem([], [], pen=pg.mkPen(AppTheme.chart_measure, width=2, style=Qt.PenStyle.DashLine))
@@ -1448,7 +1451,7 @@ class ChartWidget(QWidget):
         self._order_line_scene_positions.clear()
         self._order_line_items.clear()
         self._order_line_labels.clear()
-        right_edge = self.price_plot.viewRange()[0][1] if self._bars else 0.0
+        self._static_order_line_labels.clear()
         dragging_order_line = self._active_drag_target.target_type is ActiveDragTargetType.ORDER_LINE and self._is_dragging
         for line in self._order_lines:
             is_highlighted = self._is_hovered_order_line(line)
@@ -1460,9 +1463,8 @@ class ChartWidget(QWidget):
             if dragging_order_line and self._is_drag_label_target(line):
                 continue
             label_fill = pg.mkBrush(255, 243, 191, 245) if is_highlighted else pg.mkBrush(255, 255, 255, 235)
-            label = pg.TextItem(self._order_line_label(line), color=label_color, fill=label_fill, anchor=(1, 0.5))
+            label = pg.TextItem(self._order_line_label(line), color=label_color, fill=label_fill, anchor=(0, 0.5))
             label._barbybar_order_line = True
-            label.setPos(right_edge - 0.4, line.price)
             label.setZValue(21)
             self.price_plot.addItem(label)
             if line.id is not None and movable:
@@ -1470,19 +1472,41 @@ class ChartWidget(QWidget):
                 self._order_line_labels[line.id] = label
                 scene_point = self.price_plot.vb.mapViewToScene(QPointF(float(self._global_start_index), float(line.price)))
                 self._order_line_scene_positions[line.id] = float(scene_point.y())
+            else:
+                self._static_order_line_labels.append((line, label))
+        self._relayout_order_line_labels()
         self._order_line_items_dirty = False
         self._clear_chart_layers_dirty(ChartLayer.ORDER_LINES)
 
     def _relayout_order_line_labels(self) -> None:
-        if not self._order_line_labels:
+        if not self._order_line_labels and not self._static_order_line_labels:
             return
-        right_edge = self.price_plot.viewRange()[0][1] if self._bars else 0.0
+        label_x = self._order_label_x()
+        placements: list[tuple[OrderLine, pg.TextItem, float]] = []
         for line in self._order_lines:
-            if line.id is None:
+            label: pg.TextItem | None = None
+            if line.id is not None:
+                label = self._order_line_labels.get(line.id)
+            if label is None:
+                label = next((item for candidate, item in self._static_order_line_labels if candidate is line), None)
+            if label is None:
                 continue
-            label = self._order_line_labels.get(line.id)
-            if label is not None:
-                label.setPos(right_edge - 0.4, line.price)
+            desired_scene_y = float(self.price_plot.vb.mapViewToScene(QPointF(label_x, float(line.price))).y())
+            placements.append((line, label, desired_scene_y))
+        if not placements:
+            return
+        scene_rect = self.price_plot.vb.sceneBoundingRect()
+        top_limit = scene_rect.top() + 8.0
+        bottom_limit = scene_rect.bottom() - 8.0
+        placements.sort(key=lambda item: item[2])
+        previous_scene_y: float | None = None
+        for line, label, desired_scene_y in placements:
+            scene_y = max(top_limit, min(bottom_limit, desired_scene_y))
+            if previous_scene_y is not None and scene_y - previous_scene_y < ORDER_LABEL_MIN_VERTICAL_GAP_PX:
+                scene_y = min(bottom_limit, previous_scene_y + ORDER_LABEL_MIN_VERTICAL_GAP_PX)
+            previous_scene_y = scene_y
+            price_y = self._scene_y_to_view_y(scene_y)
+            label.setPos(label_x, price_y)
 
     def _is_drag_label_target(self, line: OrderLine) -> bool:
         if self._active_drag_target.target_type is not ActiveDragTargetType.ORDER_LINE:
@@ -1581,12 +1605,24 @@ class ChartWidget(QWidget):
         self._drag_order_label.setText(self._order_line_label(line), color=label_color)
         self._drag_order_label.fill = pg.mkBrush(255, 243, 191, 245)
         self._drag_order_label.update()
-        right_edge = self.price_plot.viewRange()[0][1]
-        self._drag_order_label.setPos(right_edge - 0.4, price)
+        self._drag_order_label.setPos(self._order_label_x(), price)
         self._drag_order_label.show()
 
     def _hide_drag_order_label(self) -> None:
         self._drag_order_label.hide()
+
+    def _order_label_x(self) -> float:
+        scene_rect = self.price_plot.vb.sceneBoundingRect()
+        if scene_rect.isNull():
+            left, _right = self.current_x_range()
+            return left
+        scene_point = QPointF(scene_rect.left() + ORDER_LABEL_LEFT_PADDING_PX, scene_rect.center().y())
+        return float(self.price_plot.vb.mapSceneToView(scene_point).x())
+
+    def _scene_y_to_view_y(self, scene_y: float) -> float:
+        scene_rect = self.price_plot.vb.sceneBoundingRect()
+        scene_point = QPointF(scene_rect.left() + ORDER_LABEL_LEFT_PADDING_PX, scene_y)
+        return float(self.price_plot.vb.mapSceneToView(scene_point).y())
 
     def _apply_viewport(self, *, interactive: bool = False, refresh_overlays: bool = True) -> None:
         if not self._bars or self._is_applying_viewport:

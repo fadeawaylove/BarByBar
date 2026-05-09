@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QProgressBar,
     QPushButton,
+    QPlainTextEdit,
     QColorDialog,
     QScrollArea,
     QSizePolicy,
@@ -53,7 +54,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut
+from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut, QTextCursor
 
 from barbybar import __version__
 from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
@@ -146,6 +147,10 @@ CANDLE_COLOR_SETTING_KEYS = (
     "candle_down_wick_color",
     "chart_background_color",
 )
+LOG_VIEWER_TAIL_BYTES = 512 * 1024
+LOG_VIEWER_TAIL_LINES = 2000
+LOG_VIEWER_REFRESH_INTERVAL_MS = 1500
+LOG_VIEWER_MAX_BLOCK_COUNT = 4000
 
 
 def configure_spinbox(spinbox: QAbstractSpinBox) -> QAbstractSpinBox:
@@ -2101,8 +2106,8 @@ class TradeReviewSidebar(QWidget):
         outcome = "盈利" if row.outcome == "win" else "亏损" if row.outcome == "loss" else "持平"
         pnl_text = f"+{item.pnl:.2f}" if item.pnl > 0 else f"{item.pnl:.2f}"
         return (
-            f"#{item.trade_number} {direction}  PnL {pnl_text} · {outcome}\n"
-            f"{item.entry_time:%m-%d %H:%M} -> {item.exit_time:%H:%M} · {item.holding_bars}根 · {format_exit_reason(item.exit_reason)}"
+            f"#{item.trade_number} · {direction} · PnL {pnl_text} · {outcome}\n"
+            f"{item.entry_time:%m-%d %H:%M} -> {item.exit_time:%H:%M} · 持仓 {item.holding_bars}根 · {format_exit_reason(item.exit_reason)}"
         )
 
     def _handle_card_clicked(self, item: QListWidgetItem) -> None:
@@ -2175,7 +2180,7 @@ class TradeReviewSidebar(QWidget):
             self.trade_detail.setPlainText("选择一笔交易查看复盘细节")
             self.entry_note_edit.clear()
             self.review_note_edit.clear()
-            self.note_status_label.clear()
+            self.note_status_label.setText("选择一笔交易后可编辑并保存复盘记录")
             self.entry_note_edit.setEnabled(False)
             self.review_note_edit.setEnabled(False)
             self.save_trade_note_button.setEnabled(False)
@@ -2190,7 +2195,7 @@ class TradeReviewSidebar(QWidget):
         self.review_note_edit.setPlainText(row.review_note)
         self.entry_note_edit.blockSignals(False)
         self.review_note_edit.blockSignals(False)
-        self.note_status_label.clear()
+        self.note_status_label.setText("支持 Ctrl+S 保存当前交易笔记")
 
     def _save_selected_trade_notes(self) -> None:
         selected_trade_number = self.owner._selected_trade_number
@@ -2202,7 +2207,7 @@ class TradeReviewSidebar(QWidget):
             review_note=self.review_note_edit.toPlainText(),
         )
         self.refresh_items()
-        self.note_status_label.setText("想法已保存")
+        self.note_status_label.setText("复盘记录已保存")
 
 
 class TradeLinkNoteDialog(QDialog):
@@ -2267,13 +2272,24 @@ class TradeLinkNoteDialog(QDialog):
 
 
 class LogViewerDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None, logs_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        logs_path: Path | None = None,
+        settings_path: Path | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("日志查看")
         self.resize(980, 620)
         self.setStyleSheet(dialog_stylesheet())
         self._logs_path = Path(logs_path) if logs_path else log_dir()
+        self._settings_path = Path(settings_path) if settings_path else default_ui_settings_path()
+        self._ui_settings = self._load_ui_settings()
         self._current_text = ""
+        self._current_path: Path | None = None
+        self._current_size = -1
+        self._current_mtime_ns = -1
+        self._truncated = False
         self._auto_scroll_enabled = True
 
         layout = QVBoxLayout(self)
@@ -2284,18 +2300,35 @@ class LogViewerDialog(QDialog):
         toolbar.setSpacing(8)
         toolbar.addWidget(QLabel("日志文件"))
         self.log_file_combo = QComboBox()
-        self.log_file_combo.addItems(["app.log", "debug.log", "error.log"])
-        self.log_file_combo.currentTextChanged.connect(self._load_selected_log)
+        self.log_file_combo.addItems(["app.log", "error.log", "debug.log"])
+        self.log_file_combo.currentTextChanged.connect(self._handle_log_file_changed)
         toolbar.addWidget(self.log_file_combo, 1)
         self.refresh_log_button = QPushButton("刷新")
         self.refresh_log_button.setProperty("role", "secondary")
         self.refresh_log_button.clicked.connect(self._load_selected_log)
         toolbar.addWidget(self.refresh_log_button)
+        self.follow_latest_check = QCheckBox("跟随最新")
+        self.follow_latest_check.toggled.connect(self._handle_follow_latest_toggled)
+        self.follow_latest_check.blockSignals(True)
+        self.follow_latest_check.setChecked(self._log_viewer_follow_latest_default())
+        self.follow_latest_check.blockSignals(False)
+        toolbar.addWidget(self.follow_latest_check)
+        self.error_only_check = QCheckBox("仅错误")
+        self.error_only_check.toggled.connect(self._handle_error_only_toggled)
+        self.error_only_check.blockSignals(True)
+        self.error_only_check.setChecked(self._log_viewer_error_only_default())
+        self.error_only_check.blockSignals(False)
+        toolbar.addWidget(self.error_only_check)
+        self.copy_path_button = QPushButton("复制路径")
+        self.copy_path_button.setProperty("role", "quiet")
+        self.copy_path_button.clicked.connect(self._copy_selected_log_path)
+        toolbar.addWidget(self.copy_path_button)
         layout.addLayout(toolbar)
 
-        self.log_text = QTextEdit()
+        self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.log_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.log_text.setMaximumBlockCount(LOG_VIEWER_MAX_BLOCK_COUNT)
         layout.addWidget(self.log_text, 1)
 
         self.status_label = QLabel("")
@@ -2305,18 +2338,45 @@ class LogViewerDialog(QDialog):
         layout.addWidget(self.status_label)
 
         self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(1000)
+        self._refresh_timer.setInterval(LOG_VIEWER_REFRESH_INTERVAL_MS)
         self._refresh_timer.timeout.connect(self._load_selected_log)
 
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.valueChanged.connect(self._track_auto_scroll)
 
         self._load_selected_log()
-        self._refresh_timer.start()
+        if self.follow_latest_check.isChecked():
+            self._refresh_timer.start()
 
     def closeEvent(self, event) -> None:  # noqa: ANN001
         self._refresh_timer.stop()
         super().closeEvent(event)
+
+    def _load_ui_settings(self) -> dict[str, object]:
+        try:
+            if self._settings_path.exists():
+                payload = json.loads(self._settings_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    return payload
+        except Exception:  # noqa: BLE001
+            return {}
+        return {}
+
+    def _save_ui_settings(self) -> None:
+        self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self._settings_path.write_text(json.dumps(self._ui_settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _log_viewer_follow_latest_default(self) -> bool:
+        stored = self._ui_settings.get("log_viewer_follow_latest")
+        if isinstance(stored, bool):
+            return stored
+        return True
+
+    def _log_viewer_error_only_default(self) -> bool:
+        stored = self._ui_settings.get("log_viewer_error_only")
+        if isinstance(stored, bool):
+            return stored
+        return False
 
     def _selected_log_path(self) -> Path:
         return self._logs_path / self.log_file_combo.currentText()
@@ -2325,28 +2385,160 @@ class LogViewerDialog(QDialog):
         scrollbar = self.log_text.verticalScrollBar()
         self._auto_scroll_enabled = scrollbar.value() >= max(0, scrollbar.maximum() - 4)
 
+    def _handle_log_file_changed(self) -> None:
+        self._reset_log_state()
+        self._load_selected_log()
+
+    def _handle_follow_latest_toggled(self, checked: bool) -> None:
+        self._ui_settings["log_viewer_follow_latest"] = bool(checked)
+        self._save_ui_settings()
+        if checked:
+            self._refresh_timer.start()
+            self._load_selected_log()
+            return
+        self._refresh_timer.stop()
+
+    def _handle_error_only_toggled(self, checked: bool) -> None:
+        self._ui_settings["log_viewer_error_only"] = bool(checked)
+        self._save_ui_settings()
+        self._apply_current_log_view()
+
+    def _copy_selected_log_path(self) -> None:
+        QApplication.clipboard().setText(str(self._selected_log_path()))
+        self.status_label.setText(f"已复制日志路径 | {self._selected_log_path()}")
+
+    def _reset_log_state(self) -> None:
+        self._current_path = None
+        self._current_text = ""
+        self._current_size = -1
+        self._current_mtime_ns = -1
+        self._truncated = False
+
+    @staticmethod
+    def _tail_text_from_bytes(data: bytes, *, truncated_from_head: bool) -> tuple[str, bool]:
+        text = data.decode("utf-8", errors="replace")
+        if truncated_from_head:
+            newline_index = text.find("\n")
+            if newline_index >= 0:
+                text = text[newline_index + 1 :]
+        lines = text.splitlines()
+        truncated = truncated_from_head or len(lines) > LOG_VIEWER_TAIL_LINES
+        if len(lines) > LOG_VIEWER_TAIL_LINES:
+            lines = lines[-LOG_VIEWER_TAIL_LINES :]
+        return "\n".join(lines), truncated
+
+    def _read_log_tail(self, path: Path) -> tuple[str, int, int, bool]:
+        size = path.stat().st_size
+        start = max(0, size - LOG_VIEWER_TAIL_BYTES)
+        with path.open("rb") as stream:
+            if start:
+                stream.seek(start)
+            data = stream.read()
+        text, truncated = self._tail_text_from_bytes(data, truncated_from_head=start > 0)
+        return text, size, path.stat().st_mtime_ns, truncated
+
+    def _normalize_current_text(self) -> None:
+        lines = self._current_text.splitlines()
+        if len(lines) <= LOG_VIEWER_TAIL_LINES and len(self._current_text.encode("utf-8", errors="replace")) <= LOG_VIEWER_TAIL_BYTES:
+            return
+        trimmed = lines[-LOG_VIEWER_TAIL_LINES :]
+        text = "\n".join(trimmed)
+        while len(text.encode("utf-8", errors="replace")) > LOG_VIEWER_TAIL_BYTES and "\n" in text:
+            text = text.split("\n", 1)[1]
+        self._current_text = text
+        self._truncated = True
+
+    def _filtered_text(self) -> str:
+        if not self.error_only_check.isChecked():
+            return self._current_text
+        lines = [
+            line
+            for line in self._current_text.splitlines()
+            if "ERROR" in line or "CRITICAL" in line
+        ]
+        if lines:
+            return "\n".join(lines)
+        return "当前筛选下没有错误日志。"
+
+    def _apply_current_log_view(self) -> None:
+        text = self._filtered_text()
+        self.log_text.setPlainText(text)
+        if self._auto_scroll_enabled:
+            scrollbar = self.log_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+
+    def _append_log_chunk(self, chunk: str) -> None:
+        if self.error_only_check.isChecked():
+            self._apply_current_log_view()
+            return
+        if not chunk:
+            return
+        if self._current_text and not self._current_text.endswith("\n") and not chunk.startswith("\n"):
+            chunk = "\n" + chunk
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.log_text.setTextCursor(cursor)
+        self.log_text.insertPlainText(chunk)
+        if self._auto_scroll_enabled:
+            scrollbar = self.log_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+
     def _load_selected_log(self) -> None:
         path = self._selected_log_path()
         if not path.exists():
-            text = f"日志文件不存在：{path}"
-            status_text = f"未找到日志文件 | {path}"
-        else:
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                text = f"读取日志失败：{exc}"
-                status_text = f"读取失败 | {path}"
-            else:
-                status_text = f"正在查看 | {path}"
-        modified = text != self._current_text
-        self._current_text = text
-        if modified:
-            self.log_text.setPlainText(text)
-            if self._auto_scroll_enabled:
-                cursor = self.log_text.textCursor()
-                cursor.movePosition(cursor.MoveOperation.End)
-                self.log_text.setTextCursor(cursor)
-        self.status_label.setText(status_text)
+            self._reset_log_state()
+            if path.name == "debug.log":
+                self._current_text = f"当前没有调试日志：{path}\n调试日志只在产生 DEBUG 记录时写入。"
+                self.log_text.setPlainText(self._current_text)
+                self.status_label.setText(f"调试日志未生成 | {path}")
+                return
+            self._current_text = f"日志文件不存在：{path}"
+            self.log_text.setPlainText(self._current_text)
+            self.status_label.setText(f"未找到日志文件 | {path}")
+            return
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            self._reset_log_state()
+            self._current_text = f"读取日志失败：{exc}"
+            self.log_text.setPlainText(self._current_text)
+            self.status_label.setText(f"读取失败 | {path}")
+            return
+
+        full_reload = (
+            self._current_path != path
+            or self._current_size < 0
+            or stat.st_size < self._current_size
+            or stat.st_mtime_ns < self._current_mtime_ns
+        )
+        try:
+            if full_reload:
+                self._current_text, self._current_size, self._current_mtime_ns, self._truncated = self._read_log_tail(path)
+                self._current_path = path
+                self._apply_current_log_view()
+            elif stat.st_size > self._current_size:
+                with path.open("rb") as stream:
+                    stream.seek(self._current_size)
+                    chunk = stream.read().decode("utf-8", errors="replace")
+                self._current_text += chunk
+                self._current_size = stat.st_size
+                self._current_mtime_ns = stat.st_mtime_ns
+                previous_text = self._current_text
+                self._normalize_current_text()
+                if previous_text != self._current_text:
+                    self._apply_current_log_view()
+                else:
+                    self._append_log_chunk(chunk)
+        except OSError as exc:
+            self._reset_log_state()
+            self._current_text = f"读取日志失败：{exc}"
+            self.log_text.setPlainText(self._current_text)
+            self.status_label.setText(f"读取失败 | {path}")
+            return
+
+        display_hint = "仅显示最近内容" if self._truncated else "显示完整文件"
+        file_size_kb = max(1, (stat.st_size + 1023) // 1024)
+        self.status_label.setText(f"正在查看 | {path} | {display_hint} | {file_size_kb} KB")
 
 
 class SettingsDialog(QDialog):
@@ -2749,26 +2941,31 @@ class MainWindow(QMainWindow):
 
         self.dataset_button = QPushButton("数据集")
         self.dataset_button.setProperty("role", "toolbar")
+        self.dataset_button.setProperty("tone", "workspace")
         self.dataset_button.setMinimumHeight(AppTheme.toolbar_button_height)
         self.dataset_button.setMinimumWidth(AppTheme.toolbar_action_width_md)
         self.dataset_button.clicked.connect(self.open_dataset_manager)
         self.session_button = QPushButton("案例库")
         self.session_button.setProperty("role", "toolbar")
+        self.session_button.setProperty("tone", "workspace")
         self.session_button.setMinimumHeight(AppTheme.toolbar_button_height)
         self.session_button.setMinimumWidth(AppTheme.toolbar_action_width_md)
         self.session_button.clicked.connect(self.open_session_library)
         self.check_update_button = QPushButton("检查更新")
         self.check_update_button.setProperty("role", "toolbar")
+        self.check_update_button.setProperty("tone", "diagnostic")
         self.check_update_button.setMinimumHeight(AppTheme.toolbar_button_height)
         self.check_update_button.setMinimumWidth(AppTheme.toolbar_action_width_lg)
         self.check_update_button.clicked.connect(self._start_update_check)
         self.log_viewer_button = QPushButton("查看日志")
         self.log_viewer_button.setProperty("role", "toolbar")
+        self.log_viewer_button.setProperty("tone", "diagnostic")
         self.log_viewer_button.setMinimumHeight(AppTheme.toolbar_button_height)
         self.log_viewer_button.setMinimumWidth(AppTheme.toolbar_action_width_lg)
         self.log_viewer_button.clicked.connect(self.open_log_viewer)
         self.settings_button = QPushButton("设置")
         self.settings_button.setProperty("role", "toolbar")
+        self.settings_button.setProperty("tone", "workspace")
         self.settings_button.setMinimumHeight(AppTheme.toolbar_button_height)
         self.settings_button.setMinimumWidth(AppTheme.toolbar_action_width_sm)
         self.settings_button.clicked.connect(self.open_settings_dialog)
@@ -3331,7 +3528,25 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        trade_box = QGroupBox("交易")
+        position_card = QWidget()
+        position_card.setObjectName("positionSummaryCard")
+        position_card.setProperty("card", True)
+        position_layout = QVBoxLayout(position_card)
+        position_layout.setContentsMargins(10, 8, 10, 8)
+        position_layout.setSpacing(4)
+        position_title = QLabel("仓位概览")
+        position_title.setProperty("role", "sidebarCardTitle")
+        self.stats_label = QLabel("方向 空仓\n仓位 0 · 均价 0\n已实现盈亏 0.00")
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setObjectName("positionReadout")
+        self.stats_label.setProperty("role", "positionReadout")
+        self.stats_label.setProperty("state", "flat")
+        position_layout.addWidget(position_title)
+        position_layout.addWidget(self.stats_label)
+        layout.addWidget(position_card)
+
+        trade_box = QGroupBox("快捷交易")
+        trade_box.setObjectName("quickTradeBox")
         trade_box.setProperty("sidebarSection", True)
         trade_layout = QVBoxLayout(trade_box)
         trade_layout.setContentsMargins(8, 14, 8, 8)
@@ -3408,6 +3623,14 @@ class MainWindow(QMainWindow):
         action_buttons_layout.addStretch(1)
         direct_trade_layout.addWidget(action_buttons_row)
         trade_layout.addWidget(direct_trade_section)
+        layout.addWidget(trade_box)
+
+        order_tools_box = QGroupBox("订单工具")
+        order_tools_box.setObjectName("orderToolsBox")
+        order_tools_box.setProperty("sidebarSection", True)
+        order_tools_layout = QVBoxLayout(order_tools_box)
+        order_tools_layout.setContentsMargins(8, 14, 8, 8)
+        order_tools_layout.setSpacing(6)
 
         limit_trade_section = QWidget()
         limit_trade_section.setObjectName("limitTradeSection")
@@ -3417,7 +3640,7 @@ class MainWindow(QMainWindow):
         limit_trade_layout.setContentsMargins(6, 6, 6, 6)
         limit_trade_layout.setSpacing(5)
 
-        divider = QLabel("限价单")
+        divider = QLabel("订单线预演")
         divider.setProperty("role", "sectionChip")
         limit_trade_layout.addWidget(divider)
 
@@ -3479,25 +3702,8 @@ class MainWindow(QMainWindow):
             draw_buttons_layout.addWidget(button)
         draw_buttons_layout.addStretch(1)
         limit_trade_layout.addWidget(draw_buttons_row)
-        trade_layout.addWidget(limit_trade_section)
-        layout.addWidget(trade_box)
-
-        position_card = QWidget()
-        position_card.setObjectName("positionSummaryCard")
-        position_card.setProperty("card", True)
-        position_layout = QVBoxLayout(position_card)
-        position_layout.setContentsMargins(10, 8, 10, 8)
-        position_layout.setSpacing(4)
-        position_title = QLabel("仓位")
-        position_title.setProperty("role", "sidebarCardTitle")
-        self.stats_label = QLabel("方向 空仓\n仓位 0 · 均价 0\n已实现盈亏 0.00")
-        self.stats_label.setWordWrap(True)
-        self.stats_label.setObjectName("positionReadout")
-        self.stats_label.setProperty("role", "positionReadout")
-        self.stats_label.setProperty("state", "flat")
-        position_layout.addWidget(position_title)
-        position_layout.addWidget(self.stats_label)
-        layout.addWidget(position_card)
+        order_tools_layout.addWidget(limit_trade_section)
+        layout.addWidget(order_tools_box)
 
         stats_box = QWidget()
         stats_box.setObjectName("trainingSummaryCard")
@@ -3505,7 +3711,7 @@ class MainWindow(QMainWindow):
         stats_layout = QVBoxLayout(stats_box)
         stats_layout.setContentsMargins(10, 8, 10, 8)
         stats_layout.setSpacing(3)
-        stats_title = QLabel("统计")
+        stats_title = QLabel("训练统计")
         stats_title.setProperty("role", "sidebarCardTitle")
         self.training_stats_headline = QLabel("总交易 0 · 胜率 -- · 盈亏比 --")
         self.training_stats_headline.setProperty("role", "statsHeadline")
@@ -3524,6 +3730,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(stats_box)
 
         display_box = QGroupBox("显示")
+        display_box.setObjectName("displayBox")
         display_box.setProperty("sidebarSection", True)
         display_layout = QVBoxLayout(display_box)
         display_layout.setContentsMargins(8, 14, 8, 8)
@@ -3537,7 +3744,6 @@ class MainWindow(QMainWindow):
         for toggle_button in (
             self.bar_count_toggle_button,
             self.hide_drawings_toggle_button,
-            self.flatten_at_session_end_toggle_button,
         ):
             toggle_button.setProperty("role", "toggle")
             toggle_button.setFixedHeight(24)
@@ -3555,11 +3761,25 @@ class MainWindow(QMainWindow):
         display_layout.addWidget(self.show_trade_links_check)
         layout.addWidget(display_box)
 
-        session_box = QGroupBox("会话")
+        session_box = QGroupBox("辅助")
+        session_box.setObjectName("sessionUtilityBox")
         session_box.setProperty("sidebarSection", True)
         session_layout = QVBoxLayout(session_box)
         session_layout.setContentsMargins(8, 14, 8, 8)
         session_layout.setSpacing(4)
+
+        behavior_row = QWidget()
+        behavior_row.setObjectName("sessionBehaviorRow")
+        behavior_layout = QHBoxLayout(behavior_row)
+        behavior_layout.setContentsMargins(0, 0, 0, 0)
+        behavior_layout.setSpacing(4)
+        behavior_label = QLabel("案例行为")
+        behavior_label.setProperty("role", "sectionChip")
+        behavior_layout.addWidget(behavior_label, 0, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.flatten_at_session_end_toggle_button.setProperty("role", "toggle")
+        self.flatten_at_session_end_toggle_button.setFixedHeight(24)
+        behavior_layout.addWidget(self.flatten_at_session_end_toggle_button, 1)
+        session_layout.addWidget(behavior_row)
 
         session_action_row = QWidget()
         session_action_row.setObjectName("sessionActionRow")
