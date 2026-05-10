@@ -73,6 +73,51 @@ HIGH_FREQUENCY_INTERACTION_LOG_EVENTS = frozenset(
 )
 
 
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    if maximum < minimum:
+        maximum = minimum
+    return max(minimum, min(value, maximum))
+
+
+def build_arrow_polygon(first: QPointF, second: QPointF) -> QPolygonF | None:
+    x1 = float(first.x())
+    y1 = float(first.y())
+    x2 = float(second.x())
+    y2 = float(second.y())
+    dx = x2 - x1
+    dy = y2 - y1
+    length = sqrt(dx * dx + dy * dy)
+    if length <= 0.0001:
+        return None
+
+    ux = dx / length
+    uy = dy / length
+    perp_x = -uy
+    perp_y = ux
+
+    head_ratio = _clamp(0.80, 0.58, 0.90)
+    side_distance = _clamp(length * head_ratio, max(length * 0.58, 0.16), length - max(length * 0.08, 0.08))
+    side_half_width = _clamp(length * 0.10, 0.10, max(length * 0.18, 0.10))
+
+    side_x = x1 + ux * side_distance
+    side_y = y1 + uy * side_distance
+
+    return QPolygonF(
+        [
+            QPointF(x1, y1),
+            QPointF(
+                side_x + perp_x * side_half_width,
+                side_y + perp_y * side_half_width,
+            ),
+            QPointF(x2, y2),
+            QPointF(
+                side_x - perp_x * side_half_width,
+                side_y - perp_y * side_half_width,
+            ),
+        ]
+    )
+
+
 @dataclass(slots=True)
 class TradeMarker:
     action: SessionAction
@@ -2833,6 +2878,27 @@ class ChartWidget(QWidget):
             line_scene = self.price_plot.vb.mapViewToScene(QPointF(float(self._global_start_index), float(drawing.anchors[0].y)))
             distance = abs(float(scene_pos.y()) - float(line_scene.y()))
             return (distance if distance <= DRAWING_HIT_DISTANCE_PX else None), False
+        if drawing.tool_type is DrawingToolType.ARROW and len(drawing.anchors) >= 2:
+            polygon = self._drawing_arrow_polygon(drawing.anchors[0], drawing.anchors[1])
+            if polygon is None:
+                return None, False
+            scene_polygon = QPolygonF([self.price_plot.vb.mapViewToScene(point) for point in polygon])
+            min_distance: float | None = None
+            for index in range(scene_polygon.count()):
+                start_point = scene_polygon[index]
+                end_point = scene_polygon[(index + 1) % scene_polygon.count()]
+                distance = self._segment_distance_to_scene_pos(
+                    DrawingAnchor(float(start_point.x()), float(start_point.y())),
+                    DrawingAnchor(float(end_point.x()), float(end_point.y())),
+                    scene_pos,
+                    coordinates="scene",
+                )
+                if distance <= DRAWING_HIT_DISTANCE_PX and (min_distance is None or distance < min_distance):
+                    min_distance = distance
+            path = QPainterPath()
+            path.addPolygon(scene_polygon)
+            path.closeSubpath()
+            return min_distance, path.contains(scene_pos)
         segments = self._drawing_segments(drawing)
         min_distance: float | None = None
         for x_values, y_values in segments:
@@ -2926,9 +2992,20 @@ class ChartWidget(QWidget):
         item.setZValue(20.5)
         self.price_plot.addItem(item)
 
-    def _segment_distance_to_scene_pos(self, first: DrawingAnchor, second: DrawingAnchor, scene_pos) -> float:
-        start = self.price_plot.vb.mapViewToScene(QPointF(first.x, first.y))
-        end = self.price_plot.vb.mapViewToScene(QPointF(second.x, second.y))
+    def _segment_distance_to_scene_pos(
+        self,
+        first: DrawingAnchor,
+        second: DrawingAnchor,
+        scene_pos,
+        *,
+        coordinates: str = "view",
+    ) -> float:
+        if coordinates == "scene":
+            start = QPointF(first.x, first.y)
+            end = QPointF(second.x, second.y)
+        else:
+            start = self.price_plot.vb.mapViewToScene(QPointF(first.x, first.y))
+            end = self.price_plot.vb.mapViewToScene(QPointF(second.x, second.y))
         return self._point_to_segment_distance(float(scene_pos.x()), float(scene_pos.y()), float(start.x()), float(start.y()), float(end.x()), float(end.y()))
 
     @staticmethod
@@ -3039,6 +3116,7 @@ class ChartWidget(QWidget):
         return {
             DrawingToolType.TREND_LINE: "线段",
             DrawingToolType.RAY: "箭头线",
+            DrawingToolType.ARROW: "箭头",
             DrawingToolType.FIB_RETRACEMENT: "斐波那契",
             DrawingToolType.HORIZONTAL_LINE: "水平线",
             DrawingToolType.RECTANGLE: "矩形",
@@ -3687,6 +3765,15 @@ class ChartWidget(QWidget):
             if not preview:
                 self._add_drawing_anchor_items(drawing, drawing_index, is_hovered)
             return
+        if drawing.tool_type is DrawingToolType.ARROW:
+            arrow_item = self._drawing_body_arrow_item(drawing, style, preview=preview, highlighted=is_hovered)
+            if arrow_item is not None:
+                self._tag_drawing_item(arrow_item, drawing, drawing_index)
+                arrow_item.setZValue(18 if preview else 17)
+                self.price_plot.addItem(arrow_item)
+            if not preview:
+                self._add_drawing_anchor_items(drawing, drawing_index, is_hovered)
+            return
         pen = self._drawing_pen(style, preview=preview, highlighted=is_hovered)
         fill_item = self._drawing_fill_item(drawing, style, preview=preview)
         if fill_item is not None:
@@ -3717,6 +3804,15 @@ class ChartWidget(QWidget):
             return [self._line_points_with_extension(anchors[0], anchors[1], style["extend_left"], style["extend_right"])]
         if drawing.tool_type is DrawingToolType.RAY and len(anchors) >= 2:
             return self._arrow_line_segments(anchors[0], anchors[1])
+        if drawing.tool_type is DrawingToolType.ARROW and len(anchors) >= 2:
+            polygon = self._drawing_arrow_polygon(anchors[0], anchors[1])
+            if polygon is None:
+                return []
+            x_values = [float(point.x()) for point in polygon]
+            y_values = [float(point.y()) for point in polygon]
+            x_values.append(float(polygon[0].x()))
+            y_values.append(float(polygon[0].y()))
+            return [(x_values, y_values)]
         if drawing.tool_type is DrawingToolType.FIB_RETRACEMENT and len(anchors) >= 2:
             return self._fib_segments(drawing)
         if drawing.tool_type is DrawingToolType.HORIZONTAL_LINE and anchors:
@@ -3913,6 +4009,31 @@ class ChartWidget(QWidget):
         item.setBrush(QBrush(color))
         item.setPen(pg.mkPen(color, width=1))
         return item
+
+    def _drawing_body_arrow_item(
+        self,
+        drawing: ChartDrawing,
+        style: dict[str, object],
+        *,
+        preview: bool,
+        highlighted: bool = False,
+    ) -> QGraphicsPathItem | None:
+        if drawing.tool_type is not DrawingToolType.ARROW or len(drawing.anchors) < 2:
+            return None
+        polygon = self._drawing_arrow_polygon(drawing.anchors[0], drawing.anchors[1])
+        if polygon is None:
+            return None
+        path = QPainterPath()
+        path.addPolygon(polygon)
+        path.closeSubpath()
+        color = self._drawing_color(style, preview=preview, highlighted=highlighted)
+        item = QGraphicsPathItem(path)
+        item.setBrush(QBrush(color))
+        item.setPen(pg.mkPen(color, width=max(1, int(style.get("width", 1)))))
+        return item
+
+    def _drawing_arrow_polygon(self, first: DrawingAnchor, second: DrawingAnchor) -> QPolygonF | None:
+        return build_arrow_polygon(QPointF(float(first.x), float(first.y)), QPointF(float(second.x), float(second.y)))
 
     def _rebuild_trade_geometry(self, trades: list[Trade] | None) -> None:
         if not self._bars or self._cursor < 0:

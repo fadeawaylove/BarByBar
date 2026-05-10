@@ -101,6 +101,7 @@ from barbybar.ui.chart_widget import (
     DEFAULT_RIGHT_PADDING,
     TRADE_MARKER_FOCUSED_OPACITY,
     TRADE_MARKER_OPACITY,
+    build_arrow_polygon,
 )
 from barbybar.ui.theme import (
     AppTheme,
@@ -3056,6 +3057,7 @@ class MainWindow(QMainWindow):
         for label, tool in [
             ("线段", DrawingToolType.TREND_LINE),
             ("箭头线", DrawingToolType.RAY),
+            ("箭头", DrawingToolType.ARROW),
             ("斐波那契", DrawingToolType.FIB_RETRACEMENT),
             ("水平线", DrawingToolType.HORIZONTAL_LINE),
             ("矩形", DrawingToolType.RECTANGLE),
@@ -6250,6 +6252,7 @@ class MainWindow(QMainWindow):
         labels = {
             DrawingToolType.TREND_LINE: "线段",
             DrawingToolType.RAY: "箭头线",
+            DrawingToolType.ARROW: "箭头",
             DrawingToolType.EXTENDED_LINE: "扩展线",
             DrawingToolType.FIB_RETRACEMENT: "斐波那契",
             DrawingToolType.HORIZONTAL_LINE: "水平线",
@@ -6357,6 +6360,14 @@ class MainWindow(QMainWindow):
             painter.drawLine(start, end)
             draw_anchor(start)
             draw_arrow_tip(end, angle=0.32)
+        elif tool is DrawingToolType.ARROW:
+            tail = QPointF(4.5, 5.0)
+            tip = QPointF(size.width() - 4.0, size.height() - 4.5)
+            points = build_arrow_polygon(tail, tip)
+            if points is not None:
+                painter.setPen(QPen(QColor(accent_color), 1.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+                painter.setBrush(QColor(accent_color))
+                painter.drawPolygon(points)
         elif tool is DrawingToolType.EXTENDED_LINE:
             start = QPointF(3, size.height() - 5)
             end = QPointF(size.width() - 3, 5)

@@ -213,6 +213,7 @@ def test_main_window_exposes_drawing_toolbar_buttons(window: MainWindow) -> None
     assert set(window._drawing_tool_buttons) == {
         DrawingToolType.TREND_LINE,
         DrawingToolType.RAY,
+        DrawingToolType.ARROW,
         DrawingToolType.FIB_RETRACEMENT,
         DrawingToolType.HORIZONTAL_LINE,
         DrawingToolType.RECTANGLE,
@@ -231,11 +232,43 @@ def test_drawing_toolbar_places_arrow_line_immediately_after_trend_line(window: 
     assert buttons == [
         DrawingToolType.TREND_LINE,
         DrawingToolType.RAY,
+        DrawingToolType.ARROW,
         DrawingToolType.FIB_RETRACEMENT,
         DrawingToolType.HORIZONTAL_LINE,
         DrawingToolType.RECTANGLE,
         DrawingToolType.TEXT,
     ]
+
+
+def test_arrow_tool_icon_uses_updated_four_point_silhouette() -> None:
+    pixmap = MainWindow._draw_drawing_tool_icon(
+        DrawingToolType.ARROW,
+        "#111111",
+        "#22aa66",
+        "#ffffff",
+        "#d7dee8",
+        "#ccffdd",
+    )
+
+    image = pixmap.toImage()
+    opaque_points = [
+        (x, y)
+        for x in range(image.width())
+        for y in range(image.height())
+        if image.pixelColor(x, y).alpha() > 0
+    ]
+
+    assert opaque_points
+    min_x = min(x for x, _ in opaque_points)
+    max_x = max(x for x, _ in opaque_points)
+    min_y = min(y for _, y in opaque_points)
+    max_y = max(y for _, y in opaque_points)
+
+    assert min_x <= 5
+    assert min_y <= 5
+    assert max_x >= image.width() - 6
+    assert max_y >= image.height() - 6
+    assert image.pixelColor(3, image.height() - 4).alpha() == 0
 
 
 def test_main_window_has_no_autoplay_controls(window: MainWindow) -> None:
@@ -346,7 +379,7 @@ def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
     assert "立即平仓" not in button_texts
     assert "取消画线下单" not in button_texts
     drawing_tooltips = {button.toolTip() for button in window._drawing_tool_buttons.values()}
-    assert drawing_tooltips == {"线段", "箭头线", "斐波那契", "水平线", "矩形", "文字"}
+    assert drawing_tooltips == {"线段", "箭头线", "箭头", "斐波那契", "水平线", "矩形", "文字"}
     for button in window._drawing_tool_buttons.values():
         assert button.text() == ""
         assert button.icon().isNull() is False

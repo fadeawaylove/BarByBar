@@ -44,6 +44,7 @@ class OrderTriggerMode(StrEnum):
 class DrawingToolType(StrEnum):
     TREND_LINE = "trend_line"
     RAY = "ray"
+    ARROW = "arrow"
     EXTENDED_LINE = "extended_line"
     FIB_RETRACEMENT = "fib_retracement"
     HORIZONTAL_LINE = "horizontal_line"

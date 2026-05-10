@@ -2775,6 +2775,59 @@ def test_ray_tool_creates_drawing_after_two_clicks(widget: ChartWidget, app: QAp
     assert segments[0] == ([10.0, 15.0], [100.0, 104.0])
 
 
+def test_arrow_tool_creates_drawing_after_two_clicks(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.ARROW)
+    app.processEvents()
+
+    widget._handle_scene_click(_FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(10, 100))))
+    widget._handle_scene_click(_FakeSceneClick(widget.price_plot.vb.mapViewToScene(QPointF(15, 104))))
+
+    drawing = widget.drawings()[0]
+    assert drawing.tool_type is DrawingToolType.ARROW
+    segments = widget._drawing_segments(drawing)
+    assert len(segments) == 1
+    assert len(segments[0][0]) == 5
+    assert len(segments[0][1]) == 5
+
+
+def test_arrow_polygon_uses_four_points_and_mirror_symmetry(widget: ChartWidget) -> None:
+    polygon = widget._drawing_arrow_polygon(DrawingAnchor(0.0, 0.0), DrawingAnchor(10.0, 0.0))
+
+    assert polygon is not None
+    assert polygon.count() == 4
+    assert polygon[0] == QPointF(0.0, 0.0)
+    assert polygon[2] == QPointF(10.0, 0.0)
+    assert polygon[1].x() == pytest.approx(8.0)
+    assert polygon[3].x() == pytest.approx(8.0)
+    assert polygon[1].y() == pytest.approx(-polygon[3].y())
+    assert polygon[1].y() > 0.0
+
+
+def test_arrow_side_points_stay_nearer_tip_than_tail(widget: ChartWidget) -> None:
+    polygon = widget._drawing_arrow_polygon(DrawingAnchor(0.0, 0.0), DrawingAnchor(10.0, 0.0))
+
+    assert polygon is not None
+    assert polygon[1].x() > 5.0
+    assert polygon[3].x() > 5.0
+    assert 10.0 - polygon[1].x() < polygon[1].x()
+    assert 10.0 - polygon[3].x() < polygon[3].x()
+
+
+def test_short_arrow_polygon_clamps_without_losing_four_point_topology(widget: ChartWidget) -> None:
+    polygon = widget._drawing_arrow_polygon(DrawingAnchor(0.0, 0.0), DrawingAnchor(0.6, 0.0))
+
+    assert polygon is not None
+    assert polygon.count() == 4
+    assert polygon.boundingRect().width() > 0.0
+    assert polygon.boundingRect().height() > 0.0
+    assert len({(round(point.x(), 6), round(point.y(), 6)) for point in polygon}) == 4
+    assert polygon[1].y() == pytest.approx(-polygon[3].y())
+
+
 def test_horizontal_ray_tool_creates_drawing_after_single_click(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -2871,6 +2924,28 @@ def test_ray_draws_solid_arrow_head_item(widget: ChartWidget, app: QApplication)
 
     assert len(items) == 1
     assert items[0].brush().style() != Qt.BrushStyle.NoBrush
+
+
+def test_arrow_draws_filled_body_item(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings(
+        [ChartDrawing(tool_type=DrawingToolType.ARROW, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 104.0)])]
+    )
+    app.processEvents()
+
+    items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_drawing_tool", "") == DrawingToolType.ARROW.value and item.__class__.__name__ == "QGraphicsPathItem"
+    ]
+
+    assert len(items) == 1
+    assert items[0].brush().style() != Qt.BrushStyle.NoBrush
+    assert items[0].path().boundingRect().width() > 0
+    assert items[0].path().boundingRect().height() > 0
 
 
 def test_vertical_line_tool_still_uses_view_height(widget: ChartWidget) -> None:
