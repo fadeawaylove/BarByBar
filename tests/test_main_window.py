@@ -7,7 +7,7 @@ from time import perf_counter
 from uuid import uuid4
 
 import pytest
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QAbstractSpinBox, QCheckBox, QDialog, QGroupBox, QLabel, QLineEdit, QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from barbybar import paths
@@ -457,6 +457,42 @@ def test_right_panel_display_section_collects_low_priority_chart_toggles(window:
     assert session_action_row is not None
     assert "不过夜" in utility_button_texts
     assert [button.text() for button in session_action_row.findChildren(QPushButton)] == ["保存会话", "标记完成"]
+
+
+def test_replay_sidebar_primary_modules_share_same_left_edge(window: MainWindow, app: QApplication) -> None:
+    window.resize(1440, 900)
+    window.show()
+    app.processEvents()
+
+    sidebar_panel = window.replay_sidebar_panel
+    assert sidebar_panel is not None
+
+    position_card = window.findChild(QWidget, "positionSummaryCard")
+    training_card = window.findChild(QWidget, "trainingSummaryCard")
+    trade_box = window.findChild(QGroupBox, "quickTradeBox")
+    order_tools_box = window.findChild(QGroupBox, "orderToolsBox")
+    display_box = window.findChild(QGroupBox, "displayBox")
+    session_box = window.findChild(QGroupBox, "sessionUtilityBox")
+
+    assert position_card is not None
+    assert training_card is not None
+    assert trade_box is not None
+    assert order_tools_box is not None
+    assert display_box is not None
+    assert session_box is not None
+
+    position_left = position_card.mapTo(sidebar_panel, QPoint(0, 0)).x()
+    training_left = training_card.mapTo(sidebar_panel, QPoint(0, 0)).x()
+    trade_box_left = trade_box.mapTo(sidebar_panel, QPoint(0, 0)).x()
+    order_tools_left = order_tools_box.mapTo(sidebar_panel, QPoint(0, 0)).x()
+    display_left = display_box.mapTo(sidebar_panel, QPoint(0, 0)).x()
+    session_left = session_box.mapTo(sidebar_panel, QPoint(0, 0)).x()
+
+    assert position_left == trade_box_left
+    assert training_left == trade_box_left
+    assert order_tools_left == trade_box_left
+    assert display_left == trade_box_left
+    assert session_left == trade_box_left
 
 
 def test_position_readout_uses_state_property_for_scanability(window: MainWindow) -> None:

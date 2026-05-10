@@ -3545,7 +3545,7 @@ class MainWindow(QMainWindow):
         self.stats_label.setProperty("state", "flat")
         position_layout.addWidget(position_title)
         position_layout.addWidget(self.stats_label)
-        layout.addWidget(position_card)
+        layout.addWidget(self._wrap_replay_sidebar_module(position_card))
 
         trade_box = QGroupBox("快捷交易")
         trade_box.setObjectName("quickTradeBox")
@@ -3625,7 +3625,7 @@ class MainWindow(QMainWindow):
         action_buttons_layout.addStretch(1)
         direct_trade_layout.addWidget(action_buttons_row)
         trade_layout.addWidget(direct_trade_section)
-        layout.addWidget(trade_box)
+        layout.addWidget(self._wrap_replay_sidebar_module(trade_box))
 
         order_tools_box = QGroupBox("订单工具")
         order_tools_box.setObjectName("orderToolsBox")
@@ -3705,7 +3705,7 @@ class MainWindow(QMainWindow):
         draw_buttons_layout.addStretch(1)
         limit_trade_layout.addWidget(draw_buttons_row)
         order_tools_layout.addWidget(limit_trade_section)
-        layout.addWidget(order_tools_box)
+        layout.addWidget(self._wrap_replay_sidebar_module(order_tools_box))
 
         stats_box = QWidget()
         stats_box.setObjectName("trainingSummaryCard")
@@ -3729,7 +3729,7 @@ class MainWindow(QMainWindow):
         stats_layout.addWidget(self.training_stats_headline)
         stats_layout.addWidget(self.training_stats_meta)
         stats_layout.addWidget(self.training_stats_label)
-        layout.addWidget(stats_box)
+        layout.addWidget(self._wrap_replay_sidebar_module(stats_box))
 
         display_box = QGroupBox("显示")
         display_box.setObjectName("displayBox")
@@ -3761,7 +3761,7 @@ class MainWindow(QMainWindow):
         self.show_trade_links_check.setChecked(self._trade_links_visible)
         self.show_trade_links_check.toggled.connect(self._handle_trade_links_toggled)
         display_layout.addWidget(self.show_trade_links_check)
-        layout.addWidget(display_box)
+        layout.addWidget(self._wrap_replay_sidebar_module(display_box))
 
         session_box = QGroupBox("辅助")
         session_box.setObjectName("sessionUtilityBox")
@@ -3801,10 +3801,18 @@ class MainWindow(QMainWindow):
         complete_button.clicked.connect(self.complete_session)
         session_action_layout.addWidget(complete_button, 1)
         session_layout.addWidget(session_action_row)
-        layout.addWidget(session_box)
+        layout.addWidget(self._wrap_replay_sidebar_module(session_box))
         self._sync_draw_order_controls()
         layout.addStretch(1)
         return panel
+
+    def _wrap_replay_sidebar_module(self, widget: QWidget) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(9, 0, 9, 0)
+        layout.setSpacing(0)
+        layout.addWidget(widget)
+        return container
 
     def import_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择 CSV", str(Path.cwd()), "CSV 文件 (*.csv)")
