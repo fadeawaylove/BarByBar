@@ -4219,6 +4219,13 @@ class ChartWidget(QWidget):
         return f"+{pnl:.2f}" if pnl > 0 else f"{pnl:.2f}"
 
     @staticmethod
+    def _trade_link_segment_pnl(direction: str, entry_price: float, exit_price: float, quantity: float) -> float:
+        price_delta = float(exit_price) - float(entry_price)
+        if direction == "short":
+            price_delta = -price_delta
+        return price_delta * float(quantity)
+
+    @staticmethod
     def _trade_marker_y(action: SessionAction, bar: Bar) -> float:
         return float(action.price if action.price is not None else bar.close)
 
@@ -4278,6 +4285,7 @@ class ChartWidget(QWidget):
                     continue
                 leg_quantity = float(leg["quantity"])
                 qty_text = int(leg_quantity) if leg_quantity.is_integer() else round(leg_quantity, 2)
+                leg_pnl = self._trade_link_segment_pnl(direction, float(leg["price"]), float(item.exit_price), leg_quantity)
                 x1 = self._trade_review_endpoint_x(entry_bar_index, float(leg["price"]), entry_stacks)
                 x2 = self._trade_review_endpoint_x(exit_bar_index, item.exit_price, exit_stacks)
                 links.append(
@@ -4293,8 +4301,8 @@ class ChartWidget(QWidget):
                         detail_lines=[
                             f"{'多单' if direction == 'long' else '空单'}{'盈利' if outcome == 'win' else '亏损' if outcome == 'loss' else '保本'} | {leg['timestamp']:%Y-%m-%d %H:%M} -> {item.exit_time:%Y-%m-%d %H:%M}",
                             f"入场 {format_price(float(leg['price']), self._tick_size)} -> 出场 {format_price(float(item.exit_price), self._tick_size)}",
-                            f"本段手数 {qty_text}",
-                            f"本单盈亏 {self._trade_link_pnl_text(float(item.pnl))}",
+                            f"本段手数 {qty_text} · 本段盈亏 {self._trade_link_pnl_text(leg_pnl)}",
+                            f"本单总盈亏 {self._trade_link_pnl_text(float(item.pnl))}",
                             f"开仓想法 {entry_note}",
                             f"复盘总结 {review_note}",
                         ],

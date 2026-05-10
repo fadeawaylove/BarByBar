@@ -1192,7 +1192,7 @@ def test_legacy_trade_review_link_recovers_fifo_legs_after_partial_exit(widget: 
     )
 
     assert [(link.x1, link.y1, link.x2, link.y2) for link in widget._trade_links] == [(7.0, 102.0, 10.0, 104.0)]
-    assert "本段手数 2" in widget._trade_links[0].detail_lines
+    assert any(line.startswith("本段手数 2") for line in widget._trade_links[0].detail_lines)
 
 
 def test_double_click_any_entry_leg_link_requests_same_trade_number(widget: ChartWidget, app: QApplication) -> None:
@@ -1374,8 +1374,49 @@ def test_trade_link_hover_includes_entry_and_review_notes(widget: ChartWidget, a
     )
     assert "开仓想法 突破确认" in hover_text
     assert "复盘总结 按计划止盈" in hover_text
-    assert "本单盈亏 +2.00" in hover_text
+    assert "本段盈亏 +2.00" in hover_text
+    assert "本单总盈亏 +2.00" in hover_text
     assert "入场备注" not in hover_text
+
+
+def test_trade_link_hover_distinguishes_trade_total_and_segment_pnl(widget: ChartWidget, app: QApplication) -> None:
+    start = datetime(2025, 1, 1, 9, 0)
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_trade_review_items(
+        [
+            _review_item(
+                9,
+                quantity=2,
+                exit_price=103.0,
+                pnl=3.0,
+                entry_legs=[
+                    TradeEntryLeg(5, start + timedelta(minutes=5), 101.0, 1, 0, "首仓计划"),
+                    TradeEntryLeg(7, start + timedelta(minutes=7), 102.0, 1, 1, "加仓确认"),
+                ],
+            )
+        ]
+    )
+    app.processEvents()
+    link = widget._trade_links[1]
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF((link.x1 + link.x2) / 2, (link.y1 + link.y2) / 2))
+
+    widget._handle_mouse_moved((scene_pos,))
+
+    hover_text = "\n".join(
+        [
+            widget._hover_time_label.text(),
+            widget._hover_open_label.text(),
+            widget._hover_high_label.text(),
+            widget._hover_low_label.text(),
+            widget._hover_close_label.text(),
+            widget._hover_range_label.text(),
+        ]
+    )
+    assert "本段盈亏 +1.00" in hover_text
+    assert "本单总盈亏 +3.00" in hover_text
 
 
 def test_double_click_trade_link_requests_note_editor(widget: ChartWidget, app: QApplication) -> None:
