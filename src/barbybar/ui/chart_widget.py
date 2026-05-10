@@ -4215,6 +4215,10 @@ class ChartWidget(QWidget):
         return self._trade_outcome_color(link.outcome)
 
     @staticmethod
+    def _trade_link_pnl_text(pnl: float) -> str:
+        return f"+{pnl:.2f}" if pnl > 0 else f"{pnl:.2f}"
+
+    @staticmethod
     def _trade_marker_y(action: SessionAction, bar: Bar) -> float:
         return float(action.price if action.price is not None else bar.close)
 
@@ -4290,6 +4294,7 @@ class ChartWidget(QWidget):
                             f"{'多单' if direction == 'long' else '空单'}{'盈利' if outcome == 'win' else '亏损' if outcome == 'loss' else '保本'} | {leg['timestamp']:%Y-%m-%d %H:%M} -> {item.exit_time:%Y-%m-%d %H:%M}",
                             f"入场 {format_price(float(leg['price']), self._tick_size)} -> 出场 {format_price(float(item.exit_price), self._tick_size)}",
                             f"本段手数 {qty_text}",
+                            f"本单盈亏 {self._trade_link_pnl_text(float(item.pnl))}",
                             f"开仓想法 {entry_note}",
                             f"复盘总结 {review_note}",
                         ],

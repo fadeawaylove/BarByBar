@@ -1374,6 +1374,7 @@ def test_trade_link_hover_includes_entry_and_review_notes(widget: ChartWidget, a
     )
     assert "开仓想法 突破确认" in hover_text
     assert "复盘总结 按计划止盈" in hover_text
+    assert "本单盈亏 +2.00" in hover_text
     assert "入场备注" not in hover_text
 
 
