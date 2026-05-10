@@ -3917,6 +3917,14 @@ class ChartWidget(QWidget):
         color.setAlphaF(min(max(opacity, 0.0), 1.0))
         return color
 
+    def _drawing_body_fill_color(self, style: dict[str, object], *, preview: bool) -> QColor:
+        color = QColor(str(style.get("fill_color", style.get("color", AppTheme.chart_entry_short))))
+        opacity = float(style.get("opacity", 1.0))
+        if preview:
+            opacity *= 0.7
+        color.setAlphaF(min(max(opacity, 0.0), 1.0))
+        return color
+
     def _drawing_fill_item(self, drawing: ChartDrawing, style: dict[str, object], *, preview: bool) -> QGraphicsPathItem | None:
         if drawing.tool_type not in {DrawingToolType.RECTANGLE, DrawingToolType.PRICE_RANGE} or len(drawing.anchors) < 2:
             return None
@@ -4026,10 +4034,10 @@ class ChartWidget(QWidget):
         path = QPainterPath()
         path.addPolygon(polygon)
         path.closeSubpath()
-        color = self._drawing_color(style, preview=preview, highlighted=highlighted)
+        color = self._drawing_body_fill_color(style, preview=preview)
         item = QGraphicsPathItem(path)
         item.setBrush(QBrush(color))
-        item.setPen(pg.mkPen(color, width=max(1, int(style.get("width", 1)))))
+        item.setPen(pg.mkPen(color, width=max(1, int(style.get("width", 1))) + (1 if highlighted and not preview else 0)))
         return item
 
     def _drawing_arrow_polygon(self, first: DrawingAnchor, second: DrawingAnchor) -> QPolygonF | None:
@@ -4535,21 +4543,62 @@ class ChartWidget(QWidget):
         self._drawing_preview_raw_anchor = None
         self._drawing_preview_anchor = None
 
+    def _drawing_constraint_cursor(self, drawing_index: int | None) -> Qt.CursorShape | None:
+        if drawing_index is None or drawing_index < 0 or drawing_index >= len(self._drawings):
+            return None
+        tool_type = self._drawings[drawing_index].tool_type
+        if tool_type in {DrawingToolType.HORIZONTAL_LINE, DrawingToolType.HORIZONTAL_RAY}:
+            return Qt.CursorShape.SizeVerCursor
+        if tool_type is DrawingToolType.VERTICAL_LINE:
+            return Qt.CursorShape.SizeHorCursor
+        return None
+
+    def _free_anchor_cursor(self, drawing_index: int | None, anchor_index: int | None) -> Qt.CursorShape:
+        if drawing_index is None or anchor_index is None or drawing_index < 0 or drawing_index >= len(self._drawings):
+            return Qt.CursorShape.SizeAllCursor
+        drawing = self._drawings[drawing_index]
+        anchors = drawing.anchors
+        if len(anchors) < 2 or anchor_index < 0 or anchor_index >= len(anchors):
+            return Qt.CursorShape.SizeAllCursor
+        if anchor_index == 0:
+            reference = anchors[1]
+        else:
+            reference = anchors[0]
+        dx = float(reference.x) - float(anchors[anchor_index].x)
+        dy = float(reference.y) - float(anchors[anchor_index].y)
+        if abs(dx) <= 1e-6 and abs(dy) <= 1e-6:
+            return Qt.CursorShape.SizeAllCursor
+        if abs(dx) <= 1e-6:
+            return Qt.CursorShape.SizeVerCursor
+        if abs(dy) <= 1e-6:
+            return Qt.CursorShape.SizeHorCursor
+        return Qt.CursorShape.SizeBDiagCursor if dx * dy > 0 else Qt.CursorShape.SizeFDiagCursor
+
+    def _drawing_anchor_cursor(self, drawing_index: int | None, anchor_index: int | None) -> Qt.CursorShape:
+        constrained_cursor = self._drawing_constraint_cursor(drawing_index)
+        if constrained_cursor is not None:
+            return constrained_cursor
+        return self._free_anchor_cursor(drawing_index, anchor_index)
+
     def _sync_cursor(self) -> None:
-        if self._is_dragging:
+        if self._active_drawing_tool is not None and self._interaction_mode is InteractionMode.DRAWING:
+            cursor = Qt.CursorShape.CrossCursor
+        elif self._active_drag_target.target_type is ActiveDragTargetType.DRAWING_ANCHOR:
+            cursor = self._drawing_anchor_cursor(self._active_drag_target.drawing_index, self._active_drag_target.anchor_index)
+        elif self._active_drag_target.target_type is ActiveDragTargetType.DRAWING_BODY:
+            cursor = Qt.CursorShape.SizeAllCursor
+        elif self._is_dragging:
             cursor = Qt.CursorShape.ClosedHandCursor
         elif self._mouse_on_axis:
             cursor = Qt.CursorShape.ArrowCursor
         elif self._hover_target.target_type is HoverTargetType.ORDER_LINE:
             cursor = Qt.CursorShape.SizeVerCursor
-        elif self._hover_target.target_type in {
-            HoverTargetType.DRAWING_ANCHOR,
-            HoverTargetType.DRAWING_BODY,
-            HoverTargetType.TRADE_LINK,
-        }:
+        elif self._hover_target.target_type is HoverTargetType.DRAWING_ANCHOR:
+            cursor = self._drawing_anchor_cursor(self._hover_target.drawing_index, self._hover_target.anchor_index)
+        elif self._hover_target.target_type is HoverTargetType.DRAWING_BODY:
             cursor = Qt.CursorShape.OpenHandCursor
-        elif self._active_drawing_tool is not None and self._interaction_mode is InteractionMode.DRAWING:
-            cursor = Qt.CursorShape.CrossCursor
+        elif self._hover_target.target_type is HoverTargetType.TRADE_LINK:
+            cursor = Qt.CursorShape.OpenHandCursor
         elif self._crosshair_enabled and self._interaction_mode in {InteractionMode.BROWSE, InteractionMode.ORDER_PREVIEW}:
             cursor = Qt.CursorShape.CrossCursor
         else:

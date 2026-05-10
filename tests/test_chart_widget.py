@@ -10,6 +10,8 @@ from barbybar.data.tick_size import format_price
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, TradeEntryLeg, TradeReviewItem
 from barbybar.performance_metrics import clear_metrics, recent_metrics
 from barbybar.ui.chart_widget import (
+    ActiveDragTarget,
+    ActiveDragTargetType,
     AVERAGE_PRICE_LINE_COLOR,
     BAR_SLOT_HALF_WIDTH,
     BrowseMode,
@@ -18,6 +20,7 @@ from barbybar.ui.chart_widget import (
     ChartLayer,
     ChartWidget,
     DRAWING_SNAP_DISTANCE_PX,
+    DrawingDragMode,
     DOWN_CANDLE_COLOR,
     ENTRY_LONG_LINE_COLOR,
     HoverTarget,
@@ -2948,6 +2951,36 @@ def test_arrow_draws_filled_body_item(widget: ChartWidget, app: QApplication) ->
     assert items[0].path().boundingRect().height() > 0
 
 
+def test_arrow_hover_preserves_configured_body_color(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings(
+        [
+            ChartDrawing(
+                tool_type=DrawingToolType.ARROW,
+                anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 104.0)],
+                style={"color": "#44aa66", "fill_color": "#44aa66", "opacity": 0.55, "width": 4},
+            )
+        ]
+    )
+    app.processEvents()
+
+    widget._apply_hover_target(HoverTarget(target_type=HoverTargetType.DRAWING_BODY, drawing_index=0))
+
+    items = [
+        item
+        for item in widget.price_plot.items
+        if getattr(item, "_barbybar_drawing_tool", "") == DrawingToolType.ARROW.value and item.__class__.__name__ == "QGraphicsPathItem"
+    ]
+
+    assert len(items) == 1
+    assert items[0].brush().color().name().lower() == "#44aa66"
+    assert items[0].brush().color().alphaF() == pytest.approx(0.55, abs=0.01)
+    assert items[0].pen().width() == 5
+
+
 def test_vertical_line_tool_still_uses_view_height(widget: ChartWidget) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -3723,6 +3756,92 @@ def test_drawing_mode_suppresses_hover_for_existing_drawing(widget: ChartWidget,
     assert widget.interaction_mode is InteractionMode.DRAWING
     assert widget._hover_target.target_type is HoverTargetType.NONE
     assert widget.cursor().shape() == Qt.CursorShape.CrossCursor
+
+
+def test_drawing_mode_keeps_cross_cursor_after_first_anchor(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
+
+    assert widget.cursor().shape() == Qt.CursorShape.CrossCursor
+
+    widget._pending_drawing_anchors = [DrawingAnchor(10.0, 100.0)]
+    widget._drawing_preview_raw_anchor = DrawingAnchor(14.0, 103.0)
+    widget._drawing_preview_anchor = DrawingAnchor(14.0, 103.0)
+    widget._mouse_on_axis = True
+    widget._sync_cursor()
+
+    assert widget.cursor().shape() == Qt.CursorShape.CrossCursor
+
+
+def test_drawing_cursor_distinguishes_anchor_hover_body_hover_and_drag(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings([ChartDrawing(tool_type=DrawingToolType.TREND_LINE, anchors=[DrawingAnchor(10.0, 100.0), DrawingAnchor(15.0, 105.0)])])
+
+    widget._apply_hover_target(HoverTarget(target_type=HoverTargetType.DRAWING_ANCHOR, drawing_index=0, anchor_index=0))
+    assert widget.cursor().shape() == Qt.CursorShape.SizeBDiagCursor
+
+    widget._apply_hover_target(HoverTarget(target_type=HoverTargetType.DRAWING_BODY, drawing_index=0))
+    assert widget.cursor().shape() == Qt.CursorShape.OpenHandCursor
+
+    widget._active_drag_target = ActiveDragTarget(
+        target_type=ActiveDragTargetType.DRAWING_ANCHOR,
+        drawing_index=0,
+        anchor_index=0,
+    )
+    widget._drawing_drag_mode = DrawingDragMode.ANCHOR
+    widget._is_dragging = True
+    widget._sync_cursor()
+    assert widget.cursor().shape() == Qt.CursorShape.SizeBDiagCursor
+
+    widget._active_drag_target = ActiveDragTarget(
+        target_type=ActiveDragTargetType.DRAWING_BODY,
+        drawing_index=0,
+    )
+    widget._drawing_drag_mode = DrawingDragMode.TRANSLATE
+    widget._sync_cursor()
+    assert widget.cursor().shape() == Qt.CursorShape.SizeAllCursor
+
+
+def test_constrained_drawing_anchor_cursors_stay_directional(widget: ChartWidget) -> None:
+    widget.set_full_data(_bars())
+    widget.set_cursor(20)
+    widget.set_drawings(
+        [
+            ChartDrawing(tool_type=DrawingToolType.HORIZONTAL_LINE, anchors=[DrawingAnchor(10.0, 100.0)]),
+            ChartDrawing(tool_type=DrawingToolType.VERTICAL_LINE, anchors=[DrawingAnchor(15.0, 103.0)]),
+        ]
+    )
+
+    widget._apply_hover_target(HoverTarget(target_type=HoverTargetType.DRAWING_ANCHOR, drawing_index=0, anchor_index=0))
+    assert widget.cursor().shape() == Qt.CursorShape.SizeVerCursor
+
+    widget._active_drag_target = ActiveDragTarget(
+        target_type=ActiveDragTargetType.DRAWING_ANCHOR,
+        drawing_index=0,
+        anchor_index=0,
+    )
+    widget._drawing_drag_mode = DrawingDragMode.ANCHOR
+    widget._is_dragging = True
+    widget._sync_cursor()
+    assert widget.cursor().shape() == Qt.CursorShape.SizeVerCursor
+
+    widget._is_dragging = False
+    widget._active_drag_target = ActiveDragTarget()
+    widget._drawing_drag_mode = None
+    widget._apply_hover_target(HoverTarget(target_type=HoverTargetType.DRAWING_ANCHOR, drawing_index=1, anchor_index=0))
+    assert widget.cursor().shape() == Qt.CursorShape.SizeHorCursor
+
+    widget._active_drag_target = ActiveDragTarget(
+        target_type=ActiveDragTargetType.DRAWING_ANCHOR,
+        drawing_index=1,
+        anchor_index=0,
+    )
+    widget._drawing_drag_mode = DrawingDragMode.ANCHOR
+    widget._is_dragging = True
+    widget._sync_cursor()
+    assert widget.cursor().shape() == Qt.CursorShape.SizeHorCursor
 
 
 def test_delete_drawing_removes_only_target(widget: ChartWidget) -> None:
