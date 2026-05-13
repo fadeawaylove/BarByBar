@@ -17,33 +17,33 @@ def rgba(color: str, alpha: int) -> str:
 
 
 class AppTheme:
-    bg = "#e7ebef"
-    bg_soft = "#f0f3f6"
-    surface = "#fcfbf8"
-    surface_soft = "#f4f1eb"
-    surface_muted = "#ebe5dc"
-    surface_elevated = "#fffdf9"
-    canvas = "#f7f4ef"
-    canvas_gridless = "#f4f1ea"
-    border = "#d7d0c5"
-    border_strong = "#b6ad9e"
-    border_focus = "#24466d"
-    border_soft = "#e4ded5"
-    text = "#1f2730"
-    text_muted = "#66707b"
-    text_faint = "#8a928f"
+    bg = "#e8edf2"
+    bg_soft = "#f5f7fa"
+    surface = "#ffffff"
+    surface_soft = "#f3f6f8"
+    surface_muted = "#e6ebf0"
+    surface_elevated = "#ffffff"
+    canvas = "#f8fafc"
+    canvas_gridless = "#f4f7fa"
+    border = "#d3dbe3"
+    border_strong = "#aab7c4"
+    border_focus = "#1d4ed8"
+    border_soft = "#e3e9ef"
+    text = "#17212b"
+    text_muted = "#5f6d7a"
+    text_faint = "#8793a0"
     text_inverse = "#ffffff"
     text_disabled = "#a6adb4"
-    primary = "#24466d"
-    primary_hover = "#1a3859"
-    primary_soft = "#dfe7ef"
-    primary_tint = "#edf4fb"
+    primary = "#1f4f7a"
+    primary_hover = "#173d61"
+    primary_soft = "#dbe8f3"
+    primary_tint = "#eef6fc"
     focus = border_focus
     hover = surface_elevated
     pressed = surface_muted
     checked = primary_soft
     checked_border = primary
-    selected = primary_tint
+    selected = "#e7f1fb"
     selected_border = primary
     disabled = "#edf0f2"
     disabled_border = "#d8dde2"
@@ -54,19 +54,30 @@ class AppTheme:
     long_soft = "#f7e6e4"
     short = "#386854"
     short_soft = "#e5f0ea"
+    close = "#52606d"
+    close_soft = "#edf1f5"
+    reverse = "#6d5dd3"
+    reverse_soft = "#ece9ff"
+    numeric = "#263445"
+    pnl_positive = long
+    pnl_negative = short
+    active_mode = "#1d4ed8"
+    active_mode_soft = "#dbeafe"
+    active_mode_border = "#93c5fd"
+    focus_soft = "#e4effb"
     warning = "#8f6229"
     warning_soft = "#f7eddc"
     danger = "#a84336"
     danger_soft = "#f8e3e0"
     accent = "#f0c36b"
     accent_soft = "#fff3d6"
-    table_header = "#ede8df"
-    table_row_alt = "#f8f5ef"
+    table_header = "#edf2f6"
+    table_row_alt = "#f7fafc"
     table_selected = primary_tint
-    radius_sm = 8
-    radius_md = 12
-    radius_lg = 16
-    radius_xl = 18
+    radius_sm = 6
+    radius_md = 8
+    radius_lg = 10
+    radius_xl = 12
     radius = radius_lg
     space_xs = 4
     space_sm = 8
@@ -93,13 +104,13 @@ class AppTheme:
     flat_group_gap = 8
     sidebar_compact_width = 288
     sidebar_width = sidebar_compact_width
-    chart_axis = "#c0b8ac"
-    chart_preview = "#575048"
+    chart_axis = "#b6c0ca"
+    chart_preview = "#4f5d6b"
     chart_measure = "#255f86"
-    chart_marker = "#ded8cf"
-    chart_label = "#8f887d"
-    chart_label_soft = "#aaa194"
-    chart_session_end = "#8e8679"
+    chart_marker = "#d7dee6"
+    chart_label = "#7e8b97"
+    chart_label_soft = "#9aa6b2"
+    chart_session_end = "#82909e"
     chart_average = "#5f6b7a"
     chart_entry_long = "#2979ff"
     chart_entry_short = "#ff9f1c"
@@ -180,17 +191,17 @@ QWidget[segmented='true'] {{
     border-radius: {AppTheme.radius_sm}px;
 }}
 QWidget[card='true'] {{
-    background: {rgba(AppTheme.surface_elevated, 146)};
-    border: 1px solid {rgba(AppTheme.border, 98)};
+    background: {rgba(AppTheme.surface_elevated, 112)};
+    border: 1px solid {rgba(AppTheme.border, 82)};
     border-radius: {AppTheme.radius_sm}px;
 }}
 QWidget#directTradeSection[priority='primary'] {{
-    background: {rgba(AppTheme.surface_elevated, 210)};
+    background: {AppTheme.focus_soft};
     border: 1px solid {rgba(AppTheme.primary, 72)};
 }}
 QWidget#limitTradeSection[priority='secondary'] {{
-    background: {rgba(AppTheme.surface_elevated, 118)};
-    border: 1px solid {rgba(AppTheme.border, 82)};
+    background: {rgba(AppTheme.surface_soft, 136)};
+    border: 1px solid {rgba(AppTheme.border, 74)};
 }}
 ChartWidget[card='true'] {{
     background: {AppTheme.canvas};
@@ -199,17 +210,17 @@ ChartWidget[card='true'] {{
 }}
 QGroupBox,
 QGroupBox[sidebarSection='true'] {{
-    background: {rgba(AppTheme.surface_elevated, 172)};
+    background: {rgba(AppTheme.surface_elevated, 92)};
     margin-top: 8px;
 }}
 QGroupBox#quickTradeBox {{
-    background: {rgba(AppTheme.surface_elevated, 190)};
+    background: {rgba(AppTheme.focus_soft, 128)};
     border-color: {rgba(AppTheme.primary, 92)};
 }}
 QGroupBox#orderToolsBox,
 QGroupBox#displayBox,
 QGroupBox#sessionUtilityBox {{
-    background: {rgba(AppTheme.surface_elevated, 156)};
+    background: {rgba(AppTheme.surface_elevated, 72)};
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
@@ -236,6 +247,41 @@ QLabel[role='toolbarGroupTitle'] {{
     font-weight: 700;
     letter-spacing: 0.3px;
     padding: 0px;
+}}
+QLabel[role='caseTitle'] {{
+    color: {AppTheme.text};
+    font-size: 12px;
+    font-weight: 900;
+}}
+QLabel[role='caseMeta'],
+QLabel[role='toolbarHint'] {{
+    color: {AppTheme.text_faint};
+    font-size: 10px;
+    font-weight: 700;
+}}
+QLabel[role='caseSaveState'] {{
+    background: {AppTheme.surface_soft};
+    border: 1px solid {AppTheme.border_soft};
+    border-radius: {AppTheme.radius_sm}px;
+    color: {AppTheme.text_muted};
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 800;
+}}
+QLabel[role='caseSaveState'][state='saved'] {{
+    background: {AppTheme.success_soft};
+    border-color: {rgba(AppTheme.success, 88)};
+    color: {AppTheme.success};
+}}
+QLabel[role='caseSaveState'][state='dirty'] {{
+    background: {AppTheme.warning_soft};
+    border-color: {rgba(AppTheme.warning, 90)};
+    color: {AppTheme.warning};
+}}
+QLabel[role='caseSaveState'][state='saving'] {{
+    background: {AppTheme.active_mode_soft};
+    border-color: {AppTheme.active_mode_border};
+    color: {AppTheme.active_mode};
 }}
 QLabel[role='sidebarCardTitle'] {{
     color: {AppTheme.text};
@@ -266,6 +312,18 @@ QLabel[role='statusReadout'] {{
     color: {AppTheme.text_muted};
     padding: 0px;
     font-weight: 700;
+}}
+QLabel[role='numericReadout'] {{
+    color: {AppTheme.numeric};
+    font-weight: 800;
+}}
+QLabel[role='pnlPositive'] {{
+    color: {AppTheme.pnl_positive};
+    font-weight: 800;
+}}
+QLabel[role='pnlNegative'] {{
+    color: {AppTheme.pnl_negative};
+    font-weight: 800;
 }}
 QLabel[role='positionReadout'] {{
     background: {rgba(AppTheme.surface_elevated, 108)};
@@ -342,14 +400,14 @@ QLabel[role='errorBanner'] {{
 QPushButton {{
     background: {AppTheme.surface_soft};
     border: 1px solid {AppTheme.border_strong};
-    border-radius: 10px;
+    border-radius: {AppTheme.radius_sm}px;
     color: {AppTheme.text};
     padding: 6px 12px;
     min-height: 24px;
 }}
 QPushButton:hover {{
     background: {AppTheme.surface_elevated};
-    border-color: #9d9384;
+    border-color: {AppTheme.border_strong};
 }}
 QPushButton:pressed {{
     background: {AppTheme.pressed};
@@ -431,6 +489,31 @@ QPushButton[role='timeframe']:checked {{
     font-weight: 800;
 }}
 QPushButton[role='timeframe']:disabled {{
+    background: transparent;
+    border-color: transparent;
+    color: {AppTheme.text_disabled};
+}}
+QPushButton[role='workflowMode'] {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: {AppTheme.toolbar_button_radius}px;
+    color: {AppTheme.text_muted};
+    padding: 0px 9px;
+    min-height: {AppTheme.toolbar_button_height}px;
+    font-weight: 800;
+}}
+QPushButton[role='workflowMode']:hover {{
+    background: {rgba(AppTheme.hover, 220)};
+    border-color: {rgba(AppTheme.active_mode_border, 116)};
+    color: {AppTheme.text};
+}}
+QPushButton[role='workflowMode']:checked {{
+    background: {AppTheme.active_mode_soft};
+    border-color: {AppTheme.active_mode_border};
+    color: {AppTheme.active_mode};
+    font-weight: 900;
+}}
+QPushButton[role='workflowMode']:disabled {{
     background: transparent;
     border-color: transparent;
     color: {AppTheme.text_disabled};
@@ -520,8 +603,26 @@ QPushButton[role='short']:disabled {{
     border-color: {rgba("#aac4b6", 130)};
     color: {AppTheme.text_disabled};
 }}
+QPushButton[role='close'] {{
+    background: {AppTheme.close_soft};
+    border-color: {rgba(AppTheme.close, 95)};
+    color: {AppTheme.close};
+    font-weight: 800;
+}}
+QPushButton[role='reverse'] {{
+    background: {AppTheme.reverse_soft};
+    border-color: {rgba(AppTheme.reverse, 98)};
+    color: {AppTheme.reverse};
+    font-weight: 800;
+}}
+QPushButton[role='close']:disabled,
+QPushButton[role='reverse']:disabled {{
+    background: {AppTheme.disabled};
+    border-color: {AppTheme.disabled_border};
+    color: {AppTheme.text_disabled};
+}}
 QPushButton[compactAction='true'] {{
-    border-radius: 10px;
+    border-radius: {AppTheme.radius_sm}px;
     padding: 3px 0px;
     min-height: 18px;
     font-weight: 800;
@@ -593,14 +694,22 @@ QPushButton[compactAction='true'][role='short']:pressed {{
     background: #dbf1e4;
     border-color: #7bb493;
 }}
+QPushButton[compactAction='true'][role='close']:pressed {{
+    background: {AppTheme.surface_muted};
+    border-color: {rgba(AppTheme.close, 130)};
+}}
+QPushButton[compactAction='true'][role='reverse']:pressed {{
+    background: #ded8ff;
+    border-color: {rgba(AppTheme.reverse, 150)};
+}}
 QPushButton[compactAction='true'][role='quiet']:pressed {{
     background: {AppTheme.surface_muted};
     border-color: {AppTheme.border_strong};
 }}
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {{
-    background: #fdfcf9;
+    background: #fbfdff;
     border: 1px solid {AppTheme.border_strong};
-    border-radius: 8px;
+    border-radius: {AppTheme.radius_sm}px;
     color: {AppTheme.text};
     padding: 4px 8px;
     selection-background-color: {AppTheme.primary_soft};
@@ -615,7 +724,7 @@ QTextEdit[role='dialogDetail'] {{
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QTextEdit:focus {{
     border-color: {AppTheme.primary};
-    background: #fffefb;
+    background: #ffffff;
 }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled, QTextEdit:disabled {{
     background: {AppTheme.disabled};
@@ -644,7 +753,7 @@ QListWidget {{
 QListWidget::item {{
     background: {rgba(AppTheme.surface_elevated, 110)};
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: {AppTheme.radius_sm}px;
     padding: 9px 10px;
     color: {AppTheme.text_muted};
 }}

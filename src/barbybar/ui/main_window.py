@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from copy import deepcopy
 import json
+from enum import Enum
 from math import floor
 import re
 import subprocess
@@ -99,6 +100,7 @@ from barbybar.ui.chart_widget import (
     DEFAULT_CANDLE_UP_WICK_COLOR,
     DEFAULT_CHART_BACKGROUND_COLOR,
     DEFAULT_RIGHT_PADDING,
+    InteractionMode,
     TRADE_MARKER_FOCUSED_OPACITY,
     TRADE_MARKER_OPACITY,
     build_arrow_polygon,
@@ -128,6 +130,28 @@ from barbybar.ui.trade_history import (
 from barbybar.update_service import UpdateInfo, check_for_update, download_installer
 
 TRADE_REVIEW_ITEM_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+class ReviewWorkflowMode(str, Enum):
+    REPLAY = "replay"
+    PLAN = "plan"
+    ANNOTATE = "annotate"
+    REVIEW = "review"
+
+
+REVIEW_WORKFLOW_MODE_LABELS = {
+    ReviewWorkflowMode.REPLAY: "回放",
+    ReviewWorkflowMode.PLAN: "计划",
+    ReviewWorkflowMode.ANNOTATE: "标注",
+    ReviewWorkflowMode.REVIEW: "复盘",
+}
+
+REVIEW_WORKFLOW_MODE_HINTS = {
+    ReviewWorkflowMode.REPLAY: "按节奏推进 K 线",
+    ReviewWorkflowMode.PLAN: "规划条件单和价格线",
+    ReviewWorkflowMode.ANNOTATE: "画线、模板和交易想法",
+    ReviewWorkflowMode.REVIEW: "查看历史交易和笔记",
+}
 
 REQUIRED_IMPORT_FIELDS = ["datetime", "open", "high", "low", "close", "volume"]
 INITIAL_WINDOW_BEFORE = 150
@@ -2841,6 +2865,14 @@ class MainWindow(QMainWindow):
         self.engine: ReviewEngine | None = None
         self.current_dataset: DataSet | None = None
         self.current_session_id: int | None = None
+        self._review_workflow_mode = ReviewWorkflowMode.REPLAY
+        self.workflow_mode_buttons: dict[ReviewWorkflowMode, QPushButton] = {}
+        self.workflow_mode_button_group: QButtonGroup | None = None
+        self.workflow_mode_status_label: QLabel | None = None
+        self.case_title_label: QLabel | None = None
+        self.case_meta_label: QLabel | None = None
+        self.case_save_state_label: QLabel | None = None
+        self.toolbar_tool_summary_label: QLabel | None = None
         self.timeframe_buttons: dict[str, QPushButton] = {}
         self.bar_count_toggle_button: QPushButton | None = None
         self.hide_drawings_toggle_button: QPushButton | None = None
@@ -2917,6 +2949,7 @@ class MainWindow(QMainWindow):
         self._active_drawing_template_id: str | None = None
         self.template_library_button: QPushButton | None = None
         self._drawing_templates_path = default_drawing_templates_path()
+        self._workflow_toolbar_group: QWidget | None = None
         self._timeframe_toolbar_group: QWidget | None = None
         self._template_toolbar_group: QWidget | None = None
         self._drawing_toolbar_group: QWidget | None = None
@@ -2931,6 +2964,120 @@ class MainWindow(QMainWindow):
         register_fatal_error_handler(self.show_fatal_error)
         self._load_global_drawing_templates()
         self._autoload_recent_session()
+
+    @property
+    def review_workflow_mode(self) -> ReviewWorkflowMode:
+        return self._review_workflow_mode
+
+    def _activate_review_workflow_mode(self, mode: ReviewWorkflowMode) -> None:
+        if mode is ReviewWorkflowMode.REVIEW:
+            self.chart_widget.set_active_drawing_tool(None)
+            self.cancel_draw_order_preview()
+            self.show_trade_history_sidebar()
+            return
+        self.show_training_sidebar()
+        if mode is ReviewWorkflowMode.REPLAY:
+            self.chart_widget.set_active_drawing_tool(None)
+            self.cancel_draw_order_preview()
+        elif mode is ReviewWorkflowMode.PLAN:
+            self.chart_widget.set_active_drawing_tool(None)
+        elif mode is ReviewWorkflowMode.ANNOTATE:
+            self.cancel_draw_order_preview()
+        self._set_review_workflow_mode(mode)
+
+    def _set_review_workflow_mode(self, mode: ReviewWorkflowMode) -> None:
+        self._review_workflow_mode = mode
+        self._sync_workflow_mode_controls()
+
+    def _sync_workflow_mode_controls(self) -> None:
+        for mode, button in self.workflow_mode_buttons.items():
+            button.blockSignals(True)
+            button.setChecked(mode is self._review_workflow_mode)
+            button.blockSignals(False)
+        if self.workflow_mode_status_label is not None:
+            label = REVIEW_WORKFLOW_MODE_LABELS[self._review_workflow_mode]
+            hint = REVIEW_WORKFLOW_MODE_HINTS[self._review_workflow_mode]
+            self.workflow_mode_status_label.setText(f"{label} · {hint}")
+        self._sync_toolbar_tool_summary()
+
+    def _sync_case_header(self) -> None:
+        if self.case_title_label is None or self.case_meta_label is None or self.case_save_state_label is None:
+            return
+        if not self.engine:
+            self.case_title_label.setText("BarByBar")
+            self.case_meta_label.setText("未打开案例")
+            self.case_save_state_label.setText("准备就绪")
+            self.case_save_state_label.setProperty("state", "idle")
+            self._refresh_case_save_state_style()
+            return
+        session = self.engine.session
+        dataset_name = self.current_dataset.display_name if self.current_dataset is not None else session.symbol
+        title = session.title or dataset_name or "未命名案例"
+        self.case_title_label.setText(title)
+        status_text = "已完成" if session.status is SessionStatus.COMPLETED else "训练中"
+        self.case_meta_label.setText(
+            f"{session.symbol} · {session.chart_timeframe} · {status_text} · Bar {session.current_index + 1}/{self.engine.total_count}"
+        )
+        if self._auto_save_timer.isActive() or self._has_pending_step_forward_save():
+            state, text = "saving", "保存中"
+        elif self._session_dirty:
+            state, text = "dirty", "有未保存更改"
+        else:
+            state, text = "saved", "已保存"
+        self.case_save_state_label.setText(text)
+        self.case_save_state_label.setProperty("state", state)
+        self._refresh_case_save_state_style()
+
+    def _refresh_case_save_state_style(self) -> None:
+        if self.case_save_state_label is None:
+            return
+        self.case_save_state_label.style().unpolish(self.case_save_state_label)
+        self.case_save_state_label.style().polish(self.case_save_state_label)
+        self.case_save_state_label.update()
+
+    def _sync_toolbar_tool_summary(self) -> None:
+        if self.toolbar_tool_summary_label is None:
+            return
+        if not hasattr(self, "chart_widget"):
+            self.toolbar_tool_summary_label.setText(REVIEW_WORKFLOW_MODE_HINTS[self._review_workflow_mode])
+            return
+        if self.chart_widget.preview_order_type is not None:
+            try:
+                label = self._order_type_label(OrderLineType(self.chart_widget.preview_order_type))
+            except ValueError:
+                label = "订单线"
+            self.toolbar_tool_summary_label.setText(f"{label} · Esc 取消")
+            return
+        if self.chart_widget.active_drawing_tool is not None:
+            self.toolbar_tool_summary_label.setText(f"{self._drawing_tool_label(self.chart_widget.active_drawing_tool)} · Esc 取消")
+            return
+        self.toolbar_tool_summary_label.setText(REVIEW_WORKFLOW_MODE_HINTS[self._review_workflow_mode])
+
+    def _sync_review_workflow_mode_from_chart(self) -> None:
+        if self.chart_widget.interaction_mode is InteractionMode.ORDER_PREVIEW or self.chart_widget.preview_order_type is not None:
+            self._set_review_workflow_mode(ReviewWorkflowMode.PLAN)
+            return
+        if self.chart_widget.interaction_mode is InteractionMode.DRAWING or self.chart_widget.active_drawing_tool is not None:
+            self._set_review_workflow_mode(ReviewWorkflowMode.ANNOTATE)
+            return
+        if (
+            self.right_sidebar_stack is not None
+            and self.trade_review_sidebar is not None
+            and self.right_sidebar_stack.currentWidget() is self.trade_review_sidebar
+        ):
+            self._set_review_workflow_mode(ReviewWorkflowMode.REVIEW)
+            return
+        self._set_review_workflow_mode(ReviewWorkflowMode.REPLAY)
+
+    def _enter_replay_workflow_for_session_action(self) -> None:
+        if self.chart_widget.interaction_mode is not InteractionMode.BROWSE:
+            self._sync_review_workflow_mode_from_chart()
+            return
+        if self.right_sidebar_stack is not None and self.replay_sidebar_panel is not None:
+            self.right_sidebar_stack.setCurrentWidget(self.replay_sidebar_panel)
+            if self.training_sidebar_tab_button is not None:
+                self.training_sidebar_tab_button.setChecked(True)
+        self._set_review_workflow_mode(ReviewWorkflowMode.REPLAY)
 
     def _build_ui(self) -> None:
         container = QWidget()
@@ -3018,12 +3165,38 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(AppTheme.flat_group_gap)
 
+        workflow_toolbar = QHBoxLayout()
+        workflow_toolbar.setSpacing(3)
         timeframe_toolbar = QHBoxLayout()
         timeframe_toolbar.setSpacing(3)
         template_toolbar = QHBoxLayout()
         template_toolbar.setSpacing(3)
         drawing_toolbar = QHBoxLayout()
         drawing_toolbar.setSpacing(3)
+        self.workflow_mode_button_group = QButtonGroup(self)
+        self.workflow_mode_button_group.setExclusive(True)
+        for mode in (
+            ReviewWorkflowMode.REPLAY,
+            ReviewWorkflowMode.PLAN,
+            ReviewWorkflowMode.ANNOTATE,
+            ReviewWorkflowMode.REVIEW,
+        ):
+            button = QPushButton(REVIEW_WORKFLOW_MODE_LABELS[mode])
+            button.setProperty("role", "workflowMode")
+            button.setCheckable(True)
+            button.setMinimumHeight(AppTheme.toolbar_button_height)
+            button.setMinimumWidth(52)
+            button.setToolTip(REVIEW_WORKFLOW_MODE_HINTS[mode])
+            button.clicked.connect(lambda _, workflow_mode=mode: self._activate_review_workflow_mode(workflow_mode))
+            self.workflow_mode_button_group.addButton(button)
+            self.workflow_mode_buttons[mode] = button
+            workflow_toolbar.addWidget(button)
+        self.toolbar_tool_summary_label = QLabel("")
+        self.toolbar_tool_summary_label.setObjectName("toolbarToolSummary")
+        self.toolbar_tool_summary_label.setProperty("role", "toolbarHint")
+        self.toolbar_tool_summary_label.setMinimumWidth(116)
+        self.toolbar_tool_summary_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        workflow_toolbar.addWidget(self.toolbar_tool_summary_label)
         self.timeframe_button_group = QButtonGroup(self)
         self.timeframe_button_group.setExclusive(True)
         timeframe_labels = {"5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m", "1d": "日线"}
@@ -3074,6 +3247,7 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda checked, drawing_tool=tool: self._toggle_drawing_tool(drawing_tool, checked))
             self._drawing_tool_buttons[tool] = button
             drawing_toolbar.addWidget(button)
+        self._workflow_toolbar_group = self._build_toolbar_group("模式", workflow_toolbar)
         self._timeframe_toolbar_group = self._build_toolbar_group("周期", timeframe_toolbar)
         self._template_toolbar_group = self._build_toolbar_group("常用模板", template_toolbar)
         self._drawing_toolbar_group = self._build_toolbar_group("画线", drawing_toolbar)
@@ -3084,10 +3258,39 @@ class MainWindow(QMainWindow):
         workspace_tools_layout = QHBoxLayout(workspace_tools)
         workspace_tools_layout.setContentsMargins(0, 0, 0, 0)
         workspace_tools_layout.setSpacing(AppTheme.flat_group_gap)
+        workspace_tools_layout.addWidget(self._workflow_toolbar_group, 0)
         workspace_tools_layout.addWidget(self._timeframe_toolbar_group, 0)
         workspace_tools_layout.addWidget(self._template_toolbar_group, 0)
         workspace_tools_layout.addWidget(self._drawing_toolbar_group, 0)
         workspace_tools_layout.addStretch(1)
+        self._sync_workflow_mode_controls()
+
+        case_header = QWidget()
+        case_header.setObjectName("caseHeader")
+        case_header.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        case_header_layout = QVBoxLayout(case_header)
+        case_header_layout.setContentsMargins(0, 0, 0, 0)
+        case_header_layout.setSpacing(0)
+        case_header_top = QHBoxLayout()
+        case_header_top.setContentsMargins(0, 0, 0, 0)
+        case_header_top.setSpacing(6)
+        self.case_title_label = QLabel("BarByBar")
+        self.case_title_label.setProperty("role", "caseTitle")
+        self.case_title_label.setMinimumWidth(150)
+        self.case_title_label.setMaximumWidth(230)
+        self.case_title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.case_save_state_label = QLabel("准备就绪")
+        self.case_save_state_label.setProperty("role", "caseSaveState")
+        self.case_save_state_label.setProperty("state", "idle")
+        case_header_top.addWidget(self.case_title_label)
+        case_header_top.addWidget(self.case_save_state_label)
+        case_header_top.addStretch(1)
+        self.case_meta_label = QLabel("未打开案例")
+        self.case_meta_label.setProperty("role", "caseMeta")
+        self.case_meta_label.setMaximumWidth(320)
+        case_header_layout.addLayout(case_header_top)
+        case_header_layout.addWidget(self.case_meta_label)
+        self._sync_case_header()
 
         workspace_actions = QWidget()
         workspace_actions.setObjectName("workspaceActions")
@@ -3116,6 +3319,7 @@ class MainWindow(QMainWindow):
         workspace_actions_layout.addWidget(workspace_management_actions)
         workspace_actions_layout.addWidget(workspace_diagnostics_actions)
 
+        layout.addWidget(case_header, 0)
         layout.addWidget(workspace_tools, 1)
         layout.addWidget(workspace_actions, 0, alignment=Qt.AlignmentFlag.AlignRight)
         return bar
@@ -3202,7 +3406,12 @@ class MainWindow(QMainWindow):
         self.progress_label.setProperty("role", "statusReadout")
         self.progress_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         status_layout.addWidget(self.progress_label, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.workflow_mode_status_label = QLabel("")
+        self.workflow_mode_status_label.setProperty("role", "muted")
+        self.workflow_mode_status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        status_layout.addWidget(self.workflow_mode_status_label, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         status_layout.addStretch(1)
+        self._sync_workflow_mode_controls()
 
         primary_actions = QWidget()
         primary_actions.setObjectName("replayPrimaryActions")
@@ -3601,7 +3810,7 @@ class MainWindow(QMainWindow):
             [
                 ("买", ActionType.OPEN_LONG, "long", "buy"),
                 ("卖", ActionType.OPEN_SHORT, "short", "sell"),
-                ("平", ActionType.CLOSE, "quiet", "close"),
+                ("平", ActionType.CLOSE, "close", "close"),
             ]
         ):
             button = QPushButton(label)
@@ -3615,7 +3824,7 @@ class MainWindow(QMainWindow):
             action_buttons_layout.addWidget(button)
         reverse_button = QPushButton("反")
         reverse_button.setFixedSize(54, 26)
-        reverse_button.setProperty("role", "quiet")
+        reverse_button.setProperty("role", "reverse")
         reverse_button.setProperty("compactAction", True)
         reverse_button.setProperty("tradeButtonRow", "direct")
         reverse_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -3697,8 +3906,10 @@ class MainWindow(QMainWindow):
                 button.setProperty("role", "long")
             elif order_type is OrderLineType.ENTRY_SHORT:
                 button.setProperty("role", "short")
+            elif order_type is OrderLineType.EXIT:
+                button.setProperty("role", "close")
             else:
-                button.setProperty("role", "quiet")
+                button.setProperty("role", "reverse")
             button.clicked.connect(lambda checked, kind=order_type: self._toggle_draw_order_preview(kind, checked))
             self._draw_order_buttons[order_type] = button
             draw_buttons_layout.addWidget(button)
@@ -4046,6 +4257,7 @@ class MainWindow(QMainWindow):
         self.right_sidebar_stack.setCurrentWidget(self.trade_review_sidebar)
         if self.trade_history_sidebar_tab_button is not None:
             self.trade_history_sidebar_tab_button.setChecked(True)
+        self._set_review_workflow_mode(ReviewWorkflowMode.REVIEW)
 
     def show_training_sidebar(self) -> None:
         if self.right_sidebar_stack is None or self.replay_sidebar_panel is None:
@@ -4053,6 +4265,7 @@ class MainWindow(QMainWindow):
         self.right_sidebar_stack.setCurrentWidget(self.replay_sidebar_panel)
         if self.training_sidebar_tab_button is not None:
             self.training_sidebar_tab_button.setChecked(True)
+        self._enter_replay_workflow_for_session_action()
 
     def show_replay_sidebar(self) -> None:
         self.show_training_sidebar()
@@ -4185,6 +4398,7 @@ class MainWindow(QMainWindow):
         self.price_spin.setValue(0.0)
         self.price_spin.blockSignals(False)
         self._sync_draw_order_controls()
+        self._set_review_workflow_mode(ReviewWorkflowMode.REPLAY)
         self._restore_progress_label()
 
     def _default_progress_text(self) -> str:
@@ -4373,6 +4587,7 @@ class MainWindow(QMainWindow):
         self.chart_widget.set_order_lines(self.engine.display_order_lines())
         if not self._transient_message_active:
             self.progress_label.setText(f"{current + 1}/{total} | {bar.timestamp:%Y-%m-%d %H:%M}")
+        self._sync_case_header()
         self.jump_spin.blockSignals(True)
         self.jump_spin.setValue(current)
         self.jump_spin.blockSignals(False)
@@ -4513,6 +4728,7 @@ class MainWindow(QMainWindow):
         self._sync_selected_trade_focus()
         if focus_chart:
             self._focus_selected_trade_view()
+        self._set_review_workflow_mode(ReviewWorkflowMode.REVIEW)
 
     def select_trade_review_item(
         self,
@@ -4531,6 +4747,7 @@ class MainWindow(QMainWindow):
         )
         if focus_chart:
             self._focus_selected_trade_view(item)
+        self._set_review_workflow_mode(ReviewWorkflowMode.REVIEW)
 
     def _set_position_readout_state(self, state: str) -> None:
         self.stats_label.setProperty("state", state)
@@ -4544,6 +4761,7 @@ class MainWindow(QMainWindow):
         self._sync_selected_trade_focus()
         if focus_chart:
             self._focus_selected_trade_view()
+        self._set_review_workflow_mode(ReviewWorkflowMode.REVIEW)
 
     def update_trade_history_notes(self, trade_number: int, *, entry_note: str, review_note: str) -> None:
         if not self.engine:
@@ -4577,6 +4795,7 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         self.select_trade_review_item(item, focus_view=self._selected_trade_view, focus_chart=False)
+        self._set_review_workflow_mode(ReviewWorkflowMode.REVIEW)
         dialog = TradeLinkNoteDialog(item, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -4592,6 +4811,7 @@ class MainWindow(QMainWindow):
         self._selected_trade_view = self._trade_review_controller.toggle_entry_exit()
         self._sync_selected_trade_focus()
         self._focus_selected_trade_view()
+        self._set_review_workflow_mode(ReviewWorkflowMode.REVIEW)
 
     def _focus_selected_trade_view(self, item: TradeReviewItem | None = None) -> None:
         item = item or self._selected_trade_review_item()
@@ -4833,6 +5053,7 @@ class MainWindow(QMainWindow):
                 "event=step_forward_ignored_no_engine"
             )
             return
+        self._enter_replay_workflow_for_session_action()
         logger.bind(
             component="step_forward",
             trigger="button",
@@ -4879,6 +5100,7 @@ class MainWindow(QMainWindow):
         started = perf_counter()
         if not self.engine:
             return
+        self._enter_replay_workflow_for_session_action()
         self._ensure_window_for_backward()
         self.engine.step_back()
         self._update_ui_from_engine()
@@ -4895,6 +5117,7 @@ class MainWindow(QMainWindow):
     def jump_to_bar(self, index: int) -> None:
         if not self.engine:
             return
+        self._enter_replay_workflow_for_session_action()
         if index < self.engine.window_start_index or index > self.engine.window_end_index:
             self._flush_deferred_step_ui_refresh()
             if not self.current_session_id:
@@ -4917,6 +5140,7 @@ class MainWindow(QMainWindow):
         if not self.engine:
             self._show_notice("提示", "请先创建或打开一个复盘会话", "当前没有可执行交易动作的复盘会话。")
             return
+        self._enter_replay_workflow_for_session_action()
         price = self._resolve_price(self.price_spin.value() or None)
         try:
             self.engine.record_action(action_type, quantity=float(self.quantity_spin.value()), price=price)
@@ -5016,6 +5240,7 @@ class MainWindow(QMainWindow):
         if persist_trades:
             self.engine.order_lines = self.repo.get_order_lines(saved.id or 0, saved.chart_timeframe)
         self._session_dirty = False
+        self._sync_case_header()
         logger.bind(
             component="session",
             session_id=saved.id,
@@ -5476,6 +5701,7 @@ class MainWindow(QMainWindow):
         self._flush_pending_auto_save("start_session_load")
         self.current_session_id = session_id
         self.engine = None
+        self._sync_case_header()
         self._active_loader_token += 1
         token = self._active_loader_token
         logger.bind(
@@ -5582,6 +5808,7 @@ class MainWindow(QMainWindow):
             self.repo.touch_session_opened(session.id)
             self.engine.session.last_opened_at = self.repo.get_session(session.id).last_opened_at
         self.hide_busy_overlay()
+        self._sync_case_header()
 
     @Slot(int, str)
     def _handle_load_failed(self, token: int, message: str) -> None:
@@ -5589,6 +5816,7 @@ class MainWindow(QMainWindow):
         if token != self._active_loader_token:
             return
         self.hide_busy_overlay()
+        self._sync_case_header()
         logger.bind(component="session_load", load_id=token, thread_id=_thread_id()).warning(
             "event=load_failed message={message}",
             message=message,
@@ -5639,6 +5867,7 @@ class MainWindow(QMainWindow):
         self._step_forward_save_generation = request.generation
         self._latest_step_forward_save_generation = request.generation
         self._step_forward_save_in_flight = True
+        self._sync_case_header()
         logger.bind(
             component="session_save_async",
             session_id=request.session.id,
@@ -5697,12 +5926,14 @@ class MainWindow(QMainWindow):
         if generation >= self._latest_step_forward_save_generation:
             self._last_completed_step_forward_save_generation = generation
             self._failed_step_forward_save_generation = 0
+        self._sync_case_header()
 
     @Slot(int, str)
     def _handle_async_save_failed(self, generation: int, message: str) -> None:
         self._log_ui_thread("handle_async_save_failed")
         self._failed_step_forward_save_generation = max(self._failed_step_forward_save_generation, generation)
         self._step_forward_save_in_flight = generation < self._latest_step_forward_save_generation
+        self._sync_case_header()
         logger.bind(
             component="session_save_async",
             session_id=self.current_session_id,
@@ -5907,6 +6138,7 @@ class MainWindow(QMainWindow):
             delay_ms=AUTO_SAVE_DELAY_MS,
         ).debug("event=auto_save_scheduled")
         self._auto_save_timer.start(AUTO_SAVE_DELAY_MS)
+        self._sync_case_header()
 
     def _flush_pending_auto_save(self, reason: str) -> None:
         self._flush_pending_step_forward_save(reason)
@@ -5956,6 +6188,7 @@ class MainWindow(QMainWindow):
         self.chart_widget.set_active_drawing_tool(None)
         self.chart_widget.begin_order_preview(order_type.value, float(self.draw_quantity_spin.value()))
         self._sync_draw_order_controls(active_order_type=order_type)
+        self._set_review_workflow_mode(ReviewWorkflowMode.PLAN)
         logger.bind(
             component="chart_interaction",
             requested_order_type=order_type.value,
@@ -5967,6 +6200,7 @@ class MainWindow(QMainWindow):
     def cancel_draw_order_preview(self) -> None:
         self.chart_widget.cancel_order_preview()
         self._sync_draw_order_controls()
+        self._sync_review_workflow_mode_from_chart()
 
     def _sync_draw_order_controls(self, active_order_type: OrderLineType | None = None) -> None:
         has_position = bool(self.engine and self.engine.session.position.is_open)
@@ -5995,6 +6229,7 @@ class MainWindow(QMainWindow):
             self._active_drawing_template_id = None
             self._sync_drawing_template_buttons()
             self.chart_widget.set_active_drawing_tool(tool)
+            self._set_review_workflow_mode(ReviewWorkflowMode.ANNOTATE)
             logger.bind(
                 component="chart_interaction",
                 requested_drawing_tool=tool.value,
@@ -6024,6 +6259,7 @@ class MainWindow(QMainWindow):
         if self.chart_widget.preview_order_type is not None:
             active_order_type = OrderLineType(self.chart_widget.preview_order_type)
         self._sync_draw_order_controls(active_order_type=active_order_type)
+        self._sync_review_workflow_mode_from_chart()
 
     @Slot()
     def _handle_chart_drawings_changed(self) -> None:

@@ -31,6 +31,7 @@ from barbybar.ui.main_window import (
     LogViewerDialog,
     MainWindow,
     ReadOnlyTextPanel,
+    ReviewWorkflowMode,
     SessionSaveRequest,
     SessionSaveWorker,
     SessionLibraryDialog,
@@ -298,6 +299,8 @@ def test_main_window_applies_professional_light_theme(window: MainWindow) -> Non
     assert "QPushButton[role='toolbar']" in window.styleSheet()
     assert window.next_button.property("role") == "primary"
     assert window.progress_label.property("role") == "statusReadout"
+    assert window.workflow_mode_status_label is not None
+    assert window.workflow_mode_status_label.property("role") == "muted"
     assert window.stats_label.property("role") == "positionReadout"
     assert window.training_stats_label.property("role") == "trainingStats"
     assert window.training_sidebar_tab_button is not None
@@ -305,6 +308,54 @@ def test_main_window_applies_professional_light_theme(window: MainWindow) -> Non
     assert window.training_sidebar_tab_button.property("role") == "sidebarTab"
     assert window.trade_history_sidebar_tab_button.property("role") == "sidebarTab"
     assert window.splitter.widget(1).objectName() == "rightPanel"
+    assert window.case_title_label is not None
+    assert window.case_meta_label is not None
+    assert window.case_save_state_label is not None
+    assert window.case_title_label.property("role") == "caseTitle"
+    assert window.case_save_state_label.property("role") == "caseSaveState"
+
+
+def test_theme_exposes_workflow_and_financial_visual_roles(window: MainWindow) -> None:
+    stylesheet = window.styleSheet()
+
+    for token in [
+        AppTheme.numeric,
+        AppTheme.pnl_positive,
+        AppTheme.pnl_negative,
+        AppTheme.close,
+        AppTheme.reverse,
+        AppTheme.active_mode,
+        AppTheme.active_mode_soft,
+        AppTheme.focus_soft,
+    ]:
+        assert token in stylesheet
+    assert "QPushButton[role='workflowMode']:checked" in stylesheet
+    assert "QLabel[role='caseSaveState'][state='saving']" in stylesheet
+    assert "QLabel[role='numericReadout']" in stylesheet
+    assert "QLabel[role='pnlPositive']" in stylesheet
+    assert "QPushButton[compactAction='true'][role='reverse']:pressed" in stylesheet
+
+
+def test_case_header_summarizes_open_session_and_save_state(window: MainWindow) -> None:
+    _seed_engine(window)
+    window.current_dataset = window.repo.get_dataset(window.engine.session.dataset_id)
+    window._sync_case_header()
+
+    assert window.case_title_label is not None
+    assert window.case_meta_label is not None
+    assert window.case_save_state_label is not None
+    assert window.case_title_label.text()
+    assert window.engine.session.symbol in window.case_meta_label.text()
+    assert window.engine.session.chart_timeframe in window.case_meta_label.text()
+    assert window.case_save_state_label.text() == "已保存"
+
+    try:
+        window._schedule_auto_save("test")
+
+        assert window.case_save_state_label.text() == "保存中"
+    finally:
+        window._auto_save_timer.stop()
+        window._session_dirty = False
 
 
 def test_main_window_numeric_inputs_hide_step_buttons(window: MainWindow) -> None:
@@ -521,18 +572,21 @@ def test_right_panel_uses_training_and_history_tabs(window: MainWindow) -> None:
     assert window.training_sidebar_tab_button.isChecked() is True
     assert window.trade_history_sidebar_tab_button.isChecked() is False
     assert window.right_sidebar_stack.currentWidget() is window.replay_sidebar_panel
+    assert window.review_workflow_mode is ReviewWorkflowMode.REPLAY
 
     window.trade_history_sidebar_tab_button.click()
 
     assert window.training_sidebar_tab_button.isChecked() is False
     assert window.trade_history_sidebar_tab_button.isChecked() is True
     assert window.right_sidebar_stack.currentWidget() is window.trade_review_sidebar
+    assert window.review_workflow_mode is ReviewWorkflowMode.REVIEW
 
     window.training_sidebar_tab_button.click()
 
     assert window.training_sidebar_tab_button.isChecked() is True
     assert window.trade_history_sidebar_tab_button.isChecked() is False
     assert window.right_sidebar_stack.currentWidget() is window.replay_sidebar_panel
+    assert window.review_workflow_mode is ReviewWorkflowMode.REPLAY
 
 
 def test_training_stats_default_to_brief_two_line_summary(window: MainWindow) -> None:
@@ -574,8 +628,10 @@ def test_trade_action_and_draw_order_buttons_use_buy_sell_colors(window: MainWin
     assert window._trade_action_buttons["sell"].property("role") == "short"
     assert window._draw_order_buttons[OrderLineType.ENTRY_LONG].property("role") == "long"
     assert window._draw_order_buttons[OrderLineType.ENTRY_SHORT].property("role") == "short"
-    assert window._trade_action_buttons["close"].property("role") == "quiet"
-    assert window._trade_action_buttons["reverse"].property("role") == "quiet"
+    assert window._trade_action_buttons["close"].property("role") == "close"
+    assert window._trade_action_buttons["reverse"].property("role") == "reverse"
+    assert window._draw_order_buttons[OrderLineType.EXIT].property("role") == "close"
+    assert window._draw_order_buttons[OrderLineType.REVERSE].property("role") == "reverse"
 
 
 def test_trade_button_styles_define_pressed_feedback(window: MainWindow) -> None:
@@ -584,6 +640,8 @@ def test_trade_button_styles_define_pressed_feedback(window: MainWindow) -> None
     assert "QPushButton[compactAction='true']:pressed" in stylesheet
     assert "QPushButton[compactAction='true'][role='long']:pressed" in stylesheet
     assert "QPushButton[compactAction='true'][role='short']:pressed" in stylesheet
+    assert "QPushButton[compactAction='true'][role='close']:pressed" in stylesheet
+    assert "QPushButton[compactAction='true'][role='reverse']:pressed" in stylesheet
 
 
 def test_timeframe_buttons_render_above_chart(window: MainWindow) -> None:
@@ -598,13 +656,16 @@ def test_toolbar_separates_timeframes_from_drawing_buttons(window: MainWindow) -
     toolbar = top_bar.layout()
 
     assert toolbar is not None
+    case_header = top_bar.findChild(QWidget, "caseHeader")
     workspace_tools = top_bar.findChild(QWidget, "workspaceTools")
-    assert toolbar.itemAt(0).widget() is workspace_tools
+    assert toolbar.itemAt(0).widget() is case_header
+    assert toolbar.itemAt(1).widget() is workspace_tools
     tool_layout = workspace_tools.layout()
-    assert tool_layout.itemAt(0).widget() is window._timeframe_toolbar_group
-    assert tool_layout.itemAt(1).widget() is window._template_toolbar_group
-    assert tool_layout.itemAt(2).widget() is window._drawing_toolbar_group
-    assert tool_layout.itemAt(3).spacerItem() is not None
+    assert tool_layout.itemAt(0).widget() is window._workflow_toolbar_group
+    assert tool_layout.itemAt(1).widget() is window._timeframe_toolbar_group
+    assert tool_layout.itemAt(2).widget() is window._template_toolbar_group
+    assert tool_layout.itemAt(3).widget() is window._drawing_toolbar_group
+    assert tool_layout.itemAt(4).spacerItem() is not None
 
 
 def test_toolbar_uses_distinct_group_widgets_for_timeframe_template_and_drawing(window: MainWindow) -> None:
@@ -671,8 +732,9 @@ def test_app_navigation_buttons_are_placed_in_top_bar(window: MainWindow) -> Non
     controls = top_bar.layout()
 
     assert controls is not None
-    assert controls.itemAt(0).widget().objectName() == "workspaceTools"
-    assert controls.itemAt(1).widget().objectName() == "workspaceActions"
+    assert controls.itemAt(0).widget().objectName() == "caseHeader"
+    assert controls.itemAt(1).widget().objectName() == "workspaceTools"
+    assert controls.itemAt(2).widget().objectName() == "workspaceActions"
     workspace_tools = top_bar.findChild(QWidget, "workspaceTools")
     workspace_actions = top_bar.findChild(QWidget, "workspaceActions")
     assert window.dataset_button not in workspace_tools.findChildren(QPushButton)
@@ -793,6 +855,7 @@ def test_toolbar_buttons_define_checked_feedback_in_stylesheet(window: MainWindo
 
     assert "QPushButton[role='toolbar']:checked" in stylesheet
     assert "QPushButton[role='toolbar']:disabled" in stylesheet
+    assert "QPushButton[role='workflowMode']:checked" in stylesheet
     assert "QPushButton[role='timeframe']:disabled" in stylesheet
     assert "QPushButton[role='sidebarTab']:disabled" in stylesheet
     assert "QPushButton:disabled" in stylesheet
@@ -819,6 +882,7 @@ def test_timeframe_and_quiet_buttons_do_not_draw_outer_borders(window: MainWindo
 
 def test_top_toolbar_visual_families_share_aligned_vertical_sizes(window: MainWindow) -> None:
     assert all(button.minimumHeight() >= 30 or button.height() >= 30 for button in window.timeframe_buttons.values())
+    assert all(button.minimumHeight() >= 30 or button.height() >= 30 for button in window.workflow_mode_buttons.values())
     assert all(button.minimumHeight() >= 30 or button.height() >= 30 for button in window._drawing_template_buttons.values())
     assert all(button.minimumHeight() >= 30 or button.height() >= 30 for button in [window.dataset_button, window.session_button, window.settings_button, window.log_viewer_button, window.check_update_button])
     assert all(button.width() == 28 for button in window._drawing_tool_buttons.values())
@@ -827,6 +891,7 @@ def test_top_toolbar_visual_families_share_aligned_vertical_sizes(window: MainWi
     assert window.session_button.minimumWidth() >= AppTheme.toolbar_action_width_md
     assert window.log_viewer_button.minimumWidth() >= AppTheme.toolbar_action_width_lg
     assert window.check_update_button.minimumWidth() >= AppTheme.toolbar_action_width_lg
+    assert all(button.minimumWidth() >= 52 for button in window.workflow_mode_buttons.values())
     assert all(button.minimumWidth() >= 42 for button in window.timeframe_buttons.values())
 
 
@@ -933,7 +998,7 @@ def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWi
         assert dialog.candle_up_wick_button.text() == "#000000"
         assert dialog.candle_down_body_button.text() == "#000000"
         assert dialog.candle_down_wick_button.text() == "#000000"
-        assert dialog.chart_background_button.text() == "#f7f4ef"
+        assert dialog.chart_background_button.text() == AppTheme.canvas
         assert dialog.reset_candle_colors_button.text() == "恢复默认配色"
         assert dialog.default_order_quantity_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
         assert dialog.default_draw_order_quantity_spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
@@ -1068,9 +1133,9 @@ def test_settings_dialog_resets_chart_colors_to_defaults(window: MainWindow) -> 
 
     saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
     assert saved["candle_up_body_color"] == "#ffffff"
-    assert saved["chart_background_color"] == "#f7f4ef"
+    assert saved["chart_background_color"] == AppTheme.canvas
     assert window.chart_widget._candle_up_body_color == "#ffffff"
-    assert window.chart_widget._chart_background_color == "#f7f4ef"
+    assert window.chart_widget._chart_background_color == AppTheme.canvas
 
 
 def test_settings_dialog_log_button_reuses_log_viewer(window: MainWindow) -> None:
@@ -1409,7 +1474,7 @@ def test_main_window_falls_back_to_default_chart_colors_when_settings_are_invali
     main_window = MainWindow(repo)
     try:
         assert main_window.chart_widget._candle_up_body_color == "#ffffff"
-        assert main_window.chart_widget._chart_background_color == "#f7f4ef"
+        assert main_window.chart_widget._chart_background_color == AppTheme.canvas
     finally:
         main_window.close()
         main_window.deleteLater()
@@ -2833,12 +2898,24 @@ def test_order_preview_confirmed_uses_selected_quantity(window: MainWindow, monk
     assert captured == [(OrderLineType.ENTRY_LONG, 102.5, 3.0)]
 
 
+def test_workflow_mode_controls_start_in_replay(window: MainWindow) -> None:
+    assert window.review_workflow_mode is ReviewWorkflowMode.REPLAY
+    assert window.workflow_mode_buttons[ReviewWorkflowMode.REPLAY].isChecked() is True
+    assert window.workflow_mode_status_label is not None
+    assert "回放" in window.workflow_mode_status_label.text()
+    assert window.toolbar_tool_summary_label is not None
+    assert "K 线" in window.toolbar_tool_summary_label.text()
+
+
 def test_clicking_drawing_tool_updates_chart_widget(window: MainWindow) -> None:
     window._toggle_drawing_tool(DrawingToolType.HORIZONTAL_LINE, True)
 
     assert window.chart_widget.active_drawing_tool is DrawingToolType.HORIZONTAL_LINE
     assert window._drawing_tool_buttons[DrawingToolType.HORIZONTAL_LINE].isChecked() is True
     assert window.chart_widget.interaction_mode is InteractionMode.DRAWING
+    assert window.review_workflow_mode is ReviewWorkflowMode.ANNOTATE
+    assert window.toolbar_tool_summary_label is not None
+    assert "水平线" in window.toolbar_tool_summary_label.text()
 
 
 def test_completed_drawing_unchecks_toolbar_button(window: MainWindow) -> None:
@@ -2849,6 +2926,7 @@ def test_completed_drawing_unchecks_toolbar_button(window: MainWindow) -> None:
     assert window.chart_widget.active_drawing_tool is None
     assert window._drawing_tool_buttons[DrawingToolType.HORIZONTAL_LINE].isChecked() is False
     assert window.chart_widget.interaction_mode is InteractionMode.BROWSE
+    assert window.review_workflow_mode is ReviewWorkflowMode.REPLAY
 
 
 def test_clear_lines_schedules_auto_save(window: MainWindow) -> None:
@@ -2972,11 +3050,15 @@ def test_order_preview_cancel_resets_button_state(window: MainWindow) -> None:
 
     window._toggle_draw_order_preview(OrderLineType.ENTRY_LONG, True)
     assert window._draw_order_buttons[OrderLineType.ENTRY_LONG].isChecked() is True
+    assert window.review_workflow_mode is ReviewWorkflowMode.PLAN
+    assert window.toolbar_tool_summary_label is not None
+    assert "开多线" in window.toolbar_tool_summary_label.text()
 
     window.chart_widget.cancel_order_preview()
 
     assert window._draw_order_buttons[OrderLineType.ENTRY_LONG].isChecked() is False
     assert window.chart_widget.interaction_mode is InteractionMode.BROWSE
+    assert window.review_workflow_mode is ReviewWorkflowMode.REPLAY
 
 
 def test_clicking_active_draw_order_button_again_cancels_preview(window: MainWindow) -> None:
@@ -3003,6 +3085,7 @@ def test_order_preview_activation_clears_active_drawing_tool(window: MainWindow)
     assert window.chart_widget.active_drawing_tool is None
     assert window._drawing_tool_buttons[DrawingToolType.TREND_LINE].isChecked() is False
     assert window.chart_widget.interaction_mode is InteractionMode.ORDER_PREVIEW
+    assert window.review_workflow_mode is ReviewWorkflowMode.PLAN
 
 
 def test_drawing_properties_request_updates_style_and_marks_session_dirty(window: MainWindow, monkeypatch) -> None:
@@ -3721,6 +3804,8 @@ def test_trade_history_sidebar_uses_right_panel_tabs(window: MainWindow) -> None
     assert window.trade_review_sidebar is not None
     assert window.trade_history_sidebar_tab_button is not None
     assert window.training_sidebar_tab_button is not None
+    assert window.review_workflow_mode is ReviewWorkflowMode.REVIEW
+    assert window.workflow_mode_buttons[ReviewWorkflowMode.REVIEW].isChecked() is True
     sidebar = window.trade_review_sidebar
     assert sidebar.isHidden() is False
     assert sidebar.objectName() == "tradeReviewSidebar"
@@ -3744,10 +3829,12 @@ def test_trade_history_sidebar_uses_right_panel_tabs(window: MainWindow) -> None
     window.training_sidebar_tab_button.click()
     assert window.right_sidebar_stack.currentWidget() is window.replay_sidebar_panel
     assert window.training_sidebar_tab_button.isChecked() is True
+    assert window.review_workflow_mode is ReviewWorkflowMode.REPLAY
 
     window.open_trade_history_dialog()
     assert window.right_sidebar_stack.currentWidget() is sidebar
     assert window.trade_history_sidebar_tab_button.isChecked() is True
+    assert window.review_workflow_mode is ReviewWorkflowMode.REVIEW
     assert window._selected_trade_number == 1
 
     window.open_full_trade_history_dialog()
@@ -4222,6 +4309,20 @@ def test_space_shortcut_steps_forward_when_focus_allows(window: MainWindow, monk
     window._handle_step_forward_shortcut()
 
     assert window.engine.session.current_index == start_index + 1
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
+def test_step_forward_returns_to_replay_workflow_from_review(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    monkeypatch.setattr(window, "_enqueue_step_forward_save", lambda trigger="step_forward": None)
+    window.show_trade_history_sidebar()
+
+    window.step_forward()
+
+    assert window.review_workflow_mode is ReviewWorkflowMode.REPLAY
+    assert window.right_sidebar_stack is not None
+    assert window.right_sidebar_stack.currentWidget() is window.replay_sidebar_panel
     window._auto_save_timer.stop()
     window._session_dirty = False
 
