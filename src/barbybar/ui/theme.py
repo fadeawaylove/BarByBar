@@ -102,7 +102,7 @@ class AppTheme:
     sidebar_input_width_sm = 58
     sidebar_input_width_md = 82
     flat_group_gap = 8
-    sidebar_compact_width = 288
+    sidebar_compact_width = 248
     sidebar_width = sidebar_compact_width
     chart_axis = "#b6c0ca"
     chart_preview = "#4f5d6b"
@@ -175,7 +175,9 @@ QWidget#replayUtilityActions,
 QWidget#replayStatusGroup,
 QWidget#rightSidebarTabs,
 QWidget#positionSummaryCard,
-QWidget#trainingSummaryCard {{
+QWidget#trainingSummaryCard,
+QWidget#emptyStartupActions,
+QWidget#emptyStartupRecentList {{
     background: transparent;
     border: none;
 }}
@@ -194,6 +196,11 @@ QWidget[card='true'] {{
     background: {rgba(AppTheme.surface_elevated, 112)};
     border: 1px solid {rgba(AppTheme.border, 82)};
     border-radius: {AppTheme.radius_sm}px;
+}}
+QWidget[modeActive='true'],
+QGroupBox[modeActive='true'] {{
+    border-color: {rgba(AppTheme.active_mode, 102)};
+    background: {rgba(AppTheme.active_mode_soft, 92)};
 }}
 QWidget#directTradeSection[priority='primary'] {{
     background: {AppTheme.focus_soft};
@@ -233,6 +240,11 @@ QGroupBox::title {{
 QGroupBox#quickTradeBox::title {{
     color: {AppTheme.primary};
 }}
+QFrame#emptyStartupPanel {{
+    background: {rgba(AppTheme.surface_elevated, 232)};
+    border: 1px solid {rgba(AppTheme.border, 132)};
+    border-radius: {AppTheme.radius_lg}px;
+}}
 QWidget#settingsSidebar {{
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {AppTheme.surface_elevated}, stop:1 {AppTheme.surface_soft});
 }}
@@ -258,6 +270,15 @@ QLabel[role='toolbarHint'] {{
     color: {AppTheme.text_faint};
     font-size: 10px;
     font-weight: 700;
+}}
+QLabel[role='emptyStartupTitle'] {{
+    color: {AppTheme.text};
+    font-size: 22px;
+    font-weight: 900;
+}}
+QLabel[role='emptyStartupSummary'] {{
+    color: {AppTheme.text_muted};
+    font-size: 12px;
 }}
 QLabel[role='caseSaveState'] {{
     background: {AppTheme.surface_soft};
@@ -713,6 +734,7 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {{
     color: {AppTheme.text};
     padding: 4px 8px;
     selection-background-color: {AppTheme.primary_soft};
+    selection-color: {AppTheme.text};
 }}
 QTextEdit[role='dialogDetail'] {{
     background: {AppTheme.surface};
@@ -725,6 +747,9 @@ QTextEdit[role='dialogDetail'] {{
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QTextEdit:focus {{
     border-color: {AppTheme.primary};
     background: #ffffff;
+    color: {AppTheme.text};
+    selection-background-color: {AppTheme.selected};
+    selection-color: {AppTheme.text};
 }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled, QTextEdit:disabled {{
     background: {AppTheme.disabled};

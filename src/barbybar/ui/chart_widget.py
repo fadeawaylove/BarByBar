@@ -16,7 +16,7 @@ from barbybar.data.tick_size import format_average_price, format_price
 from barbybar.data.timeframe import DAY_TIMEFRAME, normalize_timeframe, timeframe_to_minutes
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingToolType, OrderLine, OrderLineType, SessionAction, Trade, TradeReviewItem, normalize_drawing_style
 from barbybar.performance_metrics import record_metric
-from barbybar.ui.theme import AppTheme
+from barbybar.ui.theme import AppTheme, rgba
 
 DEFAULT_CANDLE_UP_BODY_COLOR = "#ffffff"
 DEFAULT_CANDLE_UP_WICK_COLOR = "#000000"
@@ -643,6 +643,7 @@ class ChartWidget(QWidget):
         self._interactive_viewport_reset_timer = QTimer(self)
         self._interactive_viewport_reset_timer.setSingleShot(True)
         self._interactive_viewport_reset_timer.timeout.connect(self._finish_interactive_viewport)
+        self._sync_interaction_hint()
 
     @property
     def draw_mode(self) -> bool:
@@ -2357,9 +2358,9 @@ class ChartWidget(QWidget):
         self._hover_card.setObjectName("hoverCard")
         self._hover_card.setStyleSheet(
             "#hoverCard {"
-            "background: rgba(252, 251, 247, 246);"
+            f"background: {rgba(AppTheme.surface_elevated, 246)};"
             f"border: 1px solid {AppTheme.border};"
-            "border-radius: 12px;"
+            "border-radius: 10px;"
             "}"
         )
         self._hover_card.setFixedWidth(212)
@@ -2400,11 +2401,11 @@ class ChartWidget(QWidget):
         self._axis_price_label.setObjectName("axisPriceLabel")
         self._axis_price_label.setStyleSheet(
             "#axisPriceLabel {"
-            "background: rgba(252, 251, 247, 246);"
+            f"background: {rgba(AppTheme.surface_elevated, 246)};"
             f"border: 1px solid {AppTheme.border};"
-            "border-radius: 8px;"
+            "border-radius: 6px;"
             "padding: 3px 7px;"
-            f"color: {AppTheme.text};"
+            f"color: {AppTheme.numeric};"
             "font-size: 12px;"
             "font-weight: 700;"
             "}"
@@ -2416,11 +2417,11 @@ class ChartWidget(QWidget):
         self._interaction_hint.setObjectName("chartInteractionHint")
         self._interaction_hint.setStyleSheet(
             "#chartInteractionHint {"
-            "background: rgba(252, 251, 247, 232);"
-            f"border: 1px solid {AppTheme.border_soft};"
-            "border-radius: 8px;"
-            "padding: 4px 9px;"
-            f"color: {AppTheme.text_muted};"
+            f"background: {rgba(AppTheme.surface_elevated, 236)};"
+            f"border: 1px solid {rgba(AppTheme.active_mode_border, 175)};"
+            "border-radius: 6px;"
+            "padding: 4px 10px;"
+            f"color: {AppTheme.active_mode};"
             "font-size: 11px;"
             "font-weight: 800;"
             "}"
@@ -2439,18 +2440,15 @@ class ChartWidget(QWidget):
     def _sync_interaction_hint(self) -> None:
         if not hasattr(self, "_interaction_hint"):
             return
-        text = ""
+        text = "空格推进 K 线"
         if self._interaction_mode is InteractionMode.DRAWING and self._active_drawing_tool is not None:
-            text = f"画线中 · {self._drawing_tool_label(self._active_drawing_tool)}"
+            text = f"{self._drawing_tool_label(self._active_drawing_tool)}已激活 · Esc 取消"
         elif self._interaction_mode is InteractionMode.ORDER_PREVIEW and self._preview_order_type is not None:
-            text = f"图上下单 · {self._order_preview_label(self._preview_order_type)}"
+            text = f"{self._order_preview_label(self._preview_order_type)}预演中 · 点击图表确认"
         if text == self._interaction_hint_cache:
             self._position_interaction_hint()
             return
         self._interaction_hint_cache = text
-        if not text:
-            self._interaction_hint.hide()
-            return
         self._interaction_hint.setText(text)
         self._position_interaction_hint()
         self._interaction_hint.show()

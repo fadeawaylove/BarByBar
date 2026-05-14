@@ -505,28 +505,30 @@ def test_chart_shows_right_price_axis_and_hides_left(widget: ChartWidget) -> Non
 def test_chart_uses_refined_stage_background_and_axis_price_label(widget: ChartWidget) -> None:
     assert widget.graphics.backgroundBrush().color().name().lower() == AppTheme.canvas.lower()
     assert "font-weight: 700" in widget._axis_price_label.styleSheet()
-    assert "rgba(252, 251, 247, 246)" in widget._axis_price_label.styleSheet()
+    assert AppTheme.numeric in widget._axis_price_label.styleSheet()
     assert widget._v_line.pen.color().name().lower() == AppTheme.chart_axis.lower()
     assert widget._h_line.pen.color().name().lower() == AppTheme.chart_axis.lower()
 
 
 def test_chart_interaction_hint_tracks_drawing_and_order_preview(widget: ChartWidget) -> None:
-    assert widget._interaction_hint.isHidden()
+    assert widget._interaction_hint.isHidden() is False
+    assert widget._interaction_hint.text() == "空格推进 K 线"
 
     widget.set_active_drawing_tool(DrawingToolType.TREND_LINE)
 
     assert widget._interaction_hint.isHidden() is False
-    assert widget._interaction_hint.text() == "画线中 · 线段"
+    assert widget._interaction_hint.text() == "线段已激活 · Esc 取消"
 
     widget.begin_order_preview(OrderLineType.ENTRY_LONG.value, 2)
 
     assert widget._interaction_hint.isHidden() is False
-    assert widget._interaction_hint.text() == "图上下单 · 买入线"
+    assert widget._interaction_hint.text() == "买入线预演中 · 点击图表确认"
     assert widget._preview_line.pen.color().name().lower() == ENTRY_LONG_LINE_COLOR.lower()
 
     widget.cancel_order_preview()
 
-    assert widget._interaction_hint.isHidden()
+    assert widget._interaction_hint.isHidden() is False
+    assert widget._interaction_hint.text() == "空格推进 K 线"
 
 
 def test_session_open_markers_render_for_0900_and_2100(widget: ChartWidget) -> None:
@@ -902,7 +904,7 @@ def test_hover_info_always_colors_high_red_and_low_green(widget: ChartWidget) ->
 
 def test_hover_card_uses_refined_readout_styles(widget: ChartWidget) -> None:
     assert widget._hover_card.width() == 212
-    assert "rgba(252, 251, 247, 246)" in widget._hover_card.styleSheet()
+    assert AppTheme.border in widget._hover_card.styleSheet()
     assert AppTheme.text_muted in widget._hover_time_label.styleSheet()
 
 
