@@ -373,7 +373,6 @@ def test_empty_startup_workspace_surfaces_primary_next_actions(window: MainWindo
 def test_main_window_numeric_inputs_hide_step_buttons(window: MainWindow) -> None:
     for spinbox in [
         window.quantity_spin,
-        window.price_spin,
         window.draw_quantity_spin,
         window.tick_size_spin,
     ]:
@@ -491,12 +490,12 @@ def test_right_panel_uses_compact_trade_layout_sections(window: MainWindow) -> N
     assert window.findChild(QWidget, "positionSummaryCard") is not None
     assert window.findChild(QWidget, "trainingSummaryCard") is not None
     assert window.quantity_spin.parentWidget() is trade_group.findChild(QWidget, "directTradeFieldsRow")
-    assert window.price_spin.parentWidget() is trade_group.findChild(QWidget, "directTradeFieldsRow")
+    assert window.trade_price_label.parentWidget() is trade_group.findChild(QWidget, "directTradeFieldsRow")
     assert window.draw_quantity_spin.parentWidget() is order_tools_group.findChild(QWidget, "limitTradeFieldsRow")
     assert window.tick_size_spin.parentWidget() is order_tools_group.findChild(QWidget, "limitTradeFieldsRow")
     assert window.quantity_spin.width() == AppTheme.sidebar_input_width_sm
     assert window.draw_quantity_spin.width() == AppTheme.sidebar_input_width_sm
-    assert window.price_spin.width() == AppTheme.sidebar_input_width_md
+    assert window.trade_price_label.width() == AppTheme.sidebar_input_width_md
     assert window.tick_size_spin.width() == AppTheme.sidebar_input_width_md
 
 
@@ -2365,6 +2364,21 @@ def test_reverse_trade_action_uses_opposite_open_action(window: MainWindow, monk
     assert captured[-1] is ActionType.OPEN_LONG
 
 
+def test_reverse_trade_action_uses_current_bar_close_price(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    monkeypatch.setattr(window, "save_session", lambda trigger="manual": None)
+    assert window.engine is not None
+    current_close = window._snap_price(window.engine.current_bar.close)
+
+    window.engine.record_action(ActionType.OPEN_LONG, quantity=1, price=101)
+    window.trade_price_label.setText("9999.0")
+
+    window.record_reverse_action()
+
+    assert window.engine.actions[-1].action_type is ActionType.OPEN_SHORT
+    assert window.engine.actions[-1].price == pytest.approx(current_close)
+
+
 def test_update_ui_from_engine_syncs_trade_markers(window: MainWindow) -> None:
     _seed_engine(window)
     window.chart_widget.set_window_data(
@@ -3440,7 +3454,24 @@ def test_trade_action_price_defaults_to_latest_close(window: MainWindow) -> None
 
     window._update_ui_from_engine()
 
-    assert window.price_spin.value() == 126.0
+    assert window.trade_price_label.text() == "126"
+    assert window.trade_price_label.toolTip() == "直接下单按当前价即时成交，不能手动指定成交价。"
+
+
+def test_trade_action_uses_current_bar_close_price_even_if_trade_price_label_changes(
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_engine(window)
+    monkeypatch.setattr(window, "save_session", lambda trigger="manual": None)
+    assert window.engine is not None
+    current_close = window._snap_price(window.engine.current_bar.close)
+
+    window.trade_price_label.setText("9999.0")
+    window.record_action(ActionType.OPEN_LONG)
+
+    assert window.engine.actions[-1].action_type is ActionType.OPEN_LONG
+    assert window.engine.actions[-1].price == pytest.approx(current_close)
 
 
 def test_trade_history_focus_right_edge_places_target_away_from_right_axis() -> None:
@@ -4162,26 +4193,24 @@ def test_trade_link_note_dialog_cancel_keeps_notes_unchanged(window: MainWindow,
     assert save_triggers == []
 
 
-def test_tick_size_change_snaps_price_input(window: MainWindow) -> None:
+def test_tick_size_change_updates_trade_price_display(window: MainWindow) -> None:
     _seed_engine(window)
-    window.price_spin.setValue(5914.62)
 
     window._handle_tick_size_changed(1.0)
 
-    assert window.price_spin.value() == 126.0
-    assert window.price_spin.decimals() == 0
+    assert window.trade_price_label.text() == "126"
     window._session_dirty = False
     window._auto_save_timer.stop()
 
 
-def test_tick_size_decimals_follow_tick_size(window: MainWindow) -> None:
+def test_tick_size_updates_trade_price_display_precision(window: MainWindow) -> None:
     _seed_engine(window)
 
     window._handle_tick_size_changed(0.2)
-    assert window.price_spin.decimals() == 1
+    assert window.trade_price_label.text() == "125.6"
 
     window._handle_tick_size_changed(0.02)
-    assert window.price_spin.decimals() == 2
+    assert window.trade_price_label.text() == "125.50"
     window._session_dirty = False
     window._auto_save_timer.stop()
 

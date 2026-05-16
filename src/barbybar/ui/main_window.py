@@ -3791,14 +3791,15 @@ class MainWindow(QMainWindow):
         self.quantity_spin.setFixedWidth(AppTheme.sidebar_input_width_sm)
         self.quantity_spin.valueChanged.connect(self._handle_default_order_quantity_changed)
         action_fields_layout.addWidget(self.quantity_spin, 0)
-        action_fields_layout.addWidget(QLabel("价格"))
-        self.price_spin = configure_spinbox(QDoubleSpinBox())
-        self.price_spin.setDecimals(2)
-        self.price_spin.setRange(-999999.0, 999999.0)
-        self.price_spin.setValue(0.0)
-        self.price_spin.setFixedHeight(24)
-        self.price_spin.setFixedWidth(AppTheme.sidebar_input_width_md)
-        action_fields_layout.addWidget(self.price_spin, 0)
+        action_fields_layout.addWidget(QLabel("当前价"))
+        self.trade_price_label = QLabel("--")
+        self.trade_price_label.setObjectName("directTradePriceLabel")
+        self.trade_price_label.setMinimumHeight(24)
+        self.trade_price_label.setFixedWidth(AppTheme.sidebar_input_width_md)
+        self.trade_price_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.trade_price_label.setProperty("readout", True)
+        self.trade_price_label.setToolTip("直接下单按当前价即时成交，不能手动指定成交价。")
+        action_fields_layout.addWidget(self.trade_price_label, 0)
         direct_trade_layout.addWidget(action_fields_row)
 
         action_buttons_row = QWidget()
@@ -4397,9 +4398,7 @@ class MainWindow(QMainWindow):
             self._trade_history_dialog.refresh_items()
         if self.trade_review_sidebar is not None:
             self.trade_review_sidebar.refresh_items()
-        self.price_spin.blockSignals(True)
-        self.price_spin.setValue(0.0)
-        self.price_spin.blockSignals(False)
+        self.trade_price_label.setText("--")
         self._sync_draw_order_controls()
         self._restore_progress_label()
 
@@ -5130,7 +5129,7 @@ class MainWindow(QMainWindow):
             self._show_notice("提示", "请先创建或打开一个复盘会话", "当前没有可执行交易动作的复盘会话。")
             return
         self._enter_replay_workflow_for_session_action()
-        price = self._resolve_price(self.price_spin.value() or None)
+        price = self._snap_price(self.engine.current_bar.close)
         try:
             self.engine.record_action(action_type, quantity=float(self.quantity_spin.value()), price=price)
         except Exception as exc:  # noqa: BLE001
@@ -5159,10 +5158,6 @@ class MainWindow(QMainWindow):
     def create_order_line(self, order_type: OrderLineType) -> None:
         if not self.engine:
             self._show_notice("提示", "请先创建或打开一个复盘会话", "当前没有可创建条件单的复盘会话。")
-            return
-        explicit_price = self.price_spin.value()
-        if explicit_price:
-            self._place_order_line(order_type, explicit_price)
             return
         hover_price = self.chart_widget.last_hover_price
         if hover_price is not None:
@@ -6274,7 +6269,6 @@ class MainWindow(QMainWindow):
         self.chart_widget.set_tick_size(tick_size)
         if self.engine:
             self.engine.session.tick_size = tick_size
-            self._sync_price_spin_decimals()
             self.tick_size_spin.blockSignals(True)
             self.tick_size_spin.setValue(tick_size)
             self.tick_size_spin.blockSignals(False)
@@ -6287,14 +6281,8 @@ class MainWindow(QMainWindow):
     def _sync_trade_price_to_current_bar(self) -> None:
         if not self.engine:
             return
-        self._sync_price_spin_decimals()
         latest_price = self._snap_price(self.engine.current_bar.close)
-        self.price_spin.blockSignals(True)
-        self.price_spin.setValue(latest_price)
-        self.price_spin.blockSignals(False)
-
-    def _sync_price_spin_decimals(self) -> None:
-        self.price_spin.setDecimals(price_decimals_for_tick(self._current_tick_size()))
+        self.trade_price_label.setText(format_price(latest_price, self._current_tick_size()))
 
     def _place_order_line_with_quantity(self, order_type: OrderLineType, price: float, quantity: float) -> None:
         if not self.engine:
