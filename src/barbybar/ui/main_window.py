@@ -3273,6 +3273,10 @@ class MainWindow(QMainWindow):
         if self.training_sidebar_tab_button is not None:
             self.training_sidebar_tab_button.setChecked(True)
 
+    def _enter_replay_workflow_for_session_action(self) -> None:
+        """Return session actions to the replay sidebar before recording them."""
+        self.show_training_sidebar()
+
     def _build_center_panel(self) -> QWidget:
         panel = QWidget()
         panel.setObjectName("chartWorkspace")

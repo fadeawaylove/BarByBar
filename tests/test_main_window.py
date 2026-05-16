@@ -4381,6 +4381,21 @@ def test_step_forward_returns_to_replay_workflow_from_review(window: MainWindow,
     window._session_dirty = False
 
 
+def test_record_action_returns_to_replay_workflow_from_review(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    window.show_trade_history_sidebar()
+    monkeypatch.setattr(window, "save_session", lambda trigger="manual": None)
+
+    window.record_action(ActionType.OPEN_LONG)
+
+    assert window.right_sidebar_stack is not None
+    assert window.right_sidebar_stack.currentWidget() is window.replay_sidebar_panel
+    assert window.engine is not None
+    assert window.engine.session.position.direction == "long"
+    window._auto_save_timer.stop()
+    window._session_dirty = False
+
+
 def test_space_shortcut_does_not_step_forward_while_typing(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_engine(window)
     start_index = window.engine.session.current_index
