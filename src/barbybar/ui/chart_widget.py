@@ -29,6 +29,9 @@ CANDLE_WICK_WIDTH = 2
 CANDLE_BODY_BORDER_WIDTH = 2
 CANDLE_BODY_HALF_WIDTH = 0.35
 BAR_SLOT_HALF_WIDTH = 0.5
+MIN_CANDLE_GAP_PX = 1.0
+MIN_CANDLE_BODY_WIDTH_PX = 1.0
+MIN_CANDLE_LINE_WIDTH_PX = 1.0
 SESSION_MARKER_COLOR = AppTheme.chart_marker
 SESSION_OPEN_TIMES = (time(9, 0), time(21, 0))
 SESSION_LABEL_COLOR = AppTheme.chart_label
@@ -236,6 +239,7 @@ class CandlestickItem(pg.GraphicsObject):
         self._down_wick_color = DEFAULT_CANDLE_DOWN_WICK_COLOR
         self._picture = QPicture()
         self._bounding_rect = pg.QtCore.QRectF()
+        self._view_box: pg.ViewBox | None = None
 
     def set_colors(self, up_body: str, up_wick: str, down_body: str, down_wick: str) -> None:
         colors = (up_body, up_wick, down_body, down_wick)
@@ -245,30 +249,80 @@ class CandlestickItem(pg.GraphicsObject):
         self._rebuild_picture()
         self.update()
 
-    def set_data(self, bars: list[Bar], cursor: int, global_start_index: int = 0) -> None:
+    def set_data(self, bars: list[Bar], cursor: int, global_start_index: int = 0, *, view_box: pg.ViewBox | None = None) -> None:
         self.prepareGeometryChange()
         self._bars = bars
         self._cursor = cursor
         self._global_start_index = global_start_index
+        self._view_box = view_box
         self._rebuild_picture()
         self.update()
+
+    @staticmethod
+    def candle_render_metrics(pixels_per_bar: float) -> tuple[float, int, int]:
+        if pixels_per_bar <= 0.0001:
+            return CANDLE_BODY_HALF_WIDTH, CANDLE_BODY_BORDER_WIDTH, CANDLE_WICK_WIDTH
+        usable_body_px = max(
+            MIN_CANDLE_BODY_WIDTH_PX,
+            min(CANDLE_BODY_HALF_WIDTH * 2.0 * pixels_per_bar, pixels_per_bar - MIN_CANDLE_GAP_PX),
+        )
+        body_half_width = min(CANDLE_BODY_HALF_WIDTH, usable_body_px / max(pixels_per_bar, 0.0001) / 2.0)
+        line_width = 2 if pixels_per_bar >= 4.0 else 1
+        body_line_width = int(max(MIN_CANDLE_LINE_WIDTH_PX, min(CANDLE_BODY_BORDER_WIDTH, line_width)))
+        wick_line_width = int(max(MIN_CANDLE_LINE_WIDTH_PX, min(CANDLE_WICK_WIDTH, line_width)))
+        return body_half_width, body_line_width, wick_line_width
+
+    @staticmethod
+    def candle_screen_geometry(center_scene_x: float, pixels_per_bar: float) -> tuple[float, float, float, float, int, int]:
+        body_half_width, body_line_width, wick_line_width = CandlestickItem.candle_render_metrics(pixels_per_bar)
+        stroke_pad = body_line_width / 2.0
+        visible_width_px = max(
+            MIN_CANDLE_BODY_WIDTH_PX,
+            min(body_half_width * 2.0 * max(pixels_per_bar, 0.0001) + body_line_width, pixels_per_bar - MIN_CANDLE_GAP_PX),
+        )
+        body_width_px = max(MIN_CANDLE_BODY_WIDTH_PX, visible_width_px - body_line_width)
+        left = center_scene_x - body_width_px / 2.0
+        right = center_scene_x + body_width_px / 2.0
+        visible_left = left - stroke_pad
+        visible_right = right + stroke_pad
+        return left, right, visible_left, visible_right, body_line_width, wick_line_width
 
     def _rebuild_picture(self) -> None:
         started = perf_counter()
         picture = QPicture()
         painter = QPainter(picture)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        pixels_per_bar = 0.0
+        if self._view_box is not None:
+            first = self._view_box.mapViewToScene(QPointF(0.0, 0.0))
+            second = self._view_box.mapViewToScene(QPointF(1.0, 0.0))
+            pixels_per_bar = abs(float(second.x()) - float(first.x()))
         min_price = None
         max_price = None
         stop = min(len(self._bars), self._cursor + 1)
         for index in range(stop):
             bar = self._bars[index]
             x = self._global_start_index + index
+            body_left_x = x - CANDLE_BODY_HALF_WIDTH
+            body_width = CANDLE_BODY_HALF_WIDTH * 2
             bullish = bar.close >= bar.open
             wick_color = self._up_wick_color if bullish else self._down_wick_color
             body_color = self._up_body_color if bullish else self._down_body_color
-            wick_pen = pg.mkPen(wick_color, width=CANDLE_WICK_WIDTH)
-            body_pen = pg.mkPen(wick_color, width=CANDLE_BODY_BORDER_WIDTH)
+            body_half_width, body_line_width, wick_line_width = self.candle_render_metrics(pixels_per_bar)
+            body_left_x = x - body_half_width
+            body_width = body_half_width * 2
+            if self._view_box is not None and pixels_per_bar > 0.0001:
+                center_scene = self._view_box.mapViewToScene(QPointF(float(x), float(bar.close)))
+                left_scene_x, right_scene_x, _visible_left_scene_x, _visible_right_scene_x, body_line_width, wick_line_width = self.candle_screen_geometry(
+                    float(center_scene.x()),
+                    pixels_per_bar,
+                )
+                left_view_x = float(self._view_box.mapSceneToView(QPointF(left_scene_x, float(center_scene.y()))).x())
+                right_view_x = float(self._view_box.mapSceneToView(QPointF(right_scene_x, float(center_scene.y()))).x())
+                body_left_x = min(left_view_x, right_view_x)
+                body_width = max(0.0005, abs(right_view_x - left_view_x))
+            wick_pen = pg.mkPen(wick_color, width=wick_line_width)
+            body_pen = pg.mkPen(wick_color, width=body_line_width)
             body_brush = pg.mkBrush(QColor(body_color))
             painter.setPen(wick_pen)
             painter.drawLine(pg.QtCore.QPointF(x, bar.low), pg.QtCore.QPointF(x, bar.high))
@@ -276,9 +330,9 @@ class CandlestickItem(pg.GraphicsObject):
             painter.setBrush(body_brush)
             painter.drawRect(
                 pg.QtCore.QRectF(
-                    x - CANDLE_BODY_HALF_WIDTH,
+                    body_left_x,
                     min(bar.open, bar.close),
-                    CANDLE_BODY_HALF_WIDTH * 2,
+                    body_width,
                     max(abs(bar.close - bar.open), 0.001),
                 )
             )
@@ -1261,7 +1315,12 @@ class ChartWidget(QWidget):
 
     def _sync_plot_data(self, *, rebuild_overlays: bool = True) -> None:
         local_cursor = self._cursor - self._global_start_index if self._cursor >= 0 else -1
-        self._candles.set_data(self._bars, local_cursor, self._global_start_index)
+        self._candles.set_data(
+            self._bars,
+            local_cursor,
+            self._global_start_index,
+            view_box=self.price_plot.vb,
+        )
         x_values = []
         ema_values = []
         closes = [bar.close for bar in self._bars[: local_cursor + 1]]

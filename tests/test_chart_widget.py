@@ -19,6 +19,7 @@ from barbybar.ui.chart_widget import (
     CANDLE_WICK_WIDTH,
     ChartLayer,
     ChartWidget,
+    CandlestickItem,
     DRAWING_SNAP_DISTANCE_PX,
     DrawingDragMode,
     DOWN_CANDLE_COLOR,
@@ -123,6 +124,28 @@ def _scene_point_with_y_offset(widget: ChartWidget, x: float, price: float, offs
 def _scene_point_with_offset(widget: ChartWidget, x: float, price: float, offset_x_px: float = 0.0, offset_y_px: float = 0.0) -> QPointF:
     scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(x, price))
     return QPointF(scene_pos.x() + offset_x_px, scene_pos.y() + offset_y_px)
+
+
+def _candle_visible_scene_bounds(widget: ChartWidget, index: int) -> tuple[float, float]:
+    assert widget._candles._view_box is not None
+    pixels_per_bar = widget._pixels_per_bar()
+    center_scene = widget.price_plot.vb.mapViewToScene(QPointF(float(index), float(widget._bars[index].close)))
+    _left_scene, _right_scene, visible_left, visible_right, _, _ = CandlestickItem.candle_screen_geometry(
+        float(center_scene.x()),
+        pixels_per_bar,
+    )
+    return visible_left, visible_right
+
+
+def _candle_body_scene_bounds(widget: ChartWidget, index: int) -> tuple[float, float]:
+    assert widget._candles._view_box is not None
+    pixels_per_bar = widget._pixels_per_bar()
+    center_scene = widget.price_plot.vb.mapViewToScene(QPointF(float(index), float(widget._bars[index].close)))
+    left_scene, right_scene, _, _, _, _ = CandlestickItem.candle_screen_geometry(
+        float(center_scene.x()),
+        pixels_per_bar,
+    )
+    return left_scene, right_scene
 
 
 def _assert_no_snap_target(widget: ChartWidget, x: float, price: float) -> QPointF:
@@ -473,6 +496,67 @@ def test_candle_color_constants_match_white_up_black_down_theme() -> None:
 def test_candle_line_width_constants_use_integer_hard_edges() -> None:
     assert CANDLE_WICK_WIDTH == 2
     assert CANDLE_BODY_BORDER_WIDTH == 2
+
+
+def test_candle_centers_do_not_drift_across_sequence(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(140)
+    widget.zoom_x(anchor_x=90, scale=0.5)
+    app.processEvents()
+
+    for index in range(40, 50):
+        left, right = _candle_body_scene_bounds(widget, index)
+        center = (left + right) / 2.0
+        expected_center = widget.price_plot.vb.mapViewToScene(QPointF(float(index), float(widget._bars[index].close))).x()
+        assert center == pytest.approx(float(expected_center), abs=0.01)
+
+
+def test_candle_body_width_is_consistent_across_sequence(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(360, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(80)
+    app.processEvents()
+
+    widths: list[float] = []
+    for index in range(20, 40):
+        left, right = _candle_body_scene_bounds(widget, index)
+        widths.append(right - left)
+
+    assert widths
+    assert max(widths) - min(widths) <= 0.02
+
+
+def test_adjacent_candles_keep_visible_gap_in_medium_density_view(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(360, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(80)
+    app.processEvents()
+
+    gaps: list[float] = []
+    for index in range(20, 40):
+        left, right = _candle_visible_scene_bounds(widget, index)
+        if index > 20:
+            prev_left, prev_right = _candle_visible_scene_bounds(widget, index - 1)
+            gaps.append(left - prev_right)
+
+    assert gaps
+    assert min(gaps) >= 0.0
+
+
+def test_candle_screen_geometry_body_width_changes_monotonically_with_pixels_per_bar() -> None:
+    dense_left, dense_right, *_ = CandlestickItem.candle_screen_geometry(100.0, 2.0)
+    medium_left, medium_right, *_ = CandlestickItem.candle_screen_geometry(100.0, 4.0)
+    wide_left, wide_right, *_ = CandlestickItem.candle_screen_geometry(100.0, 8.0)
+
+    dense_width = dense_right - dense_left
+    medium_width = medium_right - medium_left
+    wide_width = wide_right - wide_left
+
+    assert dense_width <= medium_width <= wide_width
 
 
 def test_chart_background_grid_is_disabled(widget: ChartWidget) -> None:

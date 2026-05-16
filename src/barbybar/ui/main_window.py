@@ -3768,7 +3768,7 @@ class MainWindow(QMainWindow):
         direct_trade_section = QWidget()
         direct_trade_section.setObjectName("directTradeSection")
         direct_trade_section.setProperty("card", True)
-        direct_trade_section.setProperty("priority", "primary")
+        direct_trade_section.setProperty("priority", "secondary")
         direct_trade_layout = QVBoxLayout(direct_trade_section)
         direct_trade_layout.setContentsMargins(6, 6, 6, 6)
         direct_trade_layout.setSpacing(5)
@@ -3849,12 +3849,12 @@ class MainWindow(QMainWindow):
         limit_trade_section = QWidget()
         limit_trade_section.setObjectName("limitTradeSection")
         limit_trade_section.setProperty("card", True)
-        limit_trade_section.setProperty("priority", "secondary")
+        limit_trade_section.setProperty("priority", "primary")
         limit_trade_layout = QVBoxLayout(limit_trade_section)
         limit_trade_layout.setContentsMargins(6, 6, 6, 6)
         limit_trade_layout.setSpacing(5)
 
-        divider = QLabel("订单线预演")
+        divider = QLabel("条件单")
         divider.setProperty("role", "sectionChip")
         limit_trade_layout.addWidget(divider)
 

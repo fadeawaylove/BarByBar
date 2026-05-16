@@ -469,9 +469,9 @@ def test_right_panel_uses_compact_trade_layout_sections(window: MainWindow) -> N
     assert window.splitter.widget(1).maximumWidth() == 248
     assert window.splitter.widget(1).minimumWidth() == 248
     assert trade_group.findChild(QWidget, "directTradeSection") is not None
-    assert trade_group.findChild(QWidget, "directTradeSection").property("priority") == "primary"
+    assert trade_group.findChild(QWidget, "directTradeSection").property("priority") == "secondary"
     assert order_tools_group.findChild(QWidget, "limitTradeSection") is not None
-    assert order_tools_group.findChild(QWidget, "limitTradeSection").property("priority") == "secondary"
+    assert order_tools_group.findChild(QWidget, "limitTradeSection").property("priority") == "primary"
     assert trade_group.findChild(QWidget, "directTradeFieldsRow") is not None
     assert trade_group.findChild(QWidget, "directTradeButtonsRow") is not None
     assert order_tools_group.findChild(QWidget, "limitTradeFieldsRow") is not None
@@ -479,7 +479,7 @@ def test_right_panel_uses_compact_trade_layout_sections(window: MainWindow) -> N
     label_texts = [label.text() for label in trade_group.findChildren(QLabel)]
     order_label_texts = [label.text() for label in order_tools_group.findChildren(QLabel)]
     assert "直接下单" in label_texts
-    assert "订单线预演" in order_label_texts
+    assert "条件单" in order_label_texts
 
     button_texts = [button.text() for button in trade_group.findChildren(QPushButton)]
     order_button_texts = [button.text() for button in order_tools_group.findChildren(QPushButton)]
