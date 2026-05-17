@@ -548,15 +548,92 @@ def test_adjacent_candles_keep_visible_gap_in_medium_density_view(widget: ChartW
 
 
 def test_candle_screen_geometry_body_width_changes_monotonically_with_pixels_per_bar() -> None:
-    dense_left, dense_right, *_ = CandlestickItem.candle_screen_geometry(100.0, 2.0)
-    medium_left, medium_right, *_ = CandlestickItem.candle_screen_geometry(100.0, 4.0)
-    wide_left, wide_right, *_ = CandlestickItem.candle_screen_geometry(100.0, 8.0)
+    previous_width = 0.0
+    for pixels_per_bar in (0.4, 0.8, 1.0, 2.0, 4.0, 8.0):
+        left, right, visible_left, visible_right, *_ = CandlestickItem.candle_screen_geometry(100.0, pixels_per_bar)
+        next_visible_left = CandlestickItem.candle_screen_geometry(100.0 + pixels_per_bar, pixels_per_bar)[2]
+        body_width = right - left
+        visible_width = visible_right - visible_left
 
-    dense_width = dense_right - dense_left
-    medium_width = medium_right - medium_left
-    wide_width = wide_right - wide_left
+        assert body_width >= 0.0
+        assert visible_width <= pixels_per_bar + 1e-9
+        assert visible_right <= next_visible_left + 1e-9
+        assert body_width >= previous_width
+        previous_width = body_width
 
-    assert dense_width <= medium_width <= wide_width
+
+def test_dense_viewport_adjacent_candles_do_not_overlap(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(120, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(180)
+    app.processEvents()
+
+    gaps: list[float] = []
+    for index in range(80, 110):
+        left, _right = _candle_visible_scene_bounds(widget, index)
+        if index > 80:
+            _prev_left, prev_right = _candle_visible_scene_bounds(widget, index - 1)
+            gaps.append(left - prev_right)
+
+    assert gaps
+    assert min(gaps) >= 0.0
+
+
+def test_viewbox_geometry_change_rebuilds_candle_picture(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(160)
+    app.processEvents()
+
+    original_bounds = _candle_body_scene_bounds(widget, 120)
+
+    widget.set_right_padding(8.0)
+    app.processEvents()
+
+    updated_bounds = _candle_body_scene_bounds(widget, 120)
+    pixels_per_bar = widget._pixels_per_bar()
+    center_scene = widget.price_plot.vb.mapViewToScene(QPointF(120.0, float(widget._bars[120].close)))
+    expected_left, expected_right, *_ = CandlestickItem.candle_screen_geometry(float(center_scene.x()), pixels_per_bar)
+
+    assert updated_bounds != original_bounds
+    assert updated_bounds[0] == pytest.approx(expected_left)
+    assert updated_bounds[1] == pytest.approx(expected_right)
+
+
+def test_first_open_loading_path_keeps_candle_geometry_stable(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    app.processEvents()
+
+    bars = _bars()
+    current_index = 160
+    widget.set_window_data(bars, cursor=current_index, total_count=len(bars), global_start_index=0, preserve_viewport=False)
+    widget.set_cursor(current_index)
+    app.processEvents()
+
+    initial_bounds = _candle_body_scene_bounds(widget, 120)
+    widget.set_cursor_fast(current_index)
+    app.processEvents()
+    stepped_bounds = _candle_body_scene_bounds(widget, 120)
+    pixels_per_bar = widget._pixels_per_bar()
+    center_scene = widget.price_plot.vb.mapViewToScene(QPointF(120.0, float(widget._bars[120].close)))
+    expected_left, expected_right, *_ = CandlestickItem.candle_screen_geometry(float(center_scene.x()), pixels_per_bar)
+
+    gaps: list[float] = []
+    for index in range(100, 121):
+        left, _right = _candle_visible_scene_bounds(widget, index)
+        if index > 100:
+            _prev_left, prev_right = _candle_visible_scene_bounds(widget, index - 1)
+            gaps.append(left - prev_right)
+
+    assert initial_bounds[0] == pytest.approx(expected_left)
+    assert initial_bounds[1] == pytest.approx(expected_right)
+    assert initial_bounds[0] == pytest.approx(stepped_bounds[0])
+    assert initial_bounds[1] == pytest.approx(stepped_bounds[1])
+    assert gaps
+    assert min(gaps) >= 0.0
 
 
 def test_chart_background_grid_is_disabled(widget: ChartWidget) -> None:

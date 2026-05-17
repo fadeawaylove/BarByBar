@@ -275,14 +275,22 @@ class CandlestickItem(pg.GraphicsObject):
     @staticmethod
     def candle_screen_geometry(center_scene_x: float, pixels_per_bar: float) -> tuple[float, float, float, float, int, int]:
         body_half_width, body_line_width, wick_line_width = CandlestickItem.candle_render_metrics(pixels_per_bar)
-        stroke_pad = body_line_width / 2.0
-        visible_width_px = max(
-            MIN_CANDLE_BODY_WIDTH_PX,
-            min(body_half_width * 2.0 * max(pixels_per_bar, 0.0001) + body_line_width, pixels_per_bar - MIN_CANDLE_GAP_PX),
-        )
-        body_width_px = max(MIN_CANDLE_BODY_WIDTH_PX, visible_width_px - body_line_width)
+        slot_px = max(float(pixels_per_bar), 0.0)
+        gap_px = MIN_CANDLE_GAP_PX if slot_px > MIN_CANDLE_GAP_PX else 0.0
+        max_visible_width_px = max(slot_px - gap_px, 0.0)
+        desired_visible_width_px = body_half_width * 2.0 * slot_px + body_line_width
+        visible_width_px = min(desired_visible_width_px, max_visible_width_px)
+        if visible_width_px <= 0.0:
+            body_line_width = 0
+            wick_line_width = 0
+            body_width_px = 0.0
+        else:
+            body_line_width = 0 if visible_width_px <= MIN_CANDLE_BODY_WIDTH_PX else min(body_line_width, int(floor(visible_width_px)))
+            wick_line_width = min(wick_line_width, body_line_width)
+            body_width_px = max(0.0, visible_width_px - body_line_width)
         left = center_scene_x - body_width_px / 2.0
         right = center_scene_x + body_width_px / 2.0
+        stroke_pad = body_line_width / 2.0
         visible_left = left - stroke_pad
         visible_right = right + stroke_pad
         return left, right, visible_left, visible_right, body_line_width, wick_line_width
@@ -321,8 +329,8 @@ class CandlestickItem(pg.GraphicsObject):
                 right_view_x = float(self._view_box.mapSceneToView(QPointF(right_scene_x, float(center_scene.y()))).x())
                 body_left_x = min(left_view_x, right_view_x)
                 body_width = max(0.0005, abs(right_view_x - left_view_x))
-            wick_pen = pg.mkPen(wick_color, width=wick_line_width)
-            body_pen = pg.mkPen(wick_color, width=body_line_width)
+            wick_pen = pg.mkPen(wick_color, width=wick_line_width) if wick_line_width > 0 else pg.mkPen(Qt.PenStyle.NoPen)
+            body_pen = pg.mkPen(wick_color, width=body_line_width) if body_line_width > 0 else pg.mkPen(Qt.PenStyle.NoPen)
             body_brush = pg.mkBrush(QColor(body_color))
             painter.setPen(wick_pen)
             painter.drawLine(pg.QtCore.QPointF(x, bar.low), pg.QtCore.QPointF(x, bar.high))
@@ -598,6 +606,7 @@ class ChartWidget(QWidget):
         self._dirty_layers: set[ChartLayer] = set(ChartLayer)
         self._deferred_overlay_refresh_pending = False
         self._pending_viewport_changed = False
+        self._pending_candle_geometry_refresh = False
         self._hover_card_content_cache: tuple[str, ...] | None = None
         self._interaction_hint_cache: str | None = None
         self._order_lines_signature: tuple[object, ...] | None = None
@@ -607,6 +616,7 @@ class ChartWidget(QWidget):
         self._last_applied_overlay_signature: tuple[object, ...] | None = None
         self._y_range_cache_signature: tuple[object, ...] | None = None
         self._y_range_cache_result: tuple[bool, float, float] | None = None
+        self._last_candle_geometry_signature: tuple[object, ...] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -694,9 +704,14 @@ class ChartWidget(QWidget):
         self._viewport_changed_timer = QTimer(self)
         self._viewport_changed_timer.setSingleShot(True)
         self._viewport_changed_timer.timeout.connect(self._emit_queued_viewport_changed)
+        self._candle_geometry_refresh_timer = QTimer(self)
+        self._candle_geometry_refresh_timer.setSingleShot(True)
+        self._candle_geometry_refresh_timer.timeout.connect(self._flush_candle_geometry_refresh)
         self._interactive_viewport_reset_timer = QTimer(self)
         self._interactive_viewport_reset_timer.setSingleShot(True)
         self._interactive_viewport_reset_timer.timeout.connect(self._finish_interactive_viewport)
+        self.view_box.sigResized.connect(self._handle_viewbox_geometry_changed)
+        self.viewportChanged.connect(self._handle_viewbox_geometry_changed)
         self._sync_interaction_hint()
 
     @property
@@ -1057,15 +1072,16 @@ class ChartWidget(QWidget):
             self._apply_hover_target(self._empty_hover_target())
             self._set_dragging(False)
             self._set_interaction_mode(InteractionMode.BROWSE)
-        self._sync_plot_data(rebuild_overlays=not preserve_viewport)
-        if not preserve_viewport:
-            self._rebuild_order_line_items()
-        self.cancel_order_preview()
         if preserve_viewport:
+            self._sync_plot_data(rebuild_overlays=False)
+            self.cancel_order_preview()
             self._apply_viewport(refresh_overlays=False)
             self._schedule_deferred_overlay_refresh()
         else:
+            self.cancel_order_preview()
             self.reset_viewport(follow_latest=True)
+            self._sync_plot_data(rebuild_overlays=True)
+            self._rebuild_order_line_items()
         self._hide_crosshair()
 
     def set_cursor(self, index: int) -> None:
@@ -1313,7 +1329,7 @@ class ChartWidget(QWidget):
             self._rebuild_line_items()
         super().keyReleaseEvent(event)
 
-    def _sync_plot_data(self, *, rebuild_overlays: bool = True) -> None:
+    def _sync_primary_plot_data(self) -> None:
         local_cursor = self._cursor - self._global_start_index if self._cursor >= 0 else -1
         self._candles.set_data(
             self._bars,
@@ -1330,6 +1346,10 @@ class ChartWidget(QWidget):
             ema_values.append(ema_prefix[index])
         self._ema_curve.setData(x=x_values, y=ema_values)
         self._clear_chart_layers_dirty(ChartLayer.CANDLES, ChartLayer.INDICATORS)
+        self._last_candle_geometry_signature = self._candle_geometry_signature()
+
+    def _sync_plot_data(self, *, rebuild_overlays: bool = True) -> None:
+        self._sync_primary_plot_data()
         if not rebuild_overlays:
             return
         self._session_markers_dirty = True
@@ -1970,6 +1990,41 @@ class ChartWidget(QWidget):
             return
         self._pending_viewport_changed = False
         self.viewportChanged.emit()
+
+    def _handle_viewbox_geometry_changed(self) -> None:
+        if not self._bars or self._is_applying_viewport:
+            return
+        signature = self._candle_geometry_signature()
+        if signature == self._last_candle_geometry_signature:
+            return
+        self._pending_candle_geometry_refresh = True
+        if not self._candle_geometry_refresh_timer.isActive():
+            self._candle_geometry_refresh_timer.start(0)
+
+    def _flush_candle_geometry_refresh(self) -> None:
+        if not self._pending_candle_geometry_refresh or not self._bars or self._is_applying_viewport:
+            return
+        self._pending_candle_geometry_refresh = False
+        signature = self._candle_geometry_signature()
+        if signature == self._last_candle_geometry_signature:
+            return
+        self._sync_primary_plot_data()
+
+    def _candle_geometry_signature(self) -> tuple[object, ...]:
+        scene_rect = self.price_plot.vb.sceneBoundingRect()
+        view_rect = self.price_plot.vb.viewRect()
+        return (
+            round(float(scene_rect.width()), 6),
+            round(float(scene_rect.height()), 6),
+            round(float(view_rect.left()), 6),
+            round(float(view_rect.right()), 6),
+            round(float(view_rect.top()), 6),
+            round(float(view_rect.bottom()), 6),
+            self._cursor,
+            self._global_start_index,
+            len(self._bars),
+            round(float(self._right_padding), 6),
+        )
 
     def _revealed_window_bars(self, left: float, right_edge: float) -> list[tuple[int, Bar]]:
         if self._cursor < 0:

@@ -4306,6 +4306,41 @@ def test_step_forward_updates_progress_immediately_and_defers_heavy_refresh(
     assert window._deferred_step_ui_pending is False
 
 
+def test_loaded_session_stabilizes_initial_chart_view_without_followup_step(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    start = datetime(2025, 1, 1, 9, 0)
+    csv_path = case_dir / "sample.csv"
+    lines = ["datetime,open,high,low,close,volume"]
+    for index in range(240):
+        ts = start + timedelta(minutes=index)
+        price = 100 + index * 0.1
+        lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.2:.2f},{1000 + index}")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    dataset = repo.import_csv(csv_path, "IF", "1m")
+    session = repo.create_session(dataset.id or 0, start_index=10, title="Initial viewport session")
+    session.current_index = 36
+    session.current_bar_time = start + timedelta(minutes=36)
+    repo.save_session(session, [], [])
+
+    window = MainWindow(repo)
+    try:
+        window._load_session(session.id or 0)
+        _wait_for_loaded_session(app, window)
+        assert window.engine is not None
+        assert window.chart_widget._cursor == window.engine.session.current_index
+        _assert_revealed_index_visible(window, window.engine.session.current_index)
+        assert _viewport_right_context(window, window.engine.session.current_index) >= 0
+        assert window._deferred_step_ui_pending is False
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
 def test_deferred_step_ui_refresh_coalesces(window: MainWindow, app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_engine(window)
     calls: list[int] = []
