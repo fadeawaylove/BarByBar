@@ -27,6 +27,7 @@ from barbybar.ui.chart_widget import (
     HoverTarget,
     HoverTargetType,
     InteractionMode,
+    MIN_CANDLE_BODY_WIDTH_PX,
     ORDER_LABEL_MIN_VERTICAL_GAP_PX,
     STOP_LOSS_LINE_COLOR,
     TRADE_ENTRY_LONG_COLOR,
@@ -560,6 +561,21 @@ def test_candle_screen_geometry_body_width_changes_monotonically_with_pixels_per
         assert visible_right <= next_visible_left + 1e-9
         assert body_width >= previous_width
         previous_width = body_width
+
+
+def test_minimum_readable_zoom_preserves_bullish_body_interior() -> None:
+    pixels_per_bar = ChartWidget._MIN_BAR_PIXELS
+
+    left, right, visible_left, visible_right, body_line_width, wick_line_width = (
+        CandlestickItem.candle_screen_geometry(100.0, pixels_per_bar)
+    )
+
+    body_width = right - left
+    visible_width = visible_right - visible_left
+    assert visible_width <= pixels_per_bar
+    assert body_line_width == 1
+    assert wick_line_width == 1
+    assert body_width - body_line_width >= MIN_CANDLE_BODY_WIDTH_PX
 
 
 def test_dense_viewport_adjacent_candles_do_not_overlap(widget: ChartWidget, app: QApplication) -> None:

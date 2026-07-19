@@ -285,7 +285,16 @@ class CandlestickItem(pg.GraphicsObject):
             wick_line_width = 0
             body_width_px = 0.0
         else:
-            body_line_width = 0 if visible_width_px <= MIN_CANDLE_BODY_WIDTH_PX else min(body_line_width, int(floor(visible_width_px)))
+            # QPainter draws the border across the rectangle edge. At the
+            # minimum readable zoom, a 2 px border around a 2 px body consumes
+            # the entire bullish fill and makes every candle look solid black.
+            # Keep at least one screen pixel of interior fill whenever a body
+            # is wide enough to render one.
+            max_border_for_fill = max(
+                0,
+                int(floor((visible_width_px - MIN_CANDLE_BODY_WIDTH_PX) / 2.0)),
+            )
+            body_line_width = min(body_line_width, max_border_for_fill)
             wick_line_width = min(wick_line_width, body_line_width)
             body_width_px = max(0.0, visible_width_px - body_line_width)
         left = center_scene_x - body_width_px / 2.0
@@ -329,8 +338,8 @@ class CandlestickItem(pg.GraphicsObject):
                 right_view_x = float(self._view_box.mapSceneToView(QPointF(right_scene_x, float(center_scene.y()))).x())
                 body_left_x = min(left_view_x, right_view_x)
                 body_width = max(0.0005, abs(right_view_x - left_view_x))
-            wick_pen = pg.mkPen(wick_color, width=wick_line_width) if wick_line_width > 0 else pg.mkPen(Qt.PenStyle.NoPen)
-            body_pen = pg.mkPen(wick_color, width=body_line_width) if body_line_width > 0 else pg.mkPen(Qt.PenStyle.NoPen)
+            wick_pen = pg.mkPen(wick_color, width=wick_line_width) if wick_line_width > 0 else QPen(Qt.PenStyle.NoPen)
+            body_pen = pg.mkPen(wick_color, width=body_line_width) if body_line_width > 0 else QPen(Qt.PenStyle.NoPen)
             body_brush = pg.mkBrush(QColor(body_color))
             painter.setPen(wick_pen)
             painter.drawLine(pg.QtCore.QPointF(x, bar.low), pg.QtCore.QPointF(x, bar.high))
