@@ -2,8 +2,8 @@
 
 - [x] 1.1 Add the repository roadmap, v0.6 OpenSpec artifacts, and start/end recovery protocol, then validate their internal links and status.
 - [x] 1.2 Audit unfinished existing OpenSpec changes and map overlapping performance or polish tasks into v0.6 without duplicating implementation.
-- [ ] 1.3 Record the current full-test result, packaged-app smoke gaps, and a reproducible performance baseline matrix for small and representative large cases.
-- [ ] 1.4 Commit the roadmap and v0.6 planning checkpoint as a standalone non-behavioral change.
+- [x] 1.3 Record the current full-test result, packaged-app smoke gaps, and a reproducible performance baseline matrix for small and representative large cases.
+- [x] 1.4 Commit the roadmap and v0.6 planning checkpoint as a standalone non-behavioral change.
 
 ## 2. Replay and Chart Responsiveness
 
