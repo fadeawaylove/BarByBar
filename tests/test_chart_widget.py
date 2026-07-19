@@ -618,6 +618,46 @@ def test_viewbox_geometry_change_rebuilds_candle_picture(widget: ChartWidget, ap
     assert updated_bounds[1] == pytest.approx(expected_right)
 
 
+def test_candlestick_window_extension_reuses_unchanged_picture_chunks() -> None:
+    bars = _bars(420)
+    candles = CandlestickItem()
+    candles.set_data(bars[128:384], cursor=222, global_start_index=128)
+    previous_chunks = dict(candles._picture_chunks)
+
+    clear_metrics()
+    candles.set_data(bars[:384], cursor=350, global_start_index=0)
+
+    assert candles._last_rebuilt_chunk_starts == (0,)
+    assert candles._picture_chunks[128] is previous_chunks[128]
+    assert candles._picture_chunks[256] is previous_chunks[256]
+    metric = next(metric for metric in recent_metrics(5) if metric.operation == "candles_rebuild")
+    assert metric.context_dict()["rebuilt_chunks"] == 1
+    assert metric.context_dict()["reused_chunks"] == 2
+
+
+def test_candlestick_cursor_advance_rebuilds_only_active_chunk() -> None:
+    bars = _bars(300)
+    candles = CandlestickItem()
+    candles.set_data(bars, cursor=200, global_start_index=0)
+    completed_chunk = candles._picture_chunks[0]
+
+    candles.set_data(bars, cursor=201, global_start_index=0)
+
+    assert candles._last_rebuilt_chunk_starts == (128,)
+    assert candles._picture_chunks[0] is completed_chunk
+
+
+def test_candlestick_color_change_invalidates_all_picture_chunks() -> None:
+    candles = CandlestickItem()
+    candles.set_data(_bars(300), cursor=299, global_start_index=0)
+    previous_chunks = dict(candles._picture_chunks)
+
+    candles.set_colors("#ffeeee", "#111111", "#222222", "#333333")
+
+    assert candles._last_rebuilt_chunk_starts == (0, 128, 256)
+    assert all(candles._picture_chunks[start] is not previous_chunks[start] for start in previous_chunks)
+
+
 def test_unchanged_right_padding_does_not_refresh_viewport(widget: ChartWidget, monkeypatch: pytest.MonkeyPatch) -> None:
     widget.set_full_data(_bars())
     calls: list[str] = []

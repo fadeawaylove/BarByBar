@@ -28,6 +28,7 @@ DOWN_CANDLE_COLOR = DEFAULT_CANDLE_DOWN_WICK_COLOR
 CANDLE_WICK_WIDTH = 2
 CANDLE_BODY_BORDER_WIDTH = 2
 CANDLE_BODY_HALF_WIDTH = 0.35
+CANDLE_PICTURE_CHUNK_SIZE = 128
 BAR_SLOT_HALF_WIDTH = 0.5
 MIN_CANDLE_GAP_PX = 1.0
 MIN_CANDLE_BODY_WIDTH_PX = 1.0
@@ -227,6 +228,14 @@ class ActiveDragTarget:
     anchor_index: int | None = None
 
 
+@dataclass(slots=True)
+class CandlePictureChunk:
+    picture: QPicture
+    bar_signature: tuple[int, int, tuple[tuple[float, float, float, float], ...]]
+    low: float | None
+    high: float | None
+
+
 class CandlestickItem(pg.GraphicsObject):
     def __init__(self) -> None:
         super().__init__()
@@ -237,7 +246,9 @@ class CandlestickItem(pg.GraphicsObject):
         self._up_wick_color = DEFAULT_CANDLE_UP_WICK_COLOR
         self._down_body_color = DEFAULT_CANDLE_DOWN_BODY_COLOR
         self._down_wick_color = DEFAULT_CANDLE_DOWN_WICK_COLOR
-        self._picture = QPicture()
+        self._picture_chunks: dict[int, CandlePictureChunk] = {}
+        self._picture_render_signature: tuple[object, ...] | None = None
+        self._last_rebuilt_chunk_starts: tuple[int, ...] = ()
         self._bounding_rect = pg.QtCore.QRectF()
         self._view_box: pg.ViewBox | None = None
 
@@ -306,18 +317,94 @@ class CandlestickItem(pg.GraphicsObject):
 
     def _rebuild_picture(self) -> None:
         started = perf_counter()
-        picture = QPicture()
-        painter = QPainter(picture)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         pixels_per_bar = 0.0
         if self._view_box is not None:
             first = self._view_box.mapViewToScene(QPointF(0.0, 0.0))
             second = self._view_box.mapViewToScene(QPointF(1.0, 0.0))
             pixels_per_bar = abs(float(second.x()) - float(first.x()))
+        render_signature = (
+            self._up_body_color,
+            self._up_wick_color,
+            self._down_body_color,
+            self._down_wick_color,
+            round(pixels_per_bar, 6),
+            self._view_box is not None,
+        )
+        cached_chunks = self._picture_chunks if render_signature == self._picture_render_signature else {}
+        stop = min(len(self._bars), self._cursor + 1)
+        global_stop = self._global_start_index + stop
+        first_chunk_start = (self._global_start_index // CANDLE_PICTURE_CHUNK_SIZE) * CANDLE_PICTURE_CHUNK_SIZE
+        picture_chunks: dict[int, CandlePictureChunk] = {}
+        rebuilt_chunk_starts: list[int] = []
+        reused_chunks = 0
+        for chunk_start in range(first_chunk_start, global_stop, CANDLE_PICTURE_CHUNK_SIZE):
+            chunk_stop = chunk_start + CANDLE_PICTURE_CHUNK_SIZE
+            local_start = max(0, chunk_start - self._global_start_index)
+            local_stop = min(stop, chunk_stop - self._global_start_index)
+            if local_start >= local_stop:
+                continue
+            bar_signature = (
+                self._global_start_index + local_start,
+                self._global_start_index + local_stop,
+                tuple(
+                    (bar.open, bar.high, bar.low, bar.close)
+                    for bar in self._bars[local_start:local_stop]
+                ),
+            )
+            cached_chunk = cached_chunks.get(chunk_start)
+            if cached_chunk is not None and cached_chunk.bar_signature == bar_signature:
+                picture_chunks[chunk_start] = cached_chunk
+                reused_chunks += 1
+                continue
+            picture_chunks[chunk_start] = self._build_picture_chunk(
+                local_start,
+                local_stop,
+                pixels_per_bar,
+                bar_signature,
+            )
+            rebuilt_chunk_starts.append(chunk_start)
+        self._picture_chunks = picture_chunks
+        self._picture_render_signature = render_signature
+        self._last_rebuilt_chunk_starts = tuple(rebuilt_chunk_starts)
+        lows = [chunk.low for chunk in picture_chunks.values() if chunk.low is not None]
+        highs = [chunk.high for chunk in picture_chunks.values() if chunk.high is not None]
+        if self._bars:
+            low = min(lows) if lows else 0.0
+            high = max(highs) if highs else 1.0
+            self._bounding_rect = pg.QtCore.QRectF(
+                self._global_start_index - 2.0,
+                low,
+                len(self._bars) + 4.0,
+                max(high - low, 1.0),
+            )
+        else:
+            self._bounding_rect = pg.QtCore.QRectF()
+        record_metric(
+            "chart",
+            "candles_rebuild",
+            (perf_counter() - started) * 1000,
+            bars=len(self._bars),
+            chunks=len(picture_chunks),
+            cursor=self._cursor,
+            global_start_index=self._global_start_index,
+            rebuilt_chunks=len(rebuilt_chunk_starts),
+            reused_chunks=reused_chunks,
+            revealed_bars=stop,
+        )
+
+    def _build_picture_chunk(
+        self,
+        local_start: int,
+        local_stop: int,
+        pixels_per_bar: float,
+        bar_signature: tuple[int, int, tuple[tuple[float, float, float, float], ...]],
+    ) -> CandlePictureChunk:
+        picture = QPicture()
+        painter = QPainter(picture)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         min_price = None
         max_price = None
-        stop = min(len(self._bars), self._cursor + 1)
-        for index in range(stop):
+        for index in range(local_start, local_stop):
             bar = self._bars[index]
             x = self._global_start_index + index
             body_left_x = x - CANDLE_BODY_HALF_WIDTH
@@ -356,29 +443,16 @@ class CandlestickItem(pg.GraphicsObject):
             min_price = bar.low if min_price is None else min(min_price, bar.low)
             max_price = bar.high if max_price is None else max(max_price, bar.high)
         painter.end()
-        self._picture = picture
-        if self._bars:
-            low = min_price if min_price is not None else 0.0
-            high = max_price if max_price is not None else 1.0
-            self._bounding_rect = pg.QtCore.QRectF(
-                self._global_start_index - 2.0,
-                low,
-                len(self._bars) + 4.0,
-                max(high - low, 1.0),
-            )
-        else:
-            self._bounding_rect = pg.QtCore.QRectF()
-        record_metric(
-            "chart",
-            "candles_rebuild",
-            (perf_counter() - started) * 1000,
-            bars=len(self._bars),
-            cursor=self._cursor,
-            global_start_index=self._global_start_index,
+        return CandlePictureChunk(
+            picture=picture,
+            bar_signature=bar_signature,
+            low=min_price,
+            high=max_price,
         )
 
     def paint(self, painter: QPainter, *args) -> None:
-        painter.drawPicture(0, 0, self._picture)
+        for chunk_start in sorted(self._picture_chunks):
+            painter.drawPicture(0, 0, self._picture_chunks[chunk_start].picture)
 
     def boundingRect(self):
         return self._bounding_rect

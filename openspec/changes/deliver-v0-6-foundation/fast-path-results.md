@@ -29,3 +29,30 @@ Focused fast-path tests: 5 passed
 Complete main-window tests: 254 passed
 ```
 
+## Candlestick window-extension cache
+
+Candlestick pictures are now cached in 128-bar chunks aligned to global bar indexes. Extending a loaded window reuses chunks whose OHLC data and render geometry are unchanged, while cursor movement rebuilds only the active partial chunk. Color and horizontal-scale changes retain a full-rebuild fallback.
+
+The forced-full comparison below clears the chunk render signature before applying the same extension. It measures the current full-rebuild fallback rather than claiming a historical binary comparison.
+
+| Synthetic revealed bars | Extension | Path | Samples | Rebuilt chunks | Median | P95 | Maximum |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 2,000 | 256 bars left | cached | 20 | 2 | 4.66ms | 6.71ms | 7.26ms |
+| 2,000 | 256 bars left | forced full | 20 | 16 | 34.07ms | 38.35ms | 38.63ms |
+| 50,000 | 256 bars left | cached | 10 | 2 | 9.22ms | 9.92ms | 9.92ms |
+| 50,000 | 256 bars left | forced full | 10 | 391 | 829.13ms | 892.81ms | 892.81ms |
+
+Reproduction commands:
+
+```text
+uv run python scripts/benchmark_candlestick_cache.py --bars 2000 --samples 20 --warmup 2
+uv run python scripts/benchmark_candlestick_cache.py --bars 50000 --samples 10 --warmup 2
+```
+
+Verification after this slice:
+
+```text
+Focused candle/window tests: 15 passed
+Complete chart-widget tests: 255 passed
+Complete automated suite: 679 passed
+```
