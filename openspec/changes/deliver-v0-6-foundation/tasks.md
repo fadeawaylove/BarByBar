@@ -19,8 +19,8 @@
 
 ## 3. Local Data Safety and Export
 
-- [ ] 3.1 Add a data-safety service that creates a SQLite-consistent temporary backup, validates it, and atomically publishes the final backup file.
-- [ ] 3.2 Add backup success and failure tests covering active connections, unwritable targets, incomplete temporary files, and preservation of the source database.
+- [x] 3.1 Add a data-safety service that creates a SQLite-consistent temporary backup, validates it, and atomically publishes the final backup file.
+- [x] 3.2 Add backup success and failure tests covering active connections, unwritable targets, incomplete temporary files, and preservation of the source database.
 - [ ] 3.3 Add restore-file validation and a pending-restore manifest that cannot overwrite the current database during an active application session.
 - [ ] 3.4 Apply a pending restore before Repository creation, automatically preserve the current database, and retain the original database on any failure.
 - [ ] 3.5 Add settings or data-management UI for backup, restore selection, restart guidance, paths, progress, and actionable errors.
