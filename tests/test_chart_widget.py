@@ -602,6 +602,29 @@ def test_viewbox_geometry_change_rebuilds_candle_picture(widget: ChartWidget, ap
     assert updated_bounds[1] == pytest.approx(expected_right)
 
 
+def test_unchanged_right_padding_does_not_refresh_viewport(widget: ChartWidget, monkeypatch: pytest.MonkeyPatch) -> None:
+    widget.set_full_data(_bars())
+    calls: list[str] = []
+    monkeypatch.setattr(widget, "_apply_viewport", lambda *args, **kwargs: calls.append("viewport"))
+
+    widget.set_right_padding(widget._right_padding)
+    assert calls == []
+
+    widget.set_right_padding(widget._right_padding + 1.0)
+    assert calls == ["viewport"]
+
+
+def test_unchanged_tick_size_does_not_rebuild_drawings(widget: ChartWidget, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(widget, "_rebuild_line_items", lambda: calls.append("drawings"))
+
+    widget.set_tick_size(widget._tick_size)
+    assert calls == []
+
+    widget.set_tick_size(widget._tick_size / 2.0)
+    assert calls == ["drawings"]
+
+
 def test_first_open_loading_path_keeps_candle_geometry_stable(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -880,6 +903,19 @@ def test_bar_count_labels_render_even_numbers_only_when_enabled(widget: ChartWid
     font_sizes = {item.textItem.font().pointSize() for item in labels}
     assert len(font_sizes) == 1
     assert next(iter(font_sizes)) <= 10
+
+
+def test_bar_count_labels_are_reused_during_step_refresh(widget: ChartWidget) -> None:
+    widget.set_bar_count_labels_visible(True)
+    widget.set_window_data(_bars(), cursor=120, total_count=200, global_start_index=0)
+    before = dict(widget._bar_count_label_items)
+
+    widget.set_cursor_fast(121)
+    widget.refresh_cursor_dependent_overlays()
+
+    shared = set(before) & set(widget._bar_count_label_items)
+    assert shared
+    assert all(widget._bar_count_label_items[index] is before[index] for index in shared)
 
 
 def test_bar_count_labels_reset_between_day_and_night_sessions(widget: ChartWidget) -> None:

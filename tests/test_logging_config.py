@@ -78,6 +78,7 @@ def test_setup_logging_configures_file_sink_policy(monkeypatch) -> None:
         assert set(file_sinks) == {"app.log", "debug.log", "error.log"}
         assert all(kwargs["rotation"] == "5 MB" for kwargs in file_sinks.values())
         assert all(kwargs["retention"] == 5 for kwargs in file_sinks.values())
+        assert all(kwargs["enqueue"] is True for kwargs in file_sinks.values())
         assert all("compression" not in kwargs for kwargs in file_sinks.values())
         assert file_sinks["app.log"]["level"] == "INFO"
         assert file_sinks["debug.log"]["level"] == "DEBUG"

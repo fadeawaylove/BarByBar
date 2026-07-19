@@ -10,6 +10,7 @@ dist/
 .test_tmp/
 data/
 .claude/
+.codegraph/
 installer/HarvestedFiles.wxs
 installer/*.wixobj
 installer/*.wixpdb

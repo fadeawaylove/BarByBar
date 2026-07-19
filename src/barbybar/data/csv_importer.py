@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -120,9 +121,24 @@ def _parse_numeric_field(raw_value: str | None, field_name: str, timestamp: date
     if not value:
         raise CsvImportError(f"Invalid row for timestamp {timestamp}: numeric field '{field_name}' is empty")
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError) as exc:
         raise CsvImportError(f"Invalid row for timestamp {timestamp}: field '{field_name}' is not a valid number") from exc
+    if not math.isfinite(parsed):
+        raise CsvImportError(f"Invalid row for timestamp {timestamp}: field '{field_name}' must be finite")
+    return parsed
+
+
+def _validate_bar(bar: Bar) -> None:
+    timestamp = bar.timestamp
+    if bar.high < bar.low:
+        raise CsvImportError(f"Invalid row for timestamp {timestamp}: high must be greater than or equal to low")
+    if not bar.low <= bar.open <= bar.high:
+        raise CsvImportError(f"Invalid row for timestamp {timestamp}: open must be between low and high")
+    if not bar.low <= bar.close <= bar.high:
+        raise CsvImportError(f"Invalid row for timestamp {timestamp}: close must be between low and high")
+    if bar.volume < 0:
+        raise CsvImportError(f"Invalid row for timestamp {timestamp}: volume must be non-negative")
 
 
 def load_bars_from_csv(path: str | Path, field_map: dict[str, str] | None = None) -> ImportResult:
@@ -162,6 +178,7 @@ def load_bars_from_csv(path: str | Path, field_map: dict[str, str] | None = None
                     close=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["close"])]], "close", timestamp),
                     volume=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["volume"])]], "volume", timestamp),
                 )
+                _validate_bar(bar)
             except CsvImportError:
                 raise
             seen_timestamps.add(timestamp)

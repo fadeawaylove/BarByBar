@@ -102,7 +102,9 @@ class AppTheme:
     sidebar_input_width_sm = 58
     sidebar_input_width_md = 82
     flat_group_gap = 8
-    sidebar_compact_width = 248
+    # Four compact trading actions plus nested card padding need roughly 260px
+    # of usable content. 288px avoids clipped labels without crowding the chart.
+    sidebar_compact_width = 288
     sidebar_width = sidebar_compact_width
     chart_axis = "#b6c0ca"
     chart_preview = "#4f5d6b"
@@ -908,11 +910,14 @@ def progress_bar_stylesheet() -> str:
 
 
 def color_chip_button_stylesheet(color: str) -> str:
+    red, green, blue = _hex_to_rgb(color)
+    luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+    text_color = "#ffffff" if luminance < 118 else AppTheme.text
     return (
         f"background: {color};"
         f" border: 1px solid {AppTheme.border_strong};"
         f" border-radius: {AppTheme.radius_sm}px;"
-        f" color: {AppTheme.text};"
+        f" color: {text_color};"
         " font-weight: 700;"
         " padding: 6px 10px;"
     )

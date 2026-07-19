@@ -196,13 +196,13 @@ class ReviewEngine:
         self.session.current_index = snap.current_index
         self.session.current_bar_time = self.bars[snap.current_index - self.window_start_index].timestamp
         self.session.position = deepcopy(snap.position)
-        self.trades = deepcopy(snap.trades)
-        self.actions = deepcopy(snap.actions)
+        self.trades = list(snap.trades)
+        self.actions = list(snap.actions)
         self.order_lines = deepcopy(snap.order_lines)
         self.session.notes = snap.notes
         self.session.tags = list(snap.tags)
         self.session.stats = deepcopy(snap.stats)
-        self._trade_review_items_cache = deepcopy(snap.trade_review_items_cache)
+        self._trade_review_items_cache = list(snap.trade_review_items_cache)
         self._trade_review_dirty = snap.trade_review_dirty
         if self._trade_review_cache_requires_rebuild():
             self._trade_review_dirty = True
@@ -945,13 +945,17 @@ class ReviewEngine:
             SessionSnapshot(
                 current_index=self.session.current_index,
                 position=deepcopy(self.session.position),
-                trades=deepcopy(self.trades),
-                actions=deepcopy(self.actions),
+                # Existing actions, completed trades, and cached review items are
+                # immutable during a replay step. Copy the containers so newly
+                # appended records can be rolled back without cloning the whole
+                # historical object graph on every bar.
+                trades=list(self.trades),
+                actions=list(self.actions),
                 order_lines=deepcopy(self.order_lines),
                 notes=self.session.notes,
                 tags=list(self.session.tags),
                 stats=deepcopy(self.session.stats),
-                trade_review_items_cache=deepcopy(self._trade_review_items_cache),
+                trade_review_items_cache=list(self._trade_review_items_cache),
                 trade_review_dirty=self._trade_review_dirty,
                 stats_dirty=self._stats_dirty,
                 open_trade_lots=deepcopy(self._open_trade_lots),

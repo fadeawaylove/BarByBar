@@ -172,8 +172,8 @@ def test_main_window_exposes_bar_count_toggle_button(window: MainWindow) -> None
     assert window.bar_count_toggle_button is not None
     assert window.bar_count_toggle_button.text() == "K线序号"
     assert window.bar_count_toggle_button.isCheckable() is True
-    assert window.bar_count_toggle_button.isChecked() is True
-    assert window.chart_widget.bar_count_labels_visible is True
+    assert window.bar_count_toggle_button.isChecked() is False
+    assert window.chart_widget.bar_count_labels_visible is False
 
 
 def test_main_window_exposes_hide_drawings_toggle_button(window: MainWindow) -> None:
@@ -205,6 +205,7 @@ def test_main_window_exposes_eight_drawing_template_slots_and_library_entry(wind
     ]
     assert all(window._drawing_template_buttons[index].isEnabled() is False for index in range(1, 9))
     assert all(window._drawing_template_buttons[index].isChecked() is False for index in range(1, 9))
+    assert all(window._drawing_template_buttons[index].isHidden() is True for index in range(1, 9))
     assert window.template_library_button is not None
     assert window.template_library_button.text() == "模板库"
 
@@ -452,9 +453,9 @@ def test_main_window_uses_single_draw_order_entry(window: MainWindow) -> None:
 
 def test_right_panel_uses_compact_trade_layout(window: MainWindow) -> None:
     assert window.splitter.count() == 2
-    assert window.splitter.widget(1).width() == 248
-    assert window.splitter.widget(1).minimumWidth() == 248
-    assert window.splitter.widget(1).maximumWidth() == 248
+    assert window.splitter.widget(1).width() == 288
+    assert window.splitter.widget(1).minimumWidth() == 288
+    assert window.splitter.widget(1).maximumWidth() == 288
     assert window.stats_label.text().startswith("方向 空仓")
     assert "已实现盈亏" in window.stats_label.text()
     assert "\n" in window.stats_label.text()
@@ -466,8 +467,8 @@ def test_right_panel_uses_compact_trade_layout_sections(window: MainWindow) -> N
     trade_layout = trade_group.layout()
 
     assert isinstance(trade_layout, QVBoxLayout)
-    assert window.splitter.widget(1).maximumWidth() == 248
-    assert window.splitter.widget(1).minimumWidth() == 248
+    assert window.splitter.widget(1).maximumWidth() == 288
+    assert window.splitter.widget(1).minimumWidth() == 288
     assert trade_group.findChild(QWidget, "directTradeSection") is not None
     assert trade_group.findChild(QWidget, "directTradeSection").property("priority") == "secondary"
     assert order_tools_group.findChild(QWidget, "limitTradeSection") is not None
@@ -665,7 +666,8 @@ def test_toolbar_separates_timeframes_from_drawing_buttons(window: MainWindow) -
     assert toolbar is not None
     workspace_tools = top_bar.findChild(QWidget, "workspaceTools")
     assert top_bar.findChild(QWidget, "caseHeader") is None
-    assert toolbar.itemAt(0).widget() is workspace_tools
+    assert toolbar.itemAt(0).widget().objectName() == "appBrandLabel"
+    assert toolbar.itemAt(1).widget() is workspace_tools
     tool_layout = workspace_tools.layout()
     assert tool_layout.itemAt(0).widget() is window._timeframe_toolbar_group
     assert tool_layout.itemAt(1).widget() is window._template_toolbar_group
@@ -680,8 +682,10 @@ def test_toolbar_uses_distinct_group_widgets_for_timeframe_template_and_drawing(
     assert window._timeframe_toolbar_group is not None
     assert window._template_toolbar_group is not None
     assert window._drawing_toolbar_group is not None
-    assert toolbar.itemAt(0).widget() is not window._template_toolbar_group
-    assert toolbar.itemAt(1).widget() is not window._drawing_toolbar_group
+    workspace_tools = top_bar.findChild(QWidget, "workspaceTools")
+    assert workspace_tools.layout().itemAt(0).widget() is window._timeframe_toolbar_group
+    assert workspace_tools.layout().itemAt(1).widget() is window._template_toolbar_group
+    assert workspace_tools.layout().itemAt(2).widget() is window._drawing_toolbar_group
 
 
 def test_toolbar_groups_are_flat_and_do_not_render_title_labels(window: MainWindow) -> None:
@@ -736,8 +740,9 @@ def test_app_navigation_buttons_are_placed_in_top_bar(window: MainWindow) -> Non
     controls = top_bar.layout()
 
     assert controls is not None
-    assert controls.itemAt(0).widget().objectName() == "workspaceTools"
-    assert controls.itemAt(1).widget().objectName() == "workspaceActions"
+    assert controls.itemAt(0).widget().objectName() == "appBrandLabel"
+    assert controls.itemAt(1).widget().objectName() == "workspaceTools"
+    assert controls.itemAt(2).widget().objectName() == "workspaceActions"
     workspace_tools = top_bar.findChild(QWidget, "workspaceTools")
     workspace_actions = top_bar.findChild(QWidget, "workspaceActions")
     assert window.dataset_button not in workspace_tools.findChildren(QPushButton)
@@ -755,6 +760,7 @@ def test_top_bar_removes_workspace_brand_copy(window: MainWindow) -> None:
 
     assert "专业复盘工作台" not in label_texts
     assert "BAR-BY-BAR WORKSTATION" not in label_texts
+    assert "BarByBar" in label_texts
 
 
 def test_right_panel_removes_mode_focus_card(window: MainWindow) -> None:
@@ -1485,7 +1491,7 @@ def test_main_window_falls_back_to_default_chart_colors_when_settings_are_invali
         app.processEvents()
 
 
-def test_main_window_defaults_bar_count_toggle_to_enabled_when_ui_settings_missing(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_window_defaults_bar_count_toggle_to_disabled_when_ui_settings_missing(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
     temp_root = Path("C:/code/BarByBar/.pytest-temp")
     temp_root.mkdir(exist_ok=True)
     case_dir = temp_root / uuid4().hex
@@ -1494,15 +1500,15 @@ def test_main_window_defaults_bar_count_toggle_to_enabled_when_ui_settings_missi
     repo = Repository(case_dir / "barbybar.db")
     main_window = MainWindow(repo)
     try:
-        assert main_window.bar_count_toggle_button.isChecked() is True
-        assert main_window.chart_widget.bar_count_labels_visible is True
+        assert main_window.bar_count_toggle_button.isChecked() is False
+        assert main_window.chart_widget.bar_count_labels_visible is False
     finally:
         main_window.close()
         main_window.deleteLater()
         app.processEvents()
 
 
-def test_main_window_falls_back_to_enabled_when_ui_settings_is_invalid(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_window_falls_back_to_disabled_when_ui_settings_is_invalid(app: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
     temp_root = Path("C:/code/BarByBar/.pytest-temp")
     temp_root.mkdir(exist_ok=True)
     case_dir = temp_root / uuid4().hex
@@ -1512,8 +1518,8 @@ def test_main_window_falls_back_to_enabled_when_ui_settings_is_invalid(app: QApp
     repo = Repository(case_dir / "barbybar.db")
     main_window = MainWindow(repo)
     try:
-        assert main_window.bar_count_toggle_button.isChecked() is True
-        assert main_window.chart_widget.bar_count_labels_visible is True
+        assert main_window.bar_count_toggle_button.isChecked() is False
+        assert main_window.chart_widget.bar_count_labels_visible is False
     finally:
         main_window.close()
         main_window.deleteLater()
@@ -1531,7 +1537,7 @@ def test_toggling_bar_count_button_persists_global_ui_setting(app: QApplication,
     try:
         main_window.bar_count_toggle_button.click()
         saved = json.loads(paths.default_ui_settings_path().read_text(encoding="utf-8"))
-        assert saved["bar_count_labels_visible"] is False
+        assert saved["bar_count_labels_visible"] is True
     finally:
         main_window.close()
         main_window.deleteLater()
@@ -1539,8 +1545,8 @@ def test_toggling_bar_count_button_persists_global_ui_setting(app: QApplication,
 
     reloaded_window = MainWindow(repo)
     try:
-        assert reloaded_window.bar_count_toggle_button.isChecked() is False
-        assert reloaded_window.chart_widget.bar_count_labels_visible is False
+        assert reloaded_window.bar_count_toggle_button.isChecked() is True
+        assert reloaded_window.chart_widget.bar_count_labels_visible is True
     finally:
         reloaded_window.close()
         reloaded_window.deleteLater()
@@ -1707,6 +1713,57 @@ def test_main_window_reopens_with_last_selected_chart_timeframe(app: QApplicatio
     finally:
         reopened_window.close()
         reopened_window.deleteLater()
+        app.processEvents()
+
+
+def test_short_dataset_disables_unavailable_timeframes_and_keeps_saved_timeframe(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+    session = repo.create_session(dataset.id or 0, start_index=0)
+    repo.save_session(session, [], [])
+    main_window = MainWindow(repo)
+    notices: list[tuple[str, str, str]] = []
+    try:
+        _wait_for_loaded_session(app, main_window)
+        main_window._show_notice = lambda title, heading, detail: notices.append((title, heading, detail))
+
+        assert main_window.timeframe_buttons["5m"].isEnabled() is True
+        assert main_window.timeframe_buttons["15m"].isEnabled() is False
+        main_window.change_chart_timeframe("15m")
+
+        assert repo.get_session(session.id or 0).chart_timeframe == "5m"
+        assert notices and "数据不足" in notices[-1][1]
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
+
+
+def test_opening_session_recovers_persisted_unavailable_timeframe(app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    temp_root.mkdir(exist_ok=True)
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    repo = Repository(case_dir / "barbybar.db")
+    dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+    session = repo.create_session(dataset.id or 0, start_index=0)
+    repo.conn.execute("UPDATE sessions SET chart_timeframe = '15m' WHERE id = ?", (session.id,))
+    repo.conn.commit()
+
+    main_window = MainWindow(repo)
+    try:
+        _wait_for_loaded_session(app, main_window)
+
+        assert main_window.engine is not None
+        assert main_window.engine.session.chart_timeframe == "5m"
+        assert repo.get_session(session.id or 0).chart_timeframe == "5m"
+    finally:
+        main_window.close()
+        main_window.deleteLater()
         app.processEvents()
 
 
@@ -4268,6 +4325,41 @@ def test_step_forward_enqueues_async_save(window: MainWindow, monkeypatch) -> No
     assert window._auto_save_timer.isActive() is False
 
 
+def test_step_forward_save_capture_is_debounced_and_coalesced(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_engine(window)
+    built: list[str] = []
+    emitted: list[SessionSaveRequest] = []
+    assert window.engine is not None
+
+    def fake_build(trigger: str) -> SessionSaveRequest:
+        built.append(trigger)
+        return SessionSaveRequest(
+            generation=window._step_forward_save_generation + 1,
+            trigger=trigger,
+            session=window.engine.session,
+            actions=[],
+            order_lines=[],
+            drawings=[],
+            trade_review_items=[],
+        )
+
+    monkeypatch.setattr(window, "_build_step_forward_save_request", fake_build)
+    window._step_forward_save_requested.disconnect()
+    window._step_forward_save_requested.connect(lambda request: emitted.append(request))
+
+    window._enqueue_step_forward_save("first")
+    window._enqueue_step_forward_save("latest")
+
+    assert built == []
+    assert window._has_pending_step_forward_save() is True
+
+    window._flush_debounced_step_forward_save()
+
+    assert built == ["latest"]
+    assert [request.trigger for request in emitted] == ["latest"]
+    window._handle_async_save_finished(emitted[0].generation, True)
+
+
 def test_step_forward_updates_progress_immediately_and_defers_heavy_refresh(
     window: MainWindow,
     app: QApplication,
@@ -4390,15 +4482,15 @@ def test_step_forward_keeps_zoom_when_forward_window_extends(window: MainWindow,
         )
         for index in range(120)
     ]
-    window.engine.session.current_index = 39
-    window.engine.session.current_bar_time = window.engine.bars[39].timestamp
+    window.engine.session.current_index = 54
+    window.engine.session.current_bar_time = window.engine.bars[54].timestamp
     window.chart_widget.set_window_data(
         window.engine.bars,
         window.engine.session.current_index,
         window.engine.total_count,
         window.engine.window_start_index,
     )
-    window.chart_widget.zoom_x(anchor_x=30, scale=0.5)
+    window.chart_widget.zoom_x(anchor_x=45, scale=0.5)
     preserved_bars = window.chart_widget.viewport_state.bars_in_view
 
     def fake_get_chart_window(*_args, **_kwargs) -> WindowBars:
@@ -4417,6 +4509,62 @@ def test_step_forward_keeps_zoom_when_forward_window_extends(window: MainWindow,
     assert window.chart_widget.viewport_state.bars_in_view == preserved_bars
     window._auto_save_timer.stop()
     window._session_dirty = False
+
+
+def test_forward_window_starts_background_prefetch_before_sync_fallback(
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_engine(window)
+    starts: list[bool] = []
+
+    monkeypatch.setattr(window._forward_prefetch_tasks, "is_running", lambda: False)
+    monkeypatch.setattr(window, "_start_forward_window_prefetch", lambda: starts.append(True))
+    monkeypatch.setattr(
+        window.repo,
+        "get_chart_window",
+        lambda *_args, **_kwargs: pytest.fail("prefetch range must not load on the UI thread"),
+    )
+
+    window._ensure_window_for_forward()
+
+    assert starts == [True]
+
+
+def test_forward_window_prefetch_discards_stale_result_and_applies_latest(
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_engine(window)
+    assert window.engine is not None
+    extended_bars = [
+        Bar(
+            timestamp=datetime(2025, 1, 1, 9, 0) + timedelta(minutes=index),
+            open=100 + index,
+            high=101 + index,
+            low=99 + index,
+            close=100.5 + index,
+            volume=1000 + index,
+        )
+        for index in range(90)
+    ]
+    payload = WindowBars(
+        bars=extended_bars,
+        global_start_index=0,
+        global_end_index=len(extended_bars) - 1,
+        anchor_global_index=window.engine.session.current_index,
+        total_count=len(extended_bars),
+    )
+    window._active_forward_prefetch_request_id = 2
+    window._active_forward_prefetch_context = (1, "1m")
+    monkeypatch.setattr(window.chart_widget, "set_window_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(window, "_update_ui_from_engine", lambda **_kwargs: None)
+
+    window._handle_forward_window_prefetched(1, payload)
+    assert window.engine.window_end_index == 59
+
+    window._handle_forward_window_prefetched(2, payload)
+    assert window.engine.window_end_index == 89
 
 
 def test_space_shortcut_steps_forward_when_focus_allows(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:

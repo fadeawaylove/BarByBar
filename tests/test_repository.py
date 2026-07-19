@@ -4,6 +4,10 @@ from datetime import datetime, timedelta
 import shutil
 from uuid import uuid4
 
+import pytest
+
+import pytest
+
 from barbybar.data.tick_size import default_tick_size_for_symbol
 from barbybar.data.timeframe import aggregate_bars, default_chart_timeframe, find_bar_index_for_timestamp, normalize_timeframe, supported_replay_timeframes
 from barbybar.domain.engine import ReviewEngine
@@ -440,6 +444,83 @@ def test_aggregate_bars_supports_daily_timeframe_for_night_session_products() ->
     assert aggregated[0].volume == 60
     assert aggregated[0].open_timestamp == datetime(2025, 1, 1, 20, 59)
     assert aggregated[1].timestamp == datetime(2025, 1, 3, 14, 59)
+
+
+def test_daily_aggregation_groups_friday_night_and_monday_day_session() -> None:
+    source = [
+        Bar(timestamp=datetime(2025, 1, 3, 21, 0), open=100, high=102, low=99, close=101, volume=10),
+        Bar(timestamp=datetime(2025, 1, 4, 1, 0), open=101, high=103, low=100, close=102, volume=20),
+        Bar(timestamp=datetime(2025, 1, 6, 9, 0), open=102, high=104, low=101, close=103, volume=30),
+        Bar(timestamp=datetime(2025, 1, 6, 14, 59), open=103, high=105, low=102, close=104, volume=40),
+    ]
+
+    aggregated = aggregate_bars(source, "1m", "1d")
+
+    assert len(aggregated) == 1
+    assert aggregated[0].open == 100
+    assert aggregated[0].close == 104
+    assert aggregated[0].timestamp == datetime(2025, 1, 6, 14, 59)
+
+
+def test_save_session_rolls_back_all_changes_when_serialization_fails() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path = temp_dir / "barbybar.db"
+        repo = Repository(db_path)
+        dataset = repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+        session = repo.create_session(dataset.id or 0, start_index=0)
+        original = SessionAction(
+            action_type=ActionType.NOTE,
+            bar_index=0,
+            timestamp=datetime(2025, 1, 1, 9, 0),
+            note="original",
+        )
+        repo.save_session(session, [original], [])
+        invalid = SessionAction(
+            action_type=ActionType.NOTE,
+            bar_index=0,
+            timestamp=datetime(2025, 1, 1, 9, 0),
+            note="invalid",
+            extra={"not_json": {1, 2}},
+        )
+
+        with pytest.raises(TypeError):
+            repo.save_session(session, [invalid], [])
+
+        assert repo.conn.in_transaction is False
+        assert [action.note for action in repo.get_session_actions(session.id or 0, session.chart_timeframe)] == ["original"]
+        other = sqlite3.connect(db_path, timeout=0.1)
+        try:
+            other.execute("UPDATE sessions SET notes = 'writer-ok' WHERE id = ?", (session.id,))
+            other.commit()
+        finally:
+            other.close()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_create_session_falls_back_to_daily_when_default_timeframe_has_no_complete_bar() -> None:
+    temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        csv_path = temp_dir / "short.csv"
+        csv_path.write_text(
+            "datetime,open,high,low,close,volume\n"
+            "2025-01-01 09:00,1,2,0.5,1.5,10\n"
+            "2025-01-01 09:01,1.5,2.5,1,2,11\n"
+            "2025-01-01 09:02,2,3,1.5,2.5,12\n",
+            encoding="utf-8",
+        )
+        repo = Repository(temp_dir / "barbybar.db")
+        dataset = repo.import_csv(csv_path, "IF", "1m")
+
+        session = repo.create_session(dataset.id or 0, start_index=0)
+
+        assert session.chart_timeframe == "1d"
+        assert repo.get_replay_bar_count(dataset.id or 0, "1d") == 1
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def test_find_bar_index_for_timestamp_aligns_to_containing_bar() -> None:

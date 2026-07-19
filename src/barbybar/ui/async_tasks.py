@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from loguru import logger
-from PySide6.QtCore import QObject, QThread, Qt
+from PySide6.QtCore import QObject, QThread, Qt, Slot
 
 
 class AsyncTaskCoordinator(QObject):
@@ -28,16 +28,15 @@ class AsyncTaskCoordinator(QObject):
     ) -> QThread:
         if self.is_running():
             raise RuntimeError(f"{self.component} task is already running")
-        thread = QThread(self.parent())
+        thread = QThread()
         worker.moveToThread(thread)
         thread.started.connect(worker.run)  # type: ignore[attr-defined]
         worker.finished.connect(finished_slot, Qt.ConnectionType.QueuedConnection)  # type: ignore[attr-defined]
         worker.failed.connect(failed_slot, Qt.ConnectionType.QueuedConnection)  # type: ignore[attr-defined]
         worker.finished.connect(thread.quit)  # type: ignore[attr-defined]
         worker.failed.connect(thread.quit)  # type: ignore[attr-defined]
-        worker.finished.connect(worker.deleteLater)  # type: ignore[attr-defined]
-        worker.failed.connect(worker.deleteLater)  # type: ignore[attr-defined]
-        thread.finished.connect(lambda thread=thread: self._handle_thread_finished(thread))
+        thread.finished.connect(self._handle_thread_finished)
+        thread.finished.connect(thread.deleteLater)
         self.active_thread = thread
         self.active_worker = worker
         self._thread_finished_callback = thread_finished_slot
@@ -51,7 +50,11 @@ class AsyncTaskCoordinator(QObject):
         self.active_thread.quit()
         self.active_thread.wait(self.shutdown_timeout_ms)
 
-    def _handle_thread_finished(self, thread: QThread) -> None:
+    @Slot()
+    def _handle_thread_finished(self) -> None:
+        thread = self.sender()
+        if not isinstance(thread, QThread):
+            return
         if thread is not self.active_thread:
             logger.bind(component=self.component).debug("event=ignore_stale_async_task_thread_finished")
             return
@@ -61,4 +64,3 @@ class AsyncTaskCoordinator(QObject):
         self._thread_finished_callback = None
         if callback is not None:
             callback()
-        thread.deleteLater()

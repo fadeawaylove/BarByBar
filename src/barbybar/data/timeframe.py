@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta
 
 from barbybar.domain.models import Bar
@@ -146,11 +146,18 @@ def _aggregate_daily_bars(bars: list[Bar]) -> list[Bar]:
         return []
     ordered = sorted(bars, key=lambda item: item.timestamp)
     has_night_session = _has_night_session(ordered)
+    day_session_dates = sorted(
+        {
+            bar.timestamp.date()
+            for bar in ordered
+            if DAY_SESSION_OPEN <= bar.timestamp.time() < NIGHT_SESSION_OPEN
+        }
+    )
     aggregated: list[Bar] = []
     bucket: list[Bar] = []
     current_key: date | None = None
     for bar in ordered:
-        bucket_key = _daily_bucket_key(bar.timestamp, has_night_session)
+        bucket_key = _daily_bucket_key(bar.timestamp, has_night_session, day_session_dates)
         if current_key is None or bucket_key == current_key:
             bucket.append(bar)
             current_key = bucket_key
@@ -167,10 +174,25 @@ def _has_night_session(bars: list[Bar]) -> bool:
     return any(bar.timestamp.time() >= NIGHT_SESSION_OPEN or bar.timestamp.time() < DAY_SESSION_OPEN for bar in bars)
 
 
-def _daily_bucket_key(timestamp: datetime, has_night_session: bool) -> date:
+def _daily_bucket_key(timestamp: datetime, has_night_session: bool, day_session_dates: list[date]) -> date:
     if not has_night_session:
         return timestamp.date()
     bar_time = timestamp.time()
     if bar_time >= NIGHT_SESSION_OPEN:
-        return (timestamp + timedelta(days=1)).date()
+        index = bisect_right(day_session_dates, timestamp.date())
+        if index < len(day_session_dates):
+            return day_session_dates[index]
+        return _next_weekday(timestamp.date() + timedelta(days=1))
+    if bar_time < DAY_SESSION_OPEN:
+        index = bisect_left(day_session_dates, timestamp.date())
+        if index < len(day_session_dates):
+            return day_session_dates[index]
+        return _next_weekday(timestamp.date())
     return timestamp.date()
+
+
+def _next_weekday(value: date) -> date:
+    result = value
+    while result.weekday() >= 5:
+        result += timedelta(days=1)
+    return result

@@ -46,7 +46,8 @@ def _build_repo() -> tuple[Repository, Path]:
         price = 100 + index * 0.2
         lines.append(f"{ts:%Y-%m-%d %H:%M:%S},{price:.2f},{price + 1:.2f},{price - 1:.2f},{price + 0.3:.2f},{1000 + index}")
     csv_path.write_text("\n".join(lines), encoding="utf-8")
-    repo.import_csv(csv_path, "IF", "1m", display_name="smoke.csv")
+    dataset = repo.import_csv(csv_path, "IF", "1m", display_name="smoke.csv")
+    repo.create_session(dataset.id or 0, start_index=28, title="截图示例案例")
     return repo, root
 
 
@@ -137,6 +138,7 @@ def main() -> None:
 
         window._toggle_drawing_tool(DrawingToolType.TREND_LINE, False)
         _seed_trade_review(window)
+        window._selected_trade_view = "entry"
         window.open_trade_history_dialog()
         _process_events(app)
         _save_widget(window, OUTPUT_DIR / "05-review-mode-sidebar.png", app)
@@ -161,6 +163,7 @@ def main() -> None:
         _save_widget(window, OUTPUT_DIR / "08-completed-session.png", app)
         captures["completed_session"] = "08-completed-session.png"
 
+        _seed_trade_review(window)
         trade_dialog = TradeHistoryDialog(window, window)
         trade_dialog.refresh_items()
         _save_widget(trade_dialog, OUTPUT_DIR / "09-full-trade-review-workspace.png", app, QSize(1180, 760))
@@ -176,12 +179,29 @@ def main() -> None:
         dataset_dialog = DataSetManagerDialog(repo, window, window)
         _save_widget(dataset_dialog, OUTPUT_DIR / "11-dataset-manager-entry.png", app, QSize(860, 700))
         captures["dataset_manager_entry"] = "11-dataset-manager-entry.png"
+        dataset_dialog._show_batch_progress("正在批量导入 2/5", "当前文件：sample-02.csv", 2, 5)
+        _save_widget(dataset_dialog, OUTPUT_DIR / "11b-dataset-manager-batch.png", app, QSize(860, 700))
+        captures["dataset_manager_batch"] = "11b-dataset-manager-batch.png"
         dataset_dialog.close()
+
+        empty_repo = Repository(_root / "empty.db")
+        empty_dataset_dialog = DataSetManagerDialog(empty_repo, window, window)
+        _save_widget(empty_dataset_dialog, OUTPUT_DIR / "11c-dataset-manager-empty.png", app, QSize(860, 700))
+        captures["dataset_manager_empty"] = "11c-dataset-manager-empty.png"
+        empty_dataset_dialog.close()
 
         session_dialog = SessionLibraryDialog(repo, window, window)
         _save_widget(session_dialog, OUTPUT_DIR / "12-session-library-entry.png", app, QSize(920, 720))
         captures["session_library_entry"] = "12-session-library-entry.png"
+        session_dialog.session_filter.setText("截图示例")
+        _save_widget(session_dialog, OUTPUT_DIR / "12b-session-library-filtered.png", app, QSize(920, 720))
+        captures["session_library_filtered"] = "12b-session-library-filtered.png"
         session_dialog.close()
+
+        empty_session_dialog = SessionLibraryDialog(empty_repo, window, window)
+        _save_widget(empty_session_dialog, OUTPUT_DIR / "12c-session-library-empty.png", app, QSize(920, 720))
+        captures["session_library_empty"] = "12c-session-library-empty.png"
+        empty_session_dialog.close()
 
         _seed_trade_review(window)
         window.open_trade_history_dialog()

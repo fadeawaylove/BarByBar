@@ -149,3 +149,49 @@ def test_import_reports_empty_numeric_field_with_clear_error() -> None:
         assert str(exc_info.value) == "Invalid row for timestamp 2005-01-04 09:16:00: numeric field 'close' is empty"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+
+
+@pytest.mark.parametrize("invalid_value", ["nan", "inf", "-inf"])
+def test_import_rejects_non_finite_numeric_values(invalid_value: str) -> None:
+    temp_dir = Path(".test_tmp") / f"csv-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        csv_path = temp_dir / "non-finite.csv"
+        csv_path.write_text(
+            "datetime,open,high,low,close,volume\n"
+            f"2025-01-01 09:00,1,2,0.5,{invalid_value},10\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="must be finite"):
+            load_bars_from_csv(csv_path)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        ("1,0.5,2,1.5,10", "high must be greater"),
+        ("3,2,1,1.5,10", "open must be between"),
+        ("1,2,0.5,3,10", "close must be between"),
+        ("1,2,0.5,1.5,-1", "volume must be non-negative"),
+    ],
+)
+def test_import_rejects_invalid_ohlcv_relationships(row: str, message: str) -> None:
+    temp_dir = Path(".test_tmp") / f"csv-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        csv_path = temp_dir / "invalid-ohlcv.csv"
+        csv_path.write_text(
+            "datetime,open,high,low,close,volume\n"
+            f"2025-01-01 09:00,{row}\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match=message):
+            load_bars_from_csv(csv_path)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)

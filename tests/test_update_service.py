@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import barbybar.update_service as update_service
-from barbybar.update_service import UpdateInfo, check_for_update, download_installer, is_newer_version, parse_release_payload
+from barbybar.update_service import DownloadCancelledError, UpdateInfo, check_for_update, download_installer, is_newer_version, parse_release_payload
 
 
 class _FakeResponse:
@@ -131,3 +131,27 @@ def test_download_installer_reuses_matching_existing_file(tmp_path: Path) -> Non
     output = download_installer(update_info, target)
 
     assert output == target
+
+
+def test_download_installer_cancellation_removes_partial_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    update_info = UpdateInfo(
+        version="0.3.0",
+        tag="v0.3.0",
+        release_notes="Notes",
+        installer_url="https://example.com/setup.exe",
+        installer_name="BarByBar-v0.3.0-windows-x64-setup.exe",
+        asset_size=6,
+    )
+    monkeypatch.setattr(
+        update_service,
+        "urlopen",
+        lambda request, timeout=30: _FakeResponse(b"abcdef", headers={"Content-Length": "6"}),
+    )
+    cancellation_checks = iter([False, True])
+    target = tmp_path / update_info.installer_name
+
+    with pytest.raises(DownloadCancelledError):
+        download_installer(update_info, target, cancel_callback=lambda: next(cancellation_checks))
+
+    assert target.exists() is False
+    assert target.with_suffix(target.suffix + ".download").exists() is False

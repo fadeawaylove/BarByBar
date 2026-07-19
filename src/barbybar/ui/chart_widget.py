@@ -599,6 +599,9 @@ class ChartWidget(QWidget):
         self._temporary_measure_active = False
         self._temporary_measure_start_anchor: DrawingAnchor | None = None
         self._temporary_measure_end_anchor: DrawingAnchor | None = None
+        self._session_marker_items: dict[int, pg.InfiniteLine] = {}
+        self._session_end_marker_items: dict[int, pg.ArrowItem] = {}
+        self._bar_count_label_items: dict[int, pg.TextItem] = {}
         self._session_markers_dirty = True
         self._order_line_items_dirty = True
         self._trade_geometry_dirty = True
@@ -772,7 +775,10 @@ class ChartWidget(QWidget):
             self._hide_crosshair()
 
     def set_right_padding(self, padding: float) -> None:
-        self._right_padding = max(float(padding), 0.0)
+        normalized = max(float(padding), 0.0)
+        if abs(normalized - self._right_padding) <= 1e-12:
+            return
+        self._right_padding = normalized
         if self._bars:
             self._apply_viewport()
 
@@ -885,7 +891,10 @@ class ChartWidget(QWidget):
             self.cancel_order_preview()
 
     def set_tick_size(self, tick_size: float) -> None:
-        self._tick_size = max(float(tick_size), 0.0001)
+        normalized = max(float(tick_size), 0.0001)
+        if abs(normalized - self._tick_size) <= 1e-12:
+            return
+        self._tick_size = normalized
         self._rebuild_line_items()
         if self._temporary_measure_active:
             self._refresh_temporary_measurement_overlay()
@@ -1365,20 +1374,29 @@ class ChartWidget(QWidget):
             return
         self._refresh_viewport_overlays(viewport_changed=False)
 
-    def _rebuild_session_markers(self) -> None:
-        for item in list(self.price_plot.items):
-            if (
-                getattr(item, "_barbybar_session_marker", False)
-                or getattr(item, "_barbybar_session_end_marker", False)
-                or getattr(item, "_barbybar_bar_count_label", False)
-            ):
+    def _clear_session_marker_items(self) -> None:
+        for items in (
+            self._session_marker_items,
+            self._session_end_marker_items,
+            self._bar_count_label_items,
+        ):
+            for item in items.values():
                 self.price_plot.removeItem(item)
+            items.clear()
+
+    def _remove_stale_session_marker_items(self, items: dict[int, object], desired: set[int]) -> None:
+        for index in set(items) - desired:
+            self.price_plot.removeItem(items.pop(index))
+
+    def _rebuild_session_markers(self) -> None:
         if not self._bars:
+            self._clear_session_marker_items()
             self.session_axis.set_session_ticks([])
             self._session_markers_dirty = False
             self._clear_chart_layers_dirty(ChartLayer.SESSION_MARKERS)
             return
         if normalize_timeframe(self._chart_timeframe) == DAY_TIMEFRAME:
+            self._clear_session_marker_items()
             self.session_axis.set_session_ticks([])
             self._session_markers_dirty = False
             self._clear_chart_layers_dirty(ChartLayer.SESSION_MARKERS)
@@ -1389,6 +1407,7 @@ class ChartWidget(QWidget):
         start = max(0, visible_start - 2 - self._global_start_index)
         stop = min(len(self._bars), min(local_cursor + 1, visible_stop - self._global_start_index + 2))
         if stop <= start:
+            self._clear_session_marker_items()
             self.session_axis.set_session_ticks([])
             self._session_markers_dirty = False
             self._clear_chart_layers_dirty(ChartLayer.SESSION_MARKERS)
@@ -1398,9 +1417,11 @@ class ChartWidget(QWidget):
             for index in range(start, stop)
         )
         session_axis_ticks: list[tuple[float, str]] = []
-        prefix_start = 0
         session_counts: dict[tuple[str, datetime], int] = {}
-        for index in range(prefix_start, stop):
+        desired_session_markers: set[int] = set()
+        desired_session_end_markers: set[int] = set()
+        desired_bar_count_labels: set[int] = set()
+        for index in range(stop):
             bar = self._bars[index]
             session_key = self._session_key(bar.timestamp)
             session_counts[session_key] = session_counts.get(session_key, 0) + 1
@@ -1409,31 +1430,44 @@ class ChartWidget(QWidget):
             session_label = self._session_marker_label(bar.timestamp, timeframe_minutes) if show_session_annotations else None
             if session_label is not None:
                 session_x = float(self._global_start_index + index - 0.5)
-                marker = pg.InfiniteLine(
-                    pos=session_x,
-                    angle=90,
-                    movable=False,
-                    pen=pg.mkPen(SESSION_MARKER_COLOR, width=1, style=Qt.PenStyle.DashLine),
-                )
-                marker.setZValue(-10)
-                marker._barbybar_session_marker = True
-                self.price_plot.addItem(marker, ignoreBounds=True)
+                desired_session_markers.add(index)
+                marker = self._session_marker_items.get(index)
+                if marker is None:
+                    marker = pg.InfiniteLine(
+                        pos=session_x,
+                        angle=90,
+                        movable=False,
+                        pen=pg.mkPen(SESSION_MARKER_COLOR, width=1, style=Qt.PenStyle.DashLine),
+                    )
+                    marker.setZValue(-10)
+                    marker._barbybar_session_marker = True
+                    self.price_plot.addItem(marker, ignoreBounds=True)
+                    self._session_marker_items[index] = marker
+                else:
+                    marker.setPos(session_x)
                 session_axis_ticks.append((session_x, session_label))
             if show_session_annotations and self._is_session_end_bar(index, stop):
-                arrow = pg.ArrowItem(
-                    pos=(float(self._global_start_index + index), self._session_end_marker_y(index)),
-                    angle=-90,
-                    brush=pg.mkBrush(SESSION_END_ARROW_COLOR),
-                    pen=pg.mkPen(SESSION_END_ARROW_COLOR, width=1),
-                    headLen=14,
-                    tipAngle=28,
-                    baseAngle=18,
-                    tailLen=0,
-                    tailWidth=0,
-                )
-                arrow._barbybar_session_end_marker = True
-                arrow.setZValue(6)
-                self.price_plot.addItem(arrow, ignoreBounds=True)
+                desired_session_end_markers.add(index)
+                arrow = self._session_end_marker_items.get(index)
+                arrow_pos = (float(self._global_start_index + index), self._session_end_marker_y(index))
+                if arrow is None:
+                    arrow = pg.ArrowItem(
+                        pos=arrow_pos,
+                        angle=-90,
+                        brush=pg.mkBrush(SESSION_END_ARROW_COLOR),
+                        pen=pg.mkPen(SESSION_END_ARROW_COLOR, width=1),
+                        headLen=14,
+                        tipAngle=28,
+                        baseAngle=18,
+                        tailLen=0,
+                        tailWidth=0,
+                    )
+                    arrow._barbybar_session_end_marker = True
+                    arrow.setZValue(6)
+                    self.price_plot.addItem(arrow, ignoreBounds=True)
+                    self._session_end_marker_items[index] = arrow
+                else:
+                    arrow.setPos(*arrow_pos)
             if not self._bar_count_labels_visible:
                 continue
             bar_count = session_counts[session_key]
@@ -1441,18 +1475,27 @@ class ChartWidget(QWidget):
                 continue
             x_pos = float(self._global_start_index + index)
             y_pos = self._bar_count_label_y(index)
-            count_label = pg.TextItem(
-                str(bar_count),
-                color=BAR_COUNT_LABEL_COLOR,
-                anchor=(0.5, 1),
-            )
-            font = count_label.textItem.font()
-            font.setPointSize(max(8, font.pointSize() - 2))
-            count_label.textItem.setFont(font)
-            count_label._barbybar_bar_count_label = True
-            count_label.setZValue(4)
+            desired_bar_count_labels.add(index)
+            count_label = self._bar_count_label_items.get(index)
+            if count_label is None:
+                count_label = pg.TextItem(
+                    str(bar_count),
+                    color=BAR_COUNT_LABEL_COLOR,
+                    anchor=(0.5, 1),
+                )
+                font = count_label.textItem.font()
+                font.setPointSize(max(8, font.pointSize() - 2))
+                count_label.textItem.setFont(font)
+                count_label._barbybar_bar_count_label = True
+                count_label.setZValue(4)
+                self.price_plot.addItem(count_label, ignoreBounds=True)
+                self._bar_count_label_items[index] = count_label
+            elif count_label.textItem.toPlainText() != str(bar_count):
+                count_label.setText(str(bar_count), color=BAR_COUNT_LABEL_COLOR)
             count_label.setPos(x_pos, y_pos)
-            self.price_plot.addItem(count_label, ignoreBounds=True)
+        self._remove_stale_session_marker_items(self._session_marker_items, desired_session_markers)
+        self._remove_stale_session_marker_items(self._session_end_marker_items, desired_session_end_markers)
+        self._remove_stale_session_marker_items(self._bar_count_label_items, desired_bar_count_labels)
         self.session_axis.set_session_ticks(session_axis_ticks)
         self._session_markers_dirty = False
         self._clear_chart_layers_dirty(ChartLayer.SESSION_MARKERS)

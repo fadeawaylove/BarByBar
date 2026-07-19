@@ -235,12 +235,27 @@ class Repository:
             raise ValueError(f"{dataset.timeframe} cannot be replayed as {replay_timeframe}.")
         return aggregate_bars(self.get_bars(dataset_id), dataset.timeframe, replay_timeframe)
 
+    def get_replay_bar_count(self, dataset_id: int, replay_timeframe: str) -> int:
+        dataset = self.get_dataset(dataset_id)
+        replay_timeframe = normalize_timeframe(replay_timeframe)
+        source_timeframe = normalize_timeframe(dataset.timeframe)
+        if replay_timeframe != source_timeframe and replay_timeframe not in supported_replay_timeframes(source_timeframe):
+            raise ValueError(f"{dataset.timeframe} cannot be replayed as {replay_timeframe}.")
+        return len(self._get_window_meta(dataset_id, dataset.timeframe, replay_timeframe))
+
     def create_session(self, dataset_id: int, start_index: int, title: str | None = None) -> ReviewSession:
         dataset = self.get_dataset(dataset_id)
-        chart_timeframe = default_chart_timeframe(dataset.timeframe)
+        preferred_timeframe = default_chart_timeframe(dataset.timeframe)
+        if self.get_replay_bar_count(dataset_id, preferred_timeframe) > 0:
+            chart_timeframe = preferred_timeframe
+        elif dataset.total_bars > 0 and "1d" in supported_replay_timeframes(dataset.timeframe):
+            chart_timeframe = "1d"
+        else:
+            raise ValueError("当前数据不足以创建复盘案例。")
         tick_size = default_tick_size_for_symbol(dataset.symbol)
         source_bars = self.get_bars(dataset_id)
-        current_bar_time = source_bars[start_index].timestamp if source_bars else dataset.start_time
+        safe_start_index = max(0, min(start_index, len(source_bars) - 1)) if source_bars else 0
+        current_bar_time = source_bars[safe_start_index].timestamp if source_bars else dataset.start_time
         session_title = title or f"{dataset.symbol} {dataset.timeframe} {dataset.start_time:%Y-%m-%d %H:%M}"
         cursor = self.conn.execute(
             """
@@ -257,8 +272,8 @@ class Repository:
                 chart_timeframe,
                 chart_timeframe,
                 session_title,
-                start_index,
-                start_index,
+                safe_start_index,
+                safe_start_index,
                 current_bar_time.isoformat(),
                 tick_size,
                 SessionStatus.ACTIVE.value,
@@ -291,6 +306,20 @@ class Repository:
         return self.get_session(session.id)
 
     def save_session_state(
+        self,
+        session: ReviewSession,
+        actions: list[SessionAction] | None,
+        order_lines: list[OrderLine] | None = None,
+        drawings: list[ChartDrawing] | None = None,
+        trade_review_items: list[TradeReviewItem] | None = None,
+    ) -> None:
+        try:
+            self._save_session_state(session, actions, order_lines, drawings, trade_review_items)
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _save_session_state(
         self,
         session: ReviewSession,
         actions: list[SessionAction] | None,

@@ -65,6 +65,7 @@ from barbybar.data.timeframe import (
     find_bar_index_for_timestamp,
     normalize_timeframe,
     supported_replay_timeframes,
+    timeframe_to_minutes,
 )
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import (
@@ -137,9 +138,12 @@ INITIAL_WINDOW_AFTER = 30
 EXTEND_WINDOW_BEFORE = 150
 EXTEND_WINDOW_AFTER = 150
 WINDOW_BUFFER_THRESHOLD = 20
+FORWARD_PREFETCH_THRESHOLD = 60
+FORWARD_PREFETCH_FALLBACK_THRESHOLD = 5
 TRADE_HISTORY_FOCUS_TARGET_RATIO = 0.70
 TRADE_HISTORY_FOCUS_MIN_RIGHT_CONTEXT = 12
 AUTO_SAVE_DELAY_MS = 800
+STEP_FORWARD_SAVE_DEBOUNCE_MS = 120
 MAX_DRAWING_TEMPLATE_SHORTCUTS = 8
 VIEWPORT_EXTENSION_THRESHOLD_BARS = 10.0
 VIEWPORT_EXTENSION_COOLDOWN_MS = 180.0
@@ -377,6 +381,9 @@ class BatchImportWorker(QObject):
             files = sorted(path for path in self.folder.iterdir() if path.is_file() and path.suffix.lower() == ".csv")
             total = len(files)
             for index, csv_path in enumerate(files, start=1):
+                if QThread.currentThread().isInterruptionRequested():
+                    log.info("event=batch_import_cancelled imported={}", len(outcome.imported))
+                    return
                 display_name = csv_path.name
                 if repo.find_dataset_by_display_name(display_name) is not None:
                     outcome.skipped_duplicates.append(display_name)
@@ -435,6 +442,8 @@ class SessionLoadWorker(QObject):
             thread_id=_thread_id(),
         )
         try:
+            if QThread.currentThread().isInterruptionRequested():
+                return
             repo = Repository(self.db_path)
             session_step = perf_counter()
             session = repo.get_session(self.session_id)
@@ -444,7 +453,25 @@ class SessionLoadWorker(QObject):
             log = log.bind(dataset_id=session.dataset_id)
             log.debug("event=get_dataset elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - dataset_step) * 1000)
             actions_step = perf_counter()
-            timeframe = self.chart_timeframe or session.chart_timeframe
+            timeframe = normalize_timeframe(self.chart_timeframe or session.chart_timeframe)
+            recovered_timeframe = False
+            if repo.get_replay_bar_count(session.dataset_id, timeframe) <= 0:
+                if self.chart_timeframe is not None:
+                    raise ValueError(f"当前数据不足以生成 {timeframe} K线。")
+                available = [
+                    candidate
+                    for candidate in supported_replay_timeframes(dataset.timeframe)
+                    if repo.get_replay_bar_count(session.dataset_id, candidate) > 0
+                ]
+                if not available:
+                    raise ValueError("当前数据不足以生成可复盘的 K 线。")
+                preferred = default_chart_timeframe(dataset.timeframe)
+                timeframe = preferred if preferred in available else available[0]
+                recovered_timeframe = True
+                log.warning(
+                    "event=recover_unavailable_chart_timeframe fallback={fallback}",
+                    fallback=timeframe,
+                )
             actions = repo.get_session_actions(session.id or 0, timeframe)
             log.debug("event=get_session_actions elapsed_ms={elapsed_ms:.3f}", elapsed_ms=(perf_counter() - actions_step) * 1000)
             order_step = perf_counter()
@@ -504,6 +531,7 @@ class SessionLoadWorker(QObject):
                     "drawings": drawings,
                     "trade_review_items": trade_review_items,
                     "chart_timeframe": timeframe,
+                    "recovered_timeframe": recovered_timeframe,
                     "anchor_time": self.anchor_time or session.current_bar_time,
                     "window": window,
                 }
@@ -526,6 +554,7 @@ class ViewportWindowExtensionWorker(QObject):
         before_count: int,
         after_count: int,
         request_id: int,
+        metric_operation: str = "viewport_extension_window",
     ) -> None:
         super().__init__()
         self.db_path = db_path
@@ -535,6 +564,7 @@ class ViewportWindowExtensionWorker(QObject):
         self.before_count = before_count
         self.after_count = after_count
         self.request_id = request_id
+        self.metric_operation = metric_operation
 
     def run(self) -> None:
         log = logger.bind(
@@ -557,7 +587,7 @@ class ViewportWindowExtensionWorker(QObject):
             elapsed_ms = (perf_counter() - started) * 1000
             record_metric(
                 "data_window",
-                "viewport_extension_window",
+                self.metric_operation,
                 elapsed_ms,
                 after_count=self.after_count,
                 before_count=self.before_count,
@@ -616,6 +646,7 @@ class UpdateDownloadWorker(QObject):
                 self.update_info,
                 self.target_path,
                 progress_callback=lambda current, total: self.progress.emit(self.task_id, current, total),
+                cancel_callback=lambda: QThread.currentThread().isInterruptionRequested(),
             )
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(self.task_id, str(exc))
@@ -1299,25 +1330,28 @@ class DataSetManagerDialog(QDialog):
 
         layout.addWidget(QLabel("数据集"))
         self.dataset_list = QListWidget()
+        self.dataset_list.setWordWrap(True)
+        self.dataset_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.dataset_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.dataset_list.itemDoubleClicked.connect(lambda _: self._create_session())
-        layout.addWidget(self.dataset_list)
+        layout.addWidget(self.dataset_list, 1)
         self.empty_state_label = QLabel("")
         self.empty_state_label.setObjectName("datasetManagerEmptyState")
         self.empty_state_label.setProperty("role", "statusMuted")
         self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_state_label.setWordWrap(True)
-        layout.addWidget(self.empty_state_label)
+        self.empty_state_label.setProperty("card", True)
+        layout.addWidget(self.empty_state_label, 1)
 
         create_button = QPushButton("基于所选数据创建复盘")
         create_button.setProperty("role", "primary")
         create_button.clicked.connect(self._create_session)
-        layout.addWidget(create_button)
         self._create_button = create_button
 
         delete_button = QPushButton("删除所选数据集")
         delete_button.setProperty("role", "danger")
+        delete_button.setMaximumWidth(132)
         delete_button.clicked.connect(self._delete_dataset)
-        layout.addWidget(delete_button)
         self._delete_button = delete_button
 
         self._batch_progress_panel = QWidget(self)
@@ -1342,9 +1376,17 @@ class DataSetManagerDialog(QDialog):
 
         close_button = QPushButton("关闭")
         close_button.setProperty("role", "quiet")
+        close_button.setMaximumWidth(88)
         close_button.clicked.connect(self.reject)
-        layout.addWidget(close_button)
         self._close_button = close_button
+
+        footer_actions = QHBoxLayout()
+        footer_actions.setSpacing(8)
+        footer_actions.addWidget(delete_button)
+        footer_actions.addStretch(1)
+        footer_actions.addWidget(close_button)
+        footer_actions.addWidget(create_button)
+        layout.addLayout(footer_actions)
 
         self._refresh_datasets()
 
@@ -1357,17 +1399,26 @@ class DataSetManagerDialog(QDialog):
                 if filter_text not in haystack:
                     continue
             item = QListWidgetItem(
-                f"{dataset.display_name} | "
-                f"{dataset.start_time:%m-%d %H:%M} -> {dataset.end_time:%m-%d %H:%M}"
+                f"{dataset.display_name}\n"
+                f"{dataset.symbol} · {dataset.timeframe} · "
+                f"{dataset.start_time:%m-%d %H:%M} → {dataset.end_time:%m-%d %H:%M}"
             )
+            item.setSizeHint(QSize(0, 46))
             item.setData(32, dataset.id)
             self.dataset_list.addItem(item)
         if self.dataset_list.count() == 0:
             self.empty_state_label.setText("没有符合筛选的数据集" if filter_text else "暂无数据集")
             self.empty_state_label.setVisible(True)
+            self.dataset_list.setVisible(False)
+            self._create_button.setEnabled(False)
+            self._delete_button.setEnabled(False)
         else:
             self.empty_state_label.clear()
             self.empty_state_label.setVisible(False)
+            self.dataset_list.setVisible(True)
+            self.dataset_list.setCurrentRow(0)
+            self._create_button.setEnabled(True)
+            self._delete_button.setEnabled(True)
 
     def _selected_dataset_id(self) -> int | None:
         item = self.dataset_list.currentItem()
@@ -1514,29 +1565,40 @@ class SessionLibraryDialog(QDialog):
         layout.addWidget(self.session_filter)
 
         self.session_list = QListWidget()
+        self.session_list.setWordWrap(True)
+        self.session_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.session_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.session_list.itemDoubleClicked.connect(lambda _: self._open_session())
-        layout.addWidget(self.session_list)
+        layout.addWidget(self.session_list, 1)
         self.empty_state_label = QLabel("")
         self.empty_state_label.setObjectName("sessionLibraryEmptyState")
         self.empty_state_label.setProperty("role", "statusMuted")
         self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_state_label.setWordWrap(True)
-        layout.addWidget(self.empty_state_label)
+        self.empty_state_label.setProperty("card", True)
+        layout.addWidget(self.empty_state_label, 1)
 
-        open_button = QPushButton("打开所选案例")
-        open_button.setProperty("role", "primary")
-        open_button.clicked.connect(self._open_session)
-        layout.addWidget(open_button)
+        self.open_button = QPushButton("打开所选案例")
+        self.open_button.setProperty("role", "primary")
+        self.open_button.clicked.connect(self._open_session)
 
-        delete_button = QPushButton("删除所选案例")
-        delete_button.setProperty("role", "danger")
-        delete_button.clicked.connect(self._delete_session)
-        layout.addWidget(delete_button)
+        self.delete_button = QPushButton("删除所选案例")
+        self.delete_button.setProperty("role", "danger")
+        self.delete_button.setMaximumWidth(132)
+        self.delete_button.clicked.connect(self._delete_session)
 
-        close_button = QPushButton("关闭")
-        close_button.setProperty("role", "quiet")
-        close_button.clicked.connect(self.reject)
-        layout.addWidget(close_button)
+        self.close_button = QPushButton("关闭")
+        self.close_button.setProperty("role", "quiet")
+        self.close_button.setMaximumWidth(88)
+        self.close_button.clicked.connect(self.reject)
+
+        footer_actions = QHBoxLayout()
+        footer_actions.setSpacing(8)
+        footer_actions.addWidget(self.delete_button)
+        footer_actions.addStretch(1)
+        footer_actions.addWidget(self.close_button)
+        footer_actions.addWidget(self.open_button)
+        layout.addLayout(footer_actions)
 
         self._refresh_sessions()
 
@@ -1546,16 +1608,25 @@ class SessionLibraryDialog(QDialog):
         for session in self.repo.list_sessions(query=filter_text):
             status_text = "完成" if session.status is SessionStatus.COMPLETED else "进行中"
             item = QListWidgetItem(
-                f"{session.title} | {session.timeframe} | {status_text} | PnL {session.stats.total_pnl:.2f}"
+                f"{session.title or session.symbol}\n"
+                f"{session.symbol} · {session.chart_timeframe} · {status_text} · PnL {session.stats.total_pnl:.2f}"
             )
+            item.setSizeHint(QSize(0, 48))
             item.setData(32, session.id)
             self.session_list.addItem(item)
         if self.session_list.count() == 0:
             self.empty_state_label.setText("没有符合筛选的案例" if filter_text else "暂无案例")
             self.empty_state_label.setVisible(True)
+            self.session_list.setVisible(False)
+            self.open_button.setEnabled(False)
+            self.delete_button.setEnabled(False)
         else:
             self.empty_state_label.clear()
             self.empty_state_label.setVisible(False)
+            self.session_list.setVisible(True)
+            self.session_list.setCurrentRow(0)
+            self.open_button.setEnabled(True)
+            self.delete_button.setEnabled(True)
 
     def _open_session(self) -> None:
         item = self.session_list.currentItem()
@@ -1708,8 +1779,13 @@ class TradeHistoryDialog(QDialog):
         self.trade_history_table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
         self.trade_history_table.setSortingEnabled(True)
         self.trade_history_table.verticalHeader().hide()
-        self.trade_history_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.trade_history_table.horizontalHeader().setStretchLastSection(True)
+        self.trade_history_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table_header = self.trade_history_table.horizontalHeader()
+        table_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        table_header.setMinimumSectionSize(36)
+        table_header.setStretchLastSection(True)
+        for column, width in enumerate((38, 48, 88, 88, 52, 50, 64, 88, 110)):
+            self.trade_history_table.setColumnWidth(column, width)
         self.trade_history_table.clicked.connect(self._handle_table_clicked)
         self.trade_history_table.doubleClicked.connect(self._handle_table_activated)
         self.trade_history_table.activated.connect(self._handle_table_activated)
@@ -1781,7 +1857,6 @@ class TradeHistoryDialog(QDialog):
         layout.addLayout(focus_layout)
 
         close_button = QPushButton("关闭")
-        close_button.setProperty("role", "quiet")
         close_button.setProperty("role", "quiet")
         close_button.clicked.connect(self.accept)
         layout.addWidget(close_button)
@@ -2006,6 +2081,8 @@ class TradeReviewSidebar(QWidget):
         self.trade_card_list = QListWidget()
         self.trade_card_list.setObjectName("tradeReviewCardList")
         self.trade_card_list.setAlternatingRowColors(False)
+        self.trade_card_list.setWordWrap(True)
+        self.trade_card_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.trade_card_list.itemClicked.connect(self._handle_card_clicked)
         layout.addWidget(self.trade_card_list, 2)
 
@@ -2575,7 +2652,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.owner = owner
         self.setWindowTitle("设置")
-        self.resize(780, 500)
+        self.resize(820, 620)
         self.setStyleSheet(dialog_stylesheet())
 
         layout = QHBoxLayout(self)
@@ -2591,9 +2668,17 @@ class SettingsDialog(QDialog):
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("settingsContent")
-        self.pages.addWidget(self._build_chart_page())
-        self.pages.addWidget(self._build_replay_page())
-        self.pages.addWidget(self._build_diagnostics_page())
+        for page in (
+            self._build_chart_page(),
+            self._build_replay_page(),
+            self._build_diagnostics_page(),
+        ):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setWidget(page)
+            self.pages.addWidget(scroll)
         layout.addWidget(self.pages, 1)
 
         self.category_list.currentRowChanged.connect(self.pages.setCurrentIndex)
@@ -2650,6 +2735,7 @@ class SettingsDialog(QDialog):
         candle_layout.addRow("图表背景", self.chart_background_button)
         self.reset_candle_colors_button = QPushButton("恢复默认配色")
         self.reset_candle_colors_button.setProperty("role", "secondary")
+        self.reset_candle_colors_button.setFixedWidth(148)
         self.reset_candle_colors_button.clicked.connect(self.owner._reset_chart_color_settings)
         candle_layout.addRow("", self.reset_candle_colors_button)
         layout.addWidget(candle_group)
@@ -2785,6 +2871,8 @@ class SettingsDialog(QDialog):
 
     def _build_color_button(self, setting_key: str) -> QPushButton:
         button = QPushButton()
+        button.setFixedSize(148, 30)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.clicked.connect(lambda _checked=False, key=setting_key: self._pick_chart_color(key))
         return button
 
@@ -2904,11 +2992,16 @@ class MainWindow(QMainWindow):
         self._last_completed_step_forward_save_generation = 0
         self._failed_step_forward_save_generation = 0
         self._step_forward_save_in_flight = False
+        self._pending_step_forward_save_trigger: str | None = None
         self._pending_download_update_info: UpdateInfo | None = None
         self._updates_dir = default_updates_dir()
+        self._close_pending = False
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._perform_auto_save)
+        self._step_forward_save_debounce_timer = QTimer(self)
+        self._step_forward_save_debounce_timer.setSingleShot(True)
+        self._step_forward_save_debounce_timer.timeout.connect(self._flush_debounced_step_forward_save)
         self._deferred_step_ui_timer = QTimer(self)
         self._deferred_step_ui_timer.setSingleShot(True)
         self._deferred_step_ui_timer.timeout.connect(self._flush_deferred_step_ui_refresh)
@@ -2921,6 +3014,11 @@ class MainWindow(QMainWindow):
         self._viewport_extension_tasks = AsyncTaskCoordinator(self, component="chart_window")
         self._active_viewport_extension_request_id = 0
         self._pending_viewport_extension_request: tuple[int, int] | None = None
+        self._forward_prefetch_tasks = AsyncTaskCoordinator(self, component="forward_prefetch")
+        self._active_forward_prefetch_thread: QThread | None = None
+        self._active_forward_prefetch_worker: ViewportWindowExtensionWorker | None = None
+        self._active_forward_prefetch_request_id = 0
+        self._active_forward_prefetch_context: tuple[int, str] | None = None
         self._trade_action_buttons: dict[str, QPushButton] = {}
         self._draw_order_buttons: dict[OrderLineType, QPushButton] = {}
         self._drawing_tool_buttons: dict[DrawingToolType, QPushButton] = {}
@@ -3141,6 +3239,12 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(AppTheme.flat_group_gap)
+
+        brand_label = QLabel("BarByBar")
+        brand_label.setObjectName("appBrandLabel")
+        brand_label.setProperty("role", "appTitle")
+        brand_label.setToolTip("逐根 K 线交易复盘工作台")
+        layout.addWidget(brand_label, 0, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         timeframe_toolbar = QHBoxLayout()
         timeframe_toolbar.setSpacing(3)
@@ -3515,7 +3619,7 @@ class MainWindow(QMainWindow):
         stored = self._ui_settings.get("bar_count_labels_visible")
         if isinstance(stored, bool):
             return stored
-        return True
+        return False
 
     def _trade_markers_default_visible(self) -> bool:
         stored = self._ui_settings.get("trade_markers_visible")
@@ -4481,11 +4585,13 @@ class MainWindow(QMainWindow):
                 button.setChecked(False)
                 button.blockSignals(False)
                 button.setEnabled(False)
+                button.setVisible(False)
                 continue
             button.setText(template.note or f"模板{index}")
             button.setToolTip(f"{self._drawing_tool_label(template.tool_type)} | {template.note or 'Template'}")
             button.setProperty("template_id", template.id)
             button.setEnabled(True)
+            button.setVisible(True)
         if self._active_drawing_template_id and self._active_drawing_template_id not in self._drawing_templates:
             self._active_drawing_template_id = None
         self._sync_drawing_template_buttons()
@@ -5253,13 +5359,22 @@ class MainWindow(QMainWindow):
             return
         if normalized == self.engine.session.chart_timeframe:
             return
+        if not self.timeframe_buttons[normalized].isEnabled():
+            self._show_notice("无法切换周期", f"当前数据不足以生成 {normalized} K线", "请选择仍然可用的图表周期。")
+            return
+        try:
+            replay_bar_count = self.repo.get_replay_bar_count(self.engine.session.dataset_id, normalized)
+        except (KeyError, ValueError) as exc:
+            self._show_error("切换失败", "无法检查目标周期", "当前案例将继续保留原来的图表周期。", str(exc))
+            return
+        if replay_bar_count <= 0:
+            self.timeframe_buttons[normalized].setEnabled(False)
+            self._show_notice("无法切换周期", f"当前数据不足以生成 {normalized} K线", "当前案例仍保留原来的图表周期。")
+            return
         self._flush_pending_auto_save("change_chart_timeframe")
         anchor_time = self.engine.session.current_bar_time or self.engine.current_bar.timestamp
         self.engine.session.current_bar_time = anchor_time
         self.save_session(trigger="change_chart_timeframe:source")
-        self.engine.session.chart_timeframe = normalized
-        self.engine.session.current_bar_time = anchor_time
-        self.save_session(trigger="change_chart_timeframe", persist_drawings=False, persist_trades=False)
         logger.bind(component="chart", session_id=self.current_session_id, chart_timeframe=normalized).info(
             "event=change_chart_timeframe"
         )
@@ -5273,12 +5388,28 @@ class MainWindow(QMainWindow):
 
     def _set_timeframe_choices(self, source_timeframe: str, current_timeframe: str) -> None:
         choices = supported_replay_timeframes(source_timeframe)
+        available = set(choices)
+        if self.current_dataset is not None:
+            source_minutes = timeframe_to_minutes(source_timeframe)
+            total_bars = self.current_dataset.total_bars
+            available = {
+                timeframe
+                for timeframe in choices
+                if total_bars > 0
+                and (
+                    timeframe == "1d"
+                    or total_bars >= timeframe_to_minutes(timeframe) // source_minutes
+                )
+            }
         current = normalize_timeframe(current_timeframe)
-        if current not in choices and choices:
-            current = default_chart_timeframe(source_timeframe)
+        if current not in available and available:
+            preferred = default_chart_timeframe(source_timeframe)
+            current = preferred if preferred in available else next(
+                timeframe for timeframe in choices if timeframe in available
+            )
         for timeframe, button in self.timeframe_buttons.items():
             button.blockSignals(True)
-            button.setEnabled(timeframe in choices)
+            button.setEnabled(timeframe in available)
             button.setChecked(timeframe == current)
             button.blockSignals(False)
 
@@ -5683,6 +5814,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._flush_deferred_step_ui_refresh()
         self._flush_pending_auto_save("start_session_load")
+        self._active_forward_prefetch_request_id += 1
+        self._active_forward_prefetch_context = None
         self.current_session_id = session_id
         self.engine = None
         self._sync_case_header()
@@ -5728,6 +5861,8 @@ class MainWindow(QMainWindow):
             chart_timeframe = payload["chart_timeframe"]
             anchor_time = payload["anchor_time"]
             window = payload["window"]
+            recovered_timeframe = bool(payload.get("recovered_timeframe", False))
+            persisted_timeframe = normalize_timeframe(session.chart_timeframe)
             session.chart_timeframe = chart_timeframe
             if anchor_time is not None:
                 session.current_bar_time = anchor_time
@@ -5749,6 +5884,8 @@ class MainWindow(QMainWindow):
                 window,
                 persisted_trade_review_items,
             )
+            if session.id is not None and (recovered_timeframe or persisted_timeframe != chart_timeframe):
+                self.engine.session = self.repo.save_session(self.engine.session, None)
             log.bind(session_id=session.id, dataset_id=dataset.id).debug(
                 "event=build_engine elapsed_ms={elapsed_ms:.3f}",
                 elapsed_ms=(perf_counter() - engine_step) * 1000,
@@ -5822,7 +5959,11 @@ class MainWindow(QMainWindow):
         self._active_session_save_worker = worker
 
     def _has_pending_step_forward_save(self) -> bool:
-        return self._latest_step_forward_save_generation > self._last_completed_step_forward_save_generation
+        return (
+            self._step_forward_save_debounce_timer.isActive()
+            or self._pending_step_forward_save_trigger is not None
+            or self._latest_step_forward_save_generation > self._last_completed_step_forward_save_generation
+        )
 
     def _build_step_forward_save_request(self, trigger: str) -> SessionSaveRequest | None:
         if not self.engine:
@@ -5841,8 +5982,22 @@ class MainWindow(QMainWindow):
         )
 
     def _enqueue_step_forward_save(self, trigger: str = "step_forward") -> None:
+        self._pending_step_forward_save_trigger = trigger
+        self._step_forward_save_in_flight = True
+        self._step_forward_save_debounce_timer.start(STEP_FORWARD_SAVE_DEBOUNCE_MS)
+        self._sync_case_header()
+
+    @Slot()
+    def _flush_debounced_step_forward_save(self) -> None:
+        trigger = self._pending_step_forward_save_trigger
+        if trigger is None:
+            return
+        self._step_forward_save_debounce_timer.stop()
+        self._pending_step_forward_save_trigger = None
         request = self._build_step_forward_save_request(trigger)
         if request is None:
+            self._step_forward_save_in_flight = False
+            self._sync_case_header()
             return
         self._step_forward_save_generation = request.generation
         self._latest_step_forward_save_generation = request.generation
@@ -5859,6 +6014,8 @@ class MainWindow(QMainWindow):
     def _flush_pending_step_forward_save(self, reason: str) -> None:
         if not self._has_pending_step_forward_save():
             return
+        if self._step_forward_save_debounce_timer.isActive() or self._pending_step_forward_save_trigger is not None:
+            self._flush_debounced_step_forward_save()
         logger.bind(
             component="session_save_async",
             session_id=self.current_session_id,
@@ -5928,33 +6085,54 @@ class MainWindow(QMainWindow):
         logger.bind(component="session_save_async", thread_id=_thread_id()).debug("event=session_save_thread_finished")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self._flush_deferred_step_ui_refresh()
-        self._flush_pending_auto_save("close_event")
+        if not self._close_pending:
+            self._flush_deferred_step_ui_refresh()
+            self._flush_pending_auto_save("close_event")
+            if self._trade_history_dialog is not None:
+                self._trade_history_dialog.close()
+            self._active_batch_import_token += 1
+            self._active_loader_token += 1
+            self._active_update_check_token += 1
+            self._active_update_download_token += 1
+            self._active_viewport_extension_request_id += 1
+            self._active_forward_prefetch_request_id += 1
+            self._active_forward_prefetch_context = None
+            self._close_pending = True
+
+        threads = [
+            ("batch_import", self._active_batch_import_thread, 3000),
+            ("session_load", self._active_loader_thread, 2000),
+            ("chart_window", self._active_viewport_extension_thread, 2000),
+            ("forward_prefetch", self._active_forward_prefetch_thread, 2000),
+            ("update_check", self._active_update_check_thread, 2000),
+            ("update_download", self._active_update_download_thread, 2000),
+            ("session_save_async", self._active_session_save_thread, 2000),
+        ]
+        all_stopped = True
+        for component, thread, timeout_ms in threads:
+            if thread is None or not thread.isRunning():
+                continue
+            logger.bind(component=component).warning("event=close_waiting_for_background_thread")
+            thread.requestInterruption()
+            thread.quit()
+            if not thread.wait(timeout_ms):
+                all_stopped = False
+
+        if not all_stopped:
+            self.show_busy_overlay("正在安全退出...", "正在等待后台任务结束")
+            event.ignore()
+            QTimer.singleShot(100, self._retry_pending_close)
+            return
+
+        self._close_pending = False
         self.hide_busy_overlay()
         unregister_fatal_error_handler(self.show_fatal_error)
-        if self._trade_history_dialog is not None:
-            self._trade_history_dialog.close()
-        if self._active_batch_import_thread and self._active_batch_import_thread.isRunning():
-            logger.bind(component="batch_import").warning("event=close_waiting_for_batch_import_thread")
-            self._active_batch_import_thread.quit()
-            self._active_batch_import_thread.wait(3000)
-        if self._active_loader_thread and self._active_loader_thread.isRunning():
-            self._session_load_tasks.shutdown()
-        if self._active_viewport_extension_thread and self._active_viewport_extension_thread.isRunning():
-            self._viewport_extension_tasks.shutdown()
-        if self._active_update_check_thread and self._active_update_check_thread.isRunning():
-            logger.bind(component="update_check").warning("event=close_waiting_for_update_check_thread")
-            self._active_update_check_thread.quit()
-            self._active_update_check_thread.wait(2000)
-        if self._active_update_download_thread and self._active_update_download_thread.isRunning():
-            logger.bind(component="update_download").warning("event=close_waiting_for_update_download_thread")
-            self._active_update_download_thread.quit()
-            self._active_update_download_thread.wait(2000)
-        if self._active_session_save_thread and self._active_session_save_thread.isRunning():
-            logger.bind(component="session_save_async").warning("event=close_waiting_for_session_save_thread")
-            self._active_session_save_thread.quit()
-            self._active_session_save_thread.wait(2000)
         super().closeEvent(event)
+
+    @Slot()
+    def _retry_pending_close(self) -> None:
+        if self._close_pending:
+            self.close()
 
     def _log_ui_thread(self, operation: str) -> None:
         app = QApplication.instance()
@@ -5985,7 +6163,7 @@ class MainWindow(QMainWindow):
                 total_count=self.engine.total_count,
             ).info("event=skip_extend_forward_window")
             return
-        if self.engine.forward_buffer > WINDOW_BUFFER_THRESHOLD:
+        if self.engine.forward_buffer > FORWARD_PREFETCH_THRESHOLD:
             logger.bind(
                 component="chart_window",
                 session_id=self.current_session_id,
@@ -5994,6 +6172,14 @@ class MainWindow(QMainWindow):
                 buffer=self.engine.forward_buffer,
             ).debug("event=skip_extend_forward_window")
             return
+        if self.engine.forward_buffer > FORWARD_PREFETCH_FALLBACK_THRESHOLD:
+            if not self._forward_prefetch_tasks.is_running():
+                self._start_forward_window_prefetch()
+            return
+        # The background prefetch normally completes well before this point.
+        # Keep a very small synchronous fallback so replay can never become
+        # stranded at the end of the currently loaded window.
+        self._active_forward_prefetch_request_id += 1
         logger.bind(
             component="chart_window",
             session_id=self.current_session_id,
@@ -6029,6 +6215,73 @@ class MainWindow(QMainWindow):
             preserve_viewport=True,
             timeframe=self.engine.session.chart_timeframe,
         )
+
+    def _start_forward_window_prefetch(self) -> None:
+        if not self.engine or not self.current_session_id or self._forward_prefetch_tasks.is_running():
+            return
+        self._active_forward_prefetch_request_id += 1
+        request_id = self._active_forward_prefetch_request_id
+        self._active_forward_prefetch_context = (
+            self.current_session_id,
+            self.engine.session.chart_timeframe,
+        )
+        worker = ViewportWindowExtensionWorker(
+            self.repo.db_path,
+            self.current_session_id,
+            self.engine.session.chart_timeframe,
+            self.engine.current_bar.timestamp,
+            EXTEND_WINDOW_BEFORE,
+            EXTEND_WINDOW_AFTER,
+            request_id,
+            metric_operation="forward_prefetch_window",
+        )
+        thread = self._forward_prefetch_tasks.start(
+            worker,
+            finished_slot=self._handle_forward_window_prefetched,
+            failed_slot=self._handle_forward_window_prefetch_failed,
+            thread_finished_slot=self._handle_forward_window_prefetch_thread_finished,
+        )
+        self._active_forward_prefetch_thread = thread
+        self._active_forward_prefetch_worker = worker
+
+    @Slot(int, object)
+    def _handle_forward_window_prefetched(self, request_id: int, payload: object) -> None:
+        if request_id != self._active_forward_prefetch_request_id or not self.engine:
+            return
+        if self._active_forward_prefetch_context != (
+            self.current_session_id,
+            self.engine.session.chart_timeframe,
+        ):
+            return
+        assert isinstance(payload, WindowBars)
+        if not (payload.global_start_index <= self.engine.session.current_index <= payload.global_end_index):
+            return
+        if payload.global_end_index <= self.engine.window_end_index:
+            return
+        self.engine.replace_window(payload.bars, payload.global_start_index, payload.total_count)
+        self.chart_widget.set_window_data(
+            self.engine.bars,
+            self.engine.session.current_index,
+            self.engine.total_count,
+            self.engine.window_start_index,
+            preserve_viewport=True,
+            timeframe=self.engine.session.chart_timeframe,
+        )
+        self._update_ui_from_engine(defer_heavy=True)
+
+    @Slot(int, str)
+    def _handle_forward_window_prefetch_failed(self, request_id: int, message: str) -> None:
+        if request_id != self._active_forward_prefetch_request_id:
+            return
+        logger.bind(component="chart_window", request_id=request_id).warning(
+            "event=forward_window_prefetch_failed message={message}",
+            message=message,
+        )
+
+    @Slot()
+    def _handle_forward_window_prefetch_thread_finished(self) -> None:
+        self._active_forward_prefetch_thread = self._forward_prefetch_tasks.active_thread
+        self._active_forward_prefetch_worker = self._forward_prefetch_tasks.active_worker
 
     def _ensure_window_for_backward(self) -> None:
         if not self.engine or not self.current_session_id:

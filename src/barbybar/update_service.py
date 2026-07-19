@@ -14,6 +14,10 @@ SETUP_ASSET_SUFFIX = "-windows-x64-setup.exe"
 USER_AGENT = "BarByBar-Updater"
 
 
+class DownloadCancelledError(RuntimeError):
+    pass
+
+
 @dataclass(slots=True)
 class UpdateInfo:
     version: str
@@ -100,7 +104,13 @@ def download_installer(
     update_info: UpdateInfo,
     target_path: str | Path,
     progress_callback: Callable[[int, int], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> Path:
+    def ensure_not_cancelled() -> None:
+        if cancel_callback is not None and cancel_callback():
+            raise DownloadCancelledError("Update download was cancelled.")
+
+    ensure_not_cancelled()
     destination = Path(target_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() and update_info.asset_size is not None and destination.stat().st_size == update_info.asset_size:
@@ -119,6 +129,7 @@ def download_installer(
             if header_total:
                 total = max(total, int(header_total))
             while True:
+                ensure_not_cancelled()
                 chunk = response.read(1024 * 64)
                 if not chunk:
                     break
@@ -126,6 +137,7 @@ def download_installer(
                 downloaded += len(chunk)
                 if progress_callback is not None:
                     progress_callback(downloaded, total)
+        ensure_not_cancelled()
         temp_path.replace(destination)
     except Exception:
         if temp_path.exists():

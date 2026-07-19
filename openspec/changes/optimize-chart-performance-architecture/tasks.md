@@ -47,7 +47,15 @@
 
 ## 7. Interface Efficiency and Release Guardrails
 
-- [ ] 7.1 Review common replay workflows and ensure frequent controls update without blocking chart interaction.
-- [ ] 7.2 Make display settings and chart toggles affect only the intended chart layer.
+- [x] 7.1 Review common replay workflows and ensure frequent controls update without blocking chart interaction.
+- [x] 7.2 Make display settings and chart toggles affect only the intended chart layer.
 - [x] 7.3 Add a release smoke checklist covering import, open session, step forward, step back, zoom, backward window extension, save, and reopen.
 - [x] 7.4 Document performance budgets and diagnostics interpretation for future maintenance.
+
+## 8. Audit-Driven Interaction Latency Fixes
+
+- [x] 8.1 Skip unchanged right-padding and tick-size updates so stepping does not repeat viewport or drawing work.
+- [x] 8.2 Reuse session marker and bar-count label graphics, and keep dense bar-count labels disabled by default.
+- [x] 8.3 Use shallow replay snapshots for immutable history records and debounce/coalesce step-forward persistence capture.
+- [x] 8.4 Prefetch the forward chart window in the background with stale-result protection and a bounded synchronous fallback.
+- [x] 8.5 Re-run large-session interaction benchmarks and the complete regression suite after the UI polish pass.

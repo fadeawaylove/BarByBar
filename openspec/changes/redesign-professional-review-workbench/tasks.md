@@ -168,51 +168,59 @@
 
 ## 14. Interaction Continuity and Behavior Preservation
 
-- [ ] 14.1 Verify direct trade actions still call the existing engine action paths.
-- [ ] 14.2 Verify line/order tools still create and trigger existing order line types with unchanged semantics.
-- [ ] 14.3 Verify drawing tools still create, select, edit, and persist existing drawing objects.
-- [ ] 14.4 Verify step forward, step back, reset view, and shortcut behavior remain unchanged.
-- [ ] 14.5 Verify text-entry widgets still block replay shortcuts where current behavior requires it.
-- [ ] 14.6 Verify timeframe switching still saves source timeframe state and does not clear source trades/drawings.
-- [ ] 14.7 Verify session load/save, async step-forward save, and save-failure fallback behavior remain intact.
-- [ ] 14.8 Verify trade review notes still write to the same entry/exit action notes and trade review item snapshots.
-- [ ] 14.9 Add focused regression tests for each preserved behavior touched by the redesign.
+- [x] 14.1 Verify direct trade actions still call the existing engine action paths.
+- [x] 14.2 Verify line/order tools still create and trigger existing order line types with unchanged semantics.
+- [x] 14.3 Verify drawing tools still create, select, edit, and persist existing drawing objects.
+- [x] 14.4 Verify step forward, step back, reset view, and shortcut behavior remain unchanged.
+- [x] 14.5 Verify text-entry widgets still block replay shortcuts where current behavior requires it.
+- [x] 14.6 Verify timeframe switching still saves source timeframe state and does not clear source trades/drawings.
+- [x] 14.7 Verify session load/save, async step-forward save, and save-failure fallback behavior remain intact.
+- [x] 14.8 Verify trade review notes still write to the same entry/exit action notes and trade review item snapshots.
+- [x] 14.9 Add focused regression tests for each preserved behavior touched by the redesign.
 
 ## 15. Screenshot and Manual Visual Review
 
-- [ ] 15.1 Add or update a local screenshot smoke script for the redesigned workbench.
-- [ ] 15.2 Capture empty startup screenshot.
-- [ ] 15.3 Capture active session screenshot with no position.
-- [ ] 15.4 Capture active session screenshot with long position.
-- [ ] 15.5 Capture active session screenshot with short position.
-- [ ] 15.6 Capture completed session screenshot.
-- [ ] 15.7 Capture drawing-mode screenshot.
-- [ ] 15.8 Capture order-preview-mode screenshot.
-- [ ] 15.9 Capture trade-history sidebar screenshot with selected entry focus.
-- [ ] 15.10 Capture full trade review center screenshot.
-- [ ] 15.11 Capture settings dialog screenshot.
-- [ ] 15.12 Capture dataset manager screenshot with empty, populated, and batch-progress states.
-- [ ] 15.13 Capture session library screenshot with empty, populated, and filtered states.
+- [x] 15.1 Add or update a local screenshot smoke script for the redesigned workbench.
+- [x] 15.2 Capture empty startup screenshot.
+- [x] 15.3 Capture active session screenshot with no position.
+- [x] 15.4 Capture active session screenshot with long position.
+- [x] 15.5 Capture active session screenshot with short position.
+- [x] 15.6 Capture completed session screenshot.
+- [x] 15.7 Capture drawing-mode screenshot.
+- [x] 15.8 Capture order-preview-mode screenshot.
+- [x] 15.9 Capture trade-history sidebar screenshot with selected entry focus.
+- [x] 15.10 Capture full trade review center screenshot.
+- [x] 15.11 Capture settings dialog screenshot.
+- [x] 15.12 Capture dataset manager screenshot with empty, populated, and batch-progress states.
+- [x] 15.13 Capture session library screenshot with empty, populated, and filtered states.
 - [ ] 15.14 Capture log viewer screenshot with normal, missing-log, and failed-read states where feasible.
 - [ ] 15.15 Capture update/error/notice dialog screenshots.
-- [ ] 15.16 Capture narrow desktop layout screenshot.
-- [ ] 15.17 Review screenshots against the redesign acceptance checklist and document remaining visual issues.
+- [x] 15.16 Capture narrow desktop layout screenshot.
+- [x] 15.17 Review screenshots against the redesign acceptance checklist and document remaining visual issues.
 - [ ] 15.18 Run a packaged-app manual smoke pass to verify real font rendering, text fit, and dialog sizing.
 
 ## 16. Tests and Final Validation
 
-- [ ] 16.1 Update main-window tests for app header, training toolbar, status bar, no-session state, right-panel sections, and preserved action wiring.
-- [ ] 16.2 Update chart-widget tests for visual states and interaction feedback touched by the redesign.
-- [ ] 16.3 Update trade-history tests for sidebar and full review center workflows.
-- [ ] 16.4 Update settings tests for redesigned grouping, persistence, and diagnostics actions.
-- [ ] 16.5 Update dataset manager tests for import hierarchy, filtering, selected detail, empty states, and batch states.
-- [ ] 16.6 Update session library tests for row hierarchy, selected detail, current session, empty states, and open/delete behavior.
-- [ ] 16.7 Update log/update/notice/busy overlay tests for redesigned states.
-- [ ] 16.8 Run focused main-window UI tests.
-- [ ] 16.9 Run focused chart-widget tests.
-- [ ] 16.10 Run focused trade-history tests.
-- [ ] 16.11 Run focused settings/dataset/session/log/update tests.
-- [ ] 16.12 Run repository, engine, async save, logging retention, and release/update regression tests to confirm no core behavior changed.
-- [ ] 16.13 Run full test suite with `uv run pytest -q`.
-- [ ] 16.14 Run `openspec validate redesign-professional-review-workbench --strict`.
-- [ ] 16.15 Confirm screenshots/manual smoke notes are attached or documented before marking the change complete.
+- [x] 16.1 Update main-window tests for app header, training toolbar, status bar, no-session state, right-panel sections, and preserved action wiring.
+- [x] 16.2 Update chart-widget tests for visual states and interaction feedback touched by the redesign.
+- [x] 16.3 Update trade-history tests for sidebar and full review center workflows.
+- [x] 16.4 Update settings tests for redesigned grouping, persistence, and diagnostics actions.
+- [x] 16.5 Update dataset manager tests for import hierarchy, filtering, selected detail, empty states, and batch states.
+- [x] 16.6 Update session library tests for row hierarchy, selected detail, current session, empty states, and open/delete behavior.
+- [x] 16.7 Update log/update/notice/busy overlay tests for redesigned states.
+- [x] 16.8 Run focused main-window UI tests.
+- [x] 16.9 Run focused chart-widget tests.
+- [x] 16.10 Run focused trade-history tests.
+- [x] 16.11 Run focused settings/dataset/session/log/update tests.
+- [x] 16.12 Run repository, engine, async save, logging retention, and release/update regression tests to confirm no core behavior changed.
+- [x] 16.13 Run full test suite with `uv run pytest -q`.
+- [x] 16.14 Run `openspec validate redesign-professional-review-workbench --strict`.
+- [x] 16.15 Confirm screenshots/manual smoke notes are attached or documented before marking the change complete.
+
+## 17. Audit-Driven Polish Corrections
+
+- [x] 17.1 Add a restrained product identity and hide unused drawing-template slots from the primary toolbar.
+- [x] 17.2 Widen the replay sidebar to fit four-action rows and remove horizontal scrolling from trade review lists and tables.
+- [x] 17.3 Make settings pages scroll safely, constrain color controls, and ensure readable text contrast on dark swatches.
+- [x] 17.4 Improve dataset/session row hierarchy, centered empty states, and compact destructive-action footers.
+- [x] 17.5 Re-run focused UI tests, the complete suite, strict OpenSpec validation, and screenshot smoke review.
