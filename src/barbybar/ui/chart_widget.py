@@ -39,6 +39,7 @@ SESSION_LABEL_COLOR = AppTheme.chart_label
 SESSION_END_ARROW_COLOR = AppTheme.chart_session_end
 BAR_COUNT_LABEL_COLOR = AppTheme.chart_label_soft
 EMA_LINE_COLOR = AppTheme.chart_take_profit
+EMA_PERIOD = 20
 ENTRY_LONG_LINE_COLOR = AppTheme.chart_entry_long
 ENTRY_SHORT_LINE_COLOR = AppTheme.chart_entry_short
 STOP_LOSS_LINE_COLOR = AppTheme.chart_stop_loss
@@ -703,6 +704,13 @@ class ChartWidget(QWidget):
         self._y_range_cache_signature: tuple[object, ...] | None = None
         self._y_range_cache_result: tuple[bool, float, float] | None = None
         self._last_candle_geometry_signature: tuple[object, ...] | None = None
+        self._ema_cache_key: tuple[str, int, int] | None = None
+        self._ema_cache_source_bars: list[Bar] | None = None
+        self._ema_cache_closes: list[float] = []
+        self._ema_cache_x_values: list[int] = []
+        self._ema_cache_values: list[float] = []
+        self._last_ema_update_mode = "empty"
+        self._last_ema_calculated_values = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1421,6 +1429,87 @@ class ChartWidget(QWidget):
             self._rebuild_line_items()
         super().keyReleaseEvent(event)
 
+    def _extend_ema_cache(self, target_length: int) -> int:
+        calculated_values = 0
+        multiplier = 2 / (EMA_PERIOD + 1)
+        for index in range(len(self._ema_cache_values), target_length):
+            price = self._bars[index].close
+            value = (
+                price
+                if not self._ema_cache_values
+                else (price - self._ema_cache_values[-1]) * multiplier + self._ema_cache_values[-1]
+            )
+            self._ema_cache_closes.append(price)
+            self._ema_cache_x_values.append(self._global_start_index + index)
+            self._ema_cache_values.append(value)
+            calculated_values += 1
+        return calculated_values
+
+    def _rebuild_ema_cache(self, cache_key: tuple[str, int, int], target_length: int) -> None:
+        target_closes = [bar.close for bar in self._bars[:target_length]]
+        self._ema_cache_key = cache_key
+        self._ema_cache_source_bars = self._bars
+        self._ema_cache_closes = target_closes
+        self._ema_cache_x_values = list(
+            range(self._global_start_index, self._global_start_index + target_length)
+        )
+        self._ema_cache_values = self._ema(target_closes, period=EMA_PERIOD)
+
+    def _sync_ema_curve(self, local_cursor: int) -> None:
+        started = perf_counter()
+        target_length = max(0, min(len(self._bars), local_cursor + 1))
+        cache_key = (self._chart_timeframe, self._global_start_index, EMA_PERIOD)
+        cached_length = len(self._ema_cache_values)
+        mode = "full"
+        calculated_values = 0
+        if target_length == 0:
+            self._ema_cache_key = cache_key
+            self._ema_cache_source_bars = self._bars
+            self._ema_cache_closes = []
+            self._ema_cache_x_values = []
+            self._ema_cache_values = []
+            mode = "empty"
+        elif self._ema_cache_key == cache_key and self._ema_cache_source_bars is self._bars:
+            if target_length > cached_length:
+                calculated_values = self._extend_ema_cache(target_length)
+                mode = "extend"
+            else:
+                mode = "reuse"
+        elif self._ema_cache_key == cache_key:
+            target_closes = [bar.close for bar in self._bars[:target_length]]
+            overlap = min(cached_length, target_length)
+            if self._ema_cache_closes[:overlap] == target_closes[:overlap]:
+                if target_length < cached_length:
+                    self._ema_cache_closes = self._ema_cache_closes[:target_length]
+                    self._ema_cache_x_values = self._ema_cache_x_values[:target_length]
+                    self._ema_cache_values = self._ema_cache_values[:target_length]
+                    mode = "reuse"
+                elif target_length > cached_length:
+                    calculated_values = self._extend_ema_cache(target_length)
+                    mode = "extend"
+                else:
+                    mode = "reuse"
+                self._ema_cache_source_bars = self._bars
+            else:
+                self._rebuild_ema_cache(cache_key, target_length)
+                calculated_values = target_length
+        else:
+            self._rebuild_ema_cache(cache_key, target_length)
+            calculated_values = target_length
+        x_values = self._ema_cache_x_values[:target_length]
+        ema_values = self._ema_cache_values[:target_length]
+        self._last_ema_update_mode = mode
+        self._last_ema_calculated_values = calculated_values
+        self._ema_curve.setData(x=x_values, y=ema_values)
+        record_metric(
+            "chart",
+            "ema_sync",
+            (perf_counter() - started) * 1000,
+            calculated_values=calculated_values,
+            mode=mode,
+            values=target_length,
+        )
+
     def _sync_primary_plot_data(self) -> None:
         local_cursor = self._cursor - self._global_start_index if self._cursor >= 0 else -1
         self._candles.set_data(
@@ -1429,14 +1518,7 @@ class ChartWidget(QWidget):
             self._global_start_index,
             view_box=self.price_plot.vb,
         )
-        x_values = []
-        ema_values = []
-        closes = [bar.close for bar in self._bars[: local_cursor + 1]]
-        ema_prefix = self._ema(closes, period=20)
-        for index in range(local_cursor + 1):
-            x_values.append(self._global_start_index + index)
-            ema_values.append(ema_prefix[index])
-        self._ema_curve.setData(x=x_values, y=ema_values)
+        self._sync_ema_curve(local_cursor)
         self._clear_chart_layers_dirty(ChartLayer.CANDLES, ChartLayer.INDICATORS)
         self._last_candle_geometry_signature = self._candle_geometry_signature()
 

@@ -444,6 +444,116 @@ def test_future_bars_stay_hidden_while_window_can_extend(widget: ChartWidget) ->
     assert widget.viewport_state.right_edge_index == 51
 
 
+def test_ema_cursor_advance_calculates_only_new_value(widget: ChartWidget) -> None:
+    bars = _bars(220)
+    widget.set_window_data(bars, cursor=100, total_count=len(bars), global_start_index=0, timeframe="1m")
+
+    widget.set_cursor_fast(101)
+
+    x_values, ema_values = widget._ema_curve.getData()
+    expected = ChartWidget._ema([bar.close for bar in bars[:102]], period=20)
+    assert widget._last_ema_update_mode == "extend"
+    assert widget._last_ema_calculated_values == 1
+    assert list(x_values) == list(range(102))
+    assert list(ema_values) == pytest.approx(expected)
+
+
+def test_ema_cursor_back_reuses_cached_prefix(widget: ChartWidget) -> None:
+    bars = _bars(220)
+    widget.set_window_data(bars, cursor=120, total_count=len(bars), global_start_index=0, timeframe="1m")
+
+    widget.set_cursor_fast(80)
+
+    x_values, ema_values = widget._ema_curve.getData()
+    expected = ChartWidget._ema([bar.close for bar in bars[:81]], period=20)
+    assert widget._last_ema_update_mode == "reuse"
+    assert widget._last_ema_calculated_values == 0
+    assert list(x_values) == list(range(81))
+    assert list(ema_values) == pytest.approx(expected)
+
+
+def test_ema_same_start_window_extension_keeps_incremental_cache(widget: ChartWidget) -> None:
+    bars = _bars(300)
+    widget.set_window_data(bars[:180], cursor=150, total_count=len(bars), global_start_index=0, timeframe="1m")
+
+    widget.set_window_data(
+        bars[:240],
+        cursor=151,
+        total_count=len(bars),
+        global_start_index=0,
+        preserve_viewport=True,
+        timeframe="1m",
+    )
+
+    assert widget._last_ema_update_mode == "extend"
+    assert widget._last_ema_calculated_values == 1
+
+
+def test_ema_shifted_window_start_uses_full_rebuild_fallback(widget: ChartWidget) -> None:
+    bars = _bars(420)
+    widget.set_window_data(
+        bars[128:384],
+        cursor=350,
+        total_count=len(bars),
+        global_start_index=128,
+        timeframe="1m",
+    )
+
+    widget.set_window_data(
+        bars[:384],
+        cursor=350,
+        total_count=len(bars),
+        global_start_index=0,
+        preserve_viewport=True,
+        timeframe="1m",
+    )
+
+    _x_values, ema_values = widget._ema_curve.getData()
+    expected = ChartWidget._ema([bar.close for bar in bars[:351]], period=20)
+    assert widget._last_ema_update_mode == "full"
+    assert widget._last_ema_calculated_values == 351
+    assert list(ema_values) == pytest.approx(expected)
+
+
+def test_ema_timeframe_change_uses_full_rebuild_fallback(widget: ChartWidget) -> None:
+    bars = _bars(120)
+    widget.set_window_data(bars, cursor=80, total_count=len(bars), global_start_index=0, timeframe="1m")
+
+    widget.set_window_data(
+        bars,
+        cursor=80,
+        total_count=len(bars),
+        global_start_index=0,
+        preserve_viewport=True,
+        timeframe="5m",
+    )
+
+    assert widget._last_ema_update_mode == "full"
+    assert widget._last_ema_calculated_values == 81
+
+
+def test_ema_changed_history_uses_full_rebuild_fallback(widget: ChartWidget) -> None:
+    bars = _bars(120)
+    widget.set_window_data(bars, cursor=80, total_count=len(bars), global_start_index=0, timeframe="1m")
+    changed_bars = _bars(120)
+    changed_bars[20].close += 3.0
+
+    widget.set_window_data(
+        changed_bars,
+        cursor=80,
+        total_count=len(changed_bars),
+        global_start_index=0,
+        preserve_viewport=True,
+        timeframe="1m",
+    )
+
+    _x_values, ema_values = widget._ema_curve.getData()
+    expected = ChartWidget._ema([bar.close for bar in changed_bars[:81]], period=20)
+    assert widget._last_ema_update_mode == "full"
+    assert widget._last_ema_calculated_values == 81
+    assert list(ema_values) == pytest.approx(expected)
+
+
 def test_pan_allows_blank_space_when_revealed_bars_are_fewer_than_window(widget: ChartWidget) -> None:
     widget.set_full_data(_bars())
     widget.set_cursor(50)

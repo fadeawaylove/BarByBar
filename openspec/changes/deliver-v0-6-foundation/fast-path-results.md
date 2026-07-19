@@ -56,3 +56,31 @@ Focused candle/window tests: 15 passed
 Complete chart-widget tests: 255 passed
 Complete automated suite: 679 passed
 ```
+
+## Incremental EMA cache
+
+The 20-period EMA cache now appends only newly revealed closes when the cursor advances, retains calculated prefixes when the cursor moves backward, and verifies compatible prefixes when a bounded data window is replaced. A changed window start, timeframe, period key, or historical close prefix triggers the full-rebuild fallback.
+
+The benchmark includes updating the PyQtGraph curve, not only the EMA arithmetic. The forced-full path clears the cache key before the same one-bar cursor advance.
+
+| Synthetic revealed bars | Path | Samples | Calculated EMA values | Median | P95 | Maximum |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 2,000 | incremental | 20 | 1 | 0.22ms | 0.29ms | 0.56ms |
+| 2,000 | forced full | 20 | 2,000 | 0.38ms | 0.55ms | 0.62ms |
+| 50,000 | incremental | 20 | 1 | 3.00ms | 3.54ms | 3.62ms |
+| 50,000 | forced full | 20 | 50,000 | 8.42ms | 9.07ms | 9.20ms |
+
+Reproduction commands:
+
+```text
+uv run python scripts/benchmark_ema_cache.py --bars 2000 --samples 20 --warmup 2
+uv run python scripts/benchmark_ema_cache.py --bars 50000 --samples 20 --warmup 2
+```
+
+Verification after this slice:
+
+```text
+Focused EMA tests: 9 passed
+Complete chart-widget tests: 261 passed
+Complete automated suite: 685 passed
+```
