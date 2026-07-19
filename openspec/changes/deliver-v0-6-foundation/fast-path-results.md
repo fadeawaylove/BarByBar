@@ -84,3 +84,28 @@ Focused EMA tests: 9 passed
 Complete chart-widget tests: 261 passed
 Complete automated suite: 685 passed
 ```
+
+## Viewport-aware hover candidate cache
+
+Drawing, trade-marker, and trade-link hover testing now builds one viewport-buffered candidate set per data/viewport revision. Drawing anchor and body checks share the same candidate set, and repeated mouse moves reuse it until the viewport or interactive data changes. Existing priority and nearest-target rules remain unchanged.
+
+The forced-prefilter comparison clears the candidate signature before each identical drawing hit test. The synthetic case contains one visible drawing and 10,000 offscreen objects in each category.
+
+| Drawings | Trade markers | Trade links | Candidate drawings | Path | Samples | Median | P95 | Maximum |
+| ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 10,001 | 10,000 | 10,000 | 1 | cached hit test | 100 | 0.079ms | 0.116ms | 0.181ms |
+| 10,001 | 10,000 | 10,000 | 1 | forced prefilter | 100 | 14.023ms | 16.117ms | 19.089ms |
+
+Reproduction command:
+
+```text
+uv run python scripts/benchmark_hover_prefilter.py --objects 10000 --samples 100 --warmup 5
+```
+
+Verification after this slice:
+
+```text
+Focused hover-prefilter and selection tests: 7 passed
+Complete chart-widget tests: 265 passed
+Complete automated suite: 689 passed
+```

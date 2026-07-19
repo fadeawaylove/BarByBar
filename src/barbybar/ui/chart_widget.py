@@ -221,6 +221,14 @@ class HoverTarget:
 
 
 @dataclass(slots=True)
+class HoverHitTestCandidates:
+    x_bounds: tuple[float, float]
+    drawings: list[tuple[int, ChartDrawing]]
+    trade_markers: list[TradeMarker]
+    trade_links: list[TradeLink]
+
+
+@dataclass(slots=True)
 class ActiveDragTarget:
     target_type: ActiveDragTargetType = ActiveDragTargetType.NONE
     order_line_id: int | None = None
@@ -673,6 +681,10 @@ class ChartWidget(QWidget):
         self._native_order_drag_active = False
         self._hovered_order_line_id: int | None = None
         self._hover_target = HoverTarget()
+        self._hover_hit_test_revision = 0
+        self._hover_hit_test_signature: tuple[object, ...] | None = None
+        self._hover_hit_test_candidates_cache: HoverHitTestCandidates | None = None
+        self._last_hover_prefilter_cache_hit = False
         self._active_drag_target = ActiveDragTarget()
         self._mouse_on_axis = False
         self._mouse_in_y_axis_gutter = False
@@ -920,6 +932,7 @@ class ChartWidget(QWidget):
             )
             for drawing in drawings
         ]
+        self._invalidate_hover_hit_test_candidates()
         self._pending_drawing_anchors = []
         self._clear_drawing_preview_state()
         self._clear_drawing_drag_state()
@@ -960,6 +973,7 @@ class ChartWidget(QWidget):
         if index is None:
             return
         del self._drawings[index]
+        self._invalidate_hover_hit_test_candidates()
         self._active_drag_target = ActiveDragTarget()
         self._apply_hover_target(self._empty_hover_target())
         self._rebuild_line_items()
@@ -971,6 +985,7 @@ class ChartWidget(QWidget):
             return
         drawing = self._drawings[index]
         drawing.style = normalize_drawing_style(drawing.tool_type, {**drawing.style, **style})
+        self._invalidate_hover_hit_test_candidates()
         self._rebuild_line_items()
         self.drawingsChanged.emit()
 
@@ -1267,6 +1282,7 @@ class ChartWidget(QWidget):
     def clear_lines(self) -> None:
         self._clear_temporary_measurement()
         self._drawings.clear()
+        self._invalidate_hover_hit_test_candidates()
         self._pending_drawing_anchors = []
         self._clear_drawing_preview_state()
         self._active_drawing_tool = None
@@ -2997,6 +3013,56 @@ class ChartWidget(QWidget):
         x_values = [anchor.x for anchor in drawing.anchors]
         return self._x_range_intersects(min(x_values), max(x_values), bounds)
 
+    def _invalidate_hover_hit_test_candidates(self) -> None:
+        self._hover_hit_test_revision += 1
+        self._hover_hit_test_signature = None
+        self._hover_hit_test_candidates_cache = None
+
+    def _hover_hit_test_candidates(self) -> HoverHitTestCandidates:
+        x_bounds = self._hover_hit_x_bounds()
+        signature = (
+            self._hover_hit_test_revision,
+            round(x_bounds[0], 6),
+            round(x_bounds[1], 6),
+        )
+        if self._hover_hit_test_signature == signature and self._hover_hit_test_candidates_cache is not None:
+            self._last_hover_prefilter_cache_hit = True
+            return self._hover_hit_test_candidates_cache
+        started = perf_counter()
+        candidates = HoverHitTestCandidates(
+            x_bounds=x_bounds,
+            drawings=[
+                (index, drawing)
+                for index, drawing in enumerate(self._drawings)
+                if self._drawing_may_intersect_x_bounds(drawing, x_bounds)
+            ],
+            trade_markers=[
+                marker
+                for marker in self._trade_markers
+                if x_bounds[0] <= marker.x <= x_bounds[1]
+            ],
+            trade_links=[
+                link
+                for link in self._trade_links
+                if self._x_range_intersects(min(link.x1, link.x2), max(link.x1, link.x2), x_bounds)
+            ],
+        )
+        self._hover_hit_test_signature = signature
+        self._hover_hit_test_candidates_cache = candidates
+        self._last_hover_prefilter_cache_hit = False
+        record_metric(
+            "chart",
+            "hover_prefilter",
+            (perf_counter() - started) * 1000,
+            candidate_drawings=len(candidates.drawings),
+            candidate_links=len(candidates.trade_links),
+            candidate_markers=len(candidates.trade_markers),
+            drawings=len(self._drawings),
+            trade_links=len(self._trade_links),
+            trade_markers=len(self._trade_markers),
+        )
+        return candidates
+
     def _editable_order_id_at_scene_pos(self, scene_y: float) -> int | None:
         closest_id: int | None = None
         closest_delta = ORDER_LINE_HIT_DISTANCE_PX
@@ -3153,13 +3219,15 @@ class ChartWidget(QWidget):
     def _drawing_at_scene_pos(self, scene_pos, *, use_visible_filter: bool = True) -> tuple[int, ChartDrawing] | None:  # noqa: ANN001
         if self._drawings_hidden:
             return None
-        x_bounds = self._hover_hit_x_bounds() if use_visible_filter else None
+        drawing_candidates = (
+            self._hover_hit_test_candidates().drawings
+            if use_visible_filter
+            else list(enumerate(self._drawings))
+        )
         hit_index: int | None = None
         hit_priority = 99.0
         hit_distance = float("inf")
-        for index, drawing in enumerate(self._drawings):
-            if x_bounds is not None and not self._drawing_may_intersect_x_bounds(drawing, x_bounds):
-                continue
+        for index, drawing in drawing_candidates:
             border_distance, inside = self._drawing_hit_test(drawing, scene_pos)
             if border_distance is None and not inside:
                 continue
@@ -3176,12 +3244,14 @@ class ChartWidget(QWidget):
     def _drawing_anchor_at_scene_pos(self, scene_pos, *, use_visible_filter: bool = True) -> tuple[int, int] | None:  # noqa: ANN001
         if self._drawings_hidden:
             return None
-        x_bounds = self._hover_hit_x_bounds() if use_visible_filter else None
+        drawing_candidates = (
+            self._hover_hit_test_candidates().drawings
+            if use_visible_filter
+            else list(enumerate(self._drawings))
+        )
         hit: tuple[int, int] | None = None
         closest_distance = float("inf")
-        for drawing_index, drawing in enumerate(self._drawings):
-            if x_bounds is not None and not self._drawing_may_intersect_x_bounds(drawing, x_bounds):
-                continue
+        for drawing_index, drawing in drawing_candidates:
             for anchor_index, anchor in enumerate(drawing.anchors):
                 anchor_scene = self.price_plot.vb.mapViewToScene(QPointF(anchor.x, anchor.y))
                 distance = hypot(float(scene_pos.x()) - float(anchor_scene.x()), float(scene_pos.y()) - float(anchor_scene.y()))
@@ -3350,15 +3420,14 @@ class ChartWidget(QWidget):
         return None
 
     def _trade_marker_at_scene_pos(self, scene_pos) -> tuple[TradeMarker | None, TradeLink | None] | None:  # noqa: ANN001
-        x_bounds = self._hover_hit_x_bounds()
+        candidates = self._hover_hit_test_candidates()
+        x_bounds = candidates.x_bounds
         view_x = float(self.price_plot.vb.mapSceneToView(scene_pos).x())
         if not (x_bounds[0] <= view_x <= x_bounds[1]):
             return None
         if self._trade_markers_visible:
             nearest_marker: tuple[float, TradeMarker] | None = None
-            for marker in self._trade_markers:
-                if not (x_bounds[0] <= marker.x <= x_bounds[1]):
-                    continue
+            for marker in candidates.trade_markers:
                 marker_scene = self.price_plot.vb.mapViewToScene(QPointF(marker.x, marker.y))
                 distance = hypot(float(scene_pos.x()) - float(marker_scene.x()), float(scene_pos.y()) - float(marker_scene.y()))
                 if distance <= TRADE_MARKER_HIT_DISTANCE_PX and (nearest_marker is None or distance < nearest_marker[0]):
@@ -3367,9 +3436,7 @@ class ChartWidget(QWidget):
                 return nearest_marker[1], None
         if self._trade_links_visible:
             nearest_link: tuple[float, TradeLink] | None = None
-            for link in self._trade_links:
-                if not self._x_range_intersects(min(link.x1, link.x2), max(link.x1, link.x2), x_bounds):
-                    continue
+            for link in candidates.trade_links:
                 start = self.price_plot.vb.mapViewToScene(QPointF(link.x1, link.y1))
                 end = self.price_plot.vb.mapViewToScene(QPointF(link.x2, link.y2))
                 distance = self._point_to_segment_distance(
@@ -3515,6 +3582,7 @@ class ChartWidget(QWidget):
             style=self.drawing_style_preset(tool),
         )
         self._drawings.append(drawing)
+        self._invalidate_hover_hit_test_candidates()
         self._pending_drawing_anchors = []
         self._clear_drawing_preview_state()
         self._active_drawing_tool = None
@@ -3614,6 +3682,7 @@ class ChartWidget(QWidget):
         if previous_anchors == [(anchor.x, anchor.y) for anchor in drawing.anchors]:
             return
         self._drag_drawing_changed = True
+        self._invalidate_hover_hit_test_candidates()
         self._rebuild_single_drawing_items(self._drag_drawing_index)
 
     def _finish_drawing_drag(self) -> None:
@@ -4367,6 +4436,7 @@ class ChartWidget(QWidget):
         if not self._bars or self._cursor < 0:
             self._trade_markers = []
             self._trade_links = []
+            self._invalidate_hover_hit_test_candidates()
             self._trade_geometry_dirty = False
             self._clear_chart_layers_dirty(ChartLayer.TRADE_GEOMETRY)
             return
@@ -4421,6 +4491,7 @@ class ChartWidget(QWidget):
             marker.detail_lines = self._trade_action_detail_lines(marker)
         self._trade_markers = markers
         self._trade_links = links
+        self._invalidate_hover_hit_test_candidates()
         self._trade_geometry_dirty = False
         self._clear_chart_layers_dirty(ChartLayer.TRADE_GEOMETRY)
 

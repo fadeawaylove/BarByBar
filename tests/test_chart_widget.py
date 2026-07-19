@@ -37,6 +37,8 @@ from barbybar.ui.chart_widget import (
     TRADE_LINK_LOSS_COLOR,
     TRADE_LINK_WIN_COLOR,
     TAKE_PROFIT_LINE_COLOR,
+    TradeLink,
+    TradeMarker,
     UP_CANDLE_COLOR,
 )
 from barbybar.ui.theme import AppTheme
@@ -3884,6 +3886,61 @@ def test_hover_drawing_hit_test_skips_drawings_outside_visible_x_range(widget: C
     assert calls == [hit[1]]
 
 
+def test_hover_prefilter_reuses_drawing_candidates_for_anchor_and_body(
+    widget: ChartWidget,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(180)
+    drawings = [
+        ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(0.0, 99.0), DrawingAnchor(5.0, 103.0)]),
+        ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(120.0, 99.0), DrawingAnchor(124.0, 103.0)]),
+    ]
+    widget.set_drawings(drawings)
+    app.processEvents()
+    calls: list[ChartDrawing] = []
+    original = widget._drawing_may_intersect_x_bounds
+
+    def wrapped(drawing: ChartDrawing, bounds: tuple[float, float]) -> bool:
+        calls.append(drawing)
+        return original(drawing, bounds)
+
+    monkeypatch.setattr(widget, "_drawing_may_intersect_x_bounds", wrapped)
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(120.0, 99.0))
+
+    assert widget._drawing_anchor_at_scene_pos(scene_pos) == (1, 0)
+    assert widget._drawing_at_scene_pos(scene_pos) is not None
+    assert len(calls) == len(drawings)
+    assert widget._last_hover_prefilter_cache_hit is True
+
+
+def test_hover_prefilter_invalidates_after_drawing_replacement(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(180)
+    widget.set_drawings(
+        [ChartDrawing(tool_type=DrawingToolType.RECTANGLE, anchors=[DrawingAnchor(0.0, 99.0), DrawingAnchor(5.0, 103.0)])]
+    )
+    widget._hover_hit_test_candidates()
+    visible = ChartDrawing(
+        tool_type=DrawingToolType.RECTANGLE,
+        anchors=[DrawingAnchor(120.0, 99.0), DrawingAnchor(124.0, 103.0)],
+    )
+
+    widget.set_drawings([visible])
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(122.0, 101.0))
+
+    hit = widget._drawing_at_scene_pos(scene_pos)
+    assert hit is not None
+    assert hit[0] == 0
+    assert hit[1].anchors == visible.anchors
+    assert widget._last_hover_prefilter_cache_hit is False
+
+
 def test_horizontal_line_hover_is_not_clipped_by_drawing_x_range(widget: ChartWidget, app: QApplication) -> None:
     widget.resize(900, 600)
     widget.show()
@@ -3916,6 +3973,51 @@ def test_trade_hover_ignores_markers_outside_visible_x_range(widget: ChartWidget
     visible_scene = widget.price_plot.vb.mapViewToScene(QPointF(visible_marker.x, visible_marker.y))
 
     assert widget._trade_marker_at_scene_pos(visible_scene) == (visible_marker, None)
+
+
+def test_trade_link_hover_prefilter_skips_offscreen_links(
+    widget: ChartWidget,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(180)
+    far_link = TradeLink(None, "long", "win", 0.0, 100.0, 5.0, 101.0, 1.0, [])
+    visible_link = TradeLink(2, "long", "win", 120.0, 100.0, 124.0, 102.0, 2.0, [])
+    widget._trade_markers = []
+    widget._trade_links = [far_link, visible_link]
+    widget._invalidate_hover_hit_test_candidates()
+    calls = 0
+    original = widget._point_to_segment_distance
+
+    def wrapped(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
+        nonlocal calls
+        calls += 1
+        return original(px, py, ax, ay, bx, by)
+
+    monkeypatch.setattr(widget, "_point_to_segment_distance", wrapped)
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(122.0, 101.0))
+
+    assert widget._trade_marker_at_scene_pos(scene_pos) == (None, visible_link)
+    assert calls == 1
+
+
+def test_trade_marker_hover_keeps_nearest_selection_with_prefilter(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(900, 600)
+    widget.show()
+    widget.set_full_data(_bars())
+    widget.set_cursor(180)
+    action = SessionAction(ActionType.OPEN_LONG, 120, datetime(2025, 1, 1, 11, 0), price=101.0, quantity=1)
+    nearest = TradeMarker(action, 1, "entry", "long", "pending", 120.0, 101.0, "t", "#000000", 8.0, [])
+    farther = TradeMarker(action, 2, "entry", "long", "pending", 120.0, 102.0, "t", "#000000", 8.0, [])
+    widget._trade_markers = [farther, nearest]
+    widget._trade_links = []
+    widget._invalidate_hover_hit_test_candidates()
+    scene_pos = widget.price_plot.vb.mapViewToScene(QPointF(nearest.x, nearest.y))
+
+    assert widget._trade_marker_at_scene_pos(scene_pos) == (nearest, None)
 
 
 def test_hover_card_is_positioned_top_right(widget: ChartWidget) -> None:

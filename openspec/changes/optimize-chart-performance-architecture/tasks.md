@@ -40,9 +40,9 @@
 
 ## 6. Deeper Chart Data Performance
 
-- [ ] 6.1 Add chunked or cached candlestick picture rebuilding so window updates avoid unnecessary full-window redraw work.
-- [ ] 6.2 Add incremental or cached EMA and indicator updates for cursor and window changes.
-- [ ] 6.3 Add x-range prefiltering or a lightweight spatial index for hover hit testing of drawings, trade markers, and trade links.
+- [x] 6.1 Add chunked or cached candlestick picture rebuilding so window updates avoid unnecessary full-window redraw work.
+- [x] 6.2 Add incremental or cached EMA and indicator updates for cursor and window changes.
+- [x] 6.3 Add x-range prefiltering or a lightweight spatial index for hover hit testing of drawings, trade markers, and trade links.
 - [ ] 6.4 Verify large sessions with many actions and drawings remain responsive during repeated pan and zoom workflows.
 
 ## 7. Interface Efficiency and Release Guardrails
