@@ -4371,10 +4371,10 @@ def test_step_forward_updates_progress_immediately_and_defers_heavy_refresh(
 
     original_deferred = window._update_ui_from_engine_deferred
 
-    def wrapped_deferred() -> None:
+    def wrapped_deferred(*, fast_step: bool = False) -> None:
         assert window.engine is not None
         deferred_calls.append(window.engine.session.current_index)
-        original_deferred()
+        original_deferred(fast_step=fast_step)
 
     monkeypatch.setattr(window, "_update_ui_from_engine_deferred", wrapped_deferred)
     window._transient_message_active = False
@@ -4396,6 +4396,145 @@ def test_step_forward_updates_progress_immediately_and_defers_heavy_refresh(
 
     assert deferred_calls == [26]
     assert window._deferred_step_ui_pending is False
+
+
+def test_unchanged_deferred_step_skips_trade_and_stats_regions(
+    window: MainWindow,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_engine(window)
+    window._update_ui_from_engine()
+    calls: list[str] = []
+
+    monkeypatch.setattr(window, "_enqueue_step_forward_save", lambda trigger="step_forward": None)
+    monkeypatch.setattr(window.chart_widget, "set_trade_actions", lambda *_args: calls.append("trade_actions"))
+    monkeypatch.setattr(window.chart_widget, "set_trade_review_items", lambda *_args: calls.append("trade_review"))
+    monkeypatch.setattr(
+        window.chart_widget,
+        "refresh_cursor_dependent_overlays",
+        lambda: calls.append("cursor_overlays"),
+    )
+    monkeypatch.setattr(window, "_update_training_stats", lambda: calls.append("training_stats"))
+    monkeypatch.setattr(window, "_sync_selected_trade_focus", lambda: calls.append("trade_focus"))
+
+    window.step_forward()
+    app.processEvents()
+
+    assert calls == ["cursor_overlays"]
+
+
+def test_unchanged_step_forward_skips_stable_workbench_regions(
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_engine(window)
+    window._update_ui_from_engine()
+    calls: list[str] = []
+
+    monkeypatch.setattr(window, "_enqueue_step_forward_save", lambda trigger="step_forward": None)
+    monkeypatch.setattr(window.chart_widget, "set_right_padding", lambda *_args: calls.append("right_padding"))
+    monkeypatch.setattr(window.chart_widget, "set_tick_size", lambda *_args: calls.append("tick_size"))
+    monkeypatch.setattr(window.chart_widget, "set_position_direction", lambda *_args: calls.append("position"))
+    monkeypatch.setattr(window.chart_widget, "set_order_lines", lambda *_args: calls.append("order_lines"))
+    monkeypatch.setattr(window.chart_widget, "set_cursor_fast", lambda *_args: calls.append("cursor"))
+    monkeypatch.setattr(window, "_sync_draw_order_controls", lambda *_args, **_kwargs: calls.append("draw_controls"))
+    monkeypatch.setattr(window, "_set_position_readout_state", lambda *_args: calls.append("position_readout"))
+    monkeypatch.setattr(window, "_sync_case_header", lambda: calls.append("case_header"))
+    monkeypatch.setattr(window, "_sync_trade_price_to_current_bar", lambda: calls.append("trade_price"))
+
+    window.step_forward()
+
+    assert calls == ["cursor", "case_header", "trade_price"]
+
+
+def test_complete_engine_refresh_reapplies_stable_workbench_regions(
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_engine(window)
+    window._update_ui_from_engine()
+    calls: list[str] = []
+
+    monkeypatch.setattr(window.chart_widget, "set_right_padding", lambda *_args: calls.append("right_padding"))
+    monkeypatch.setattr(window.chart_widget, "set_tick_size", lambda *_args: calls.append("tick_size"))
+    monkeypatch.setattr(window.chart_widget, "set_position_direction", lambda *_args: calls.append("position"))
+    monkeypatch.setattr(window.chart_widget, "set_order_lines", lambda *_args: calls.append("order_lines"))
+    monkeypatch.setattr(window.chart_widget, "set_cursor", lambda *_args: calls.append("cursor"))
+    monkeypatch.setattr(window, "_sync_draw_order_controls", lambda *_args, **_kwargs: calls.append("draw_controls"))
+    monkeypatch.setattr(window, "_set_position_readout_state", lambda *_args: calls.append("position_readout"))
+
+    window._update_ui_from_engine_sync()
+
+    assert calls == [
+        "right_padding",
+        "tick_size",
+        "position",
+        "cursor",
+        "order_lines",
+        "position_readout",
+        "draw_controls",
+    ]
+
+
+def test_fast_refresh_invalidates_cached_regions_for_position_transitions(
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_engine(window)
+    window._update_ui_from_engine()
+    calls: list[str] = []
+
+    monkeypatch.setattr(window.chart_widget, "set_position_direction", lambda *_args: calls.append("position"))
+    monkeypatch.setattr(window.chart_widget, "set_order_lines", lambda *_args: calls.append("order_lines"))
+    monkeypatch.setattr(window, "_sync_draw_order_controls", lambda: calls.append("draw_controls"))
+    monkeypatch.setattr(window, "_set_position_readout_state", lambda *_args: calls.append("position_readout"))
+    assert window.engine is not None
+
+    window.engine.session.position = PositionState(direction="long", quantity=2, average_price=125.0)
+    window._update_ui_from_engine_sync(fast_cursor=True)
+    assert calls == ["position", "order_lines", "position_readout", "draw_controls"]
+
+    calls.clear()
+    window.engine.session.position = PositionState(direction="short", quantity=1, average_price=126.0)
+    window._update_ui_from_engine_sync(fast_cursor=True)
+    assert calls == ["position", "order_lines", "position_readout"]
+
+    calls.clear()
+    window.engine.session.position = PositionState()
+    window._update_ui_from_engine_sync(fast_cursor=True)
+    assert calls == ["position", "order_lines", "position_readout", "draw_controls"]
+
+    calls.clear()
+    window.engine.session.status = SessionStatus.COMPLETED
+    window._update_ui_from_engine_sync(fast_cursor=True)
+    assert calls == ["position", "position_readout"]
+
+
+def test_triggered_order_invalidates_trade_and_workbench_fast_paths(
+    window: MainWindow,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_engine(window)
+    assert window.engine is not None
+    window.engine.place_order_line(OrderLineType.ENTRY_LONG, price=126.0, quantity=1)
+    window._update_ui_from_engine()
+    calls: list[str] = []
+
+    monkeypatch.setattr(window, "_enqueue_step_forward_save", lambda trigger="step_forward": None)
+    monkeypatch.setattr(window.chart_widget, "set_position_direction", lambda *_args: calls.append("position"))
+    monkeypatch.setattr(window.chart_widget, "set_order_lines", lambda *_args: calls.append("order_lines"))
+    monkeypatch.setattr(window, "_sync_draw_order_controls", lambda: calls.append("draw_controls"))
+    monkeypatch.setattr(window.chart_widget, "set_trade_actions", lambda *_args: calls.append("trade_actions"))
+    monkeypatch.setattr(window.chart_widget, "set_trade_review_items", lambda *_args: calls.append("trade_review"))
+    monkeypatch.setattr(window, "_sync_selected_trade_focus", lambda: calls.append("trade_focus"))
+
+    window.step_forward()
+    app.processEvents()
+
+    assert window.engine.session.position.direction == "long"
+    assert {"position", "order_lines", "draw_controls", "trade_actions", "trade_review", "trade_focus"} <= set(calls)
 
 
 def test_loaded_session_stabilizes_initial_chart_view_without_followup_step(app: QApplication) -> None:
@@ -4437,7 +4576,11 @@ def test_deferred_step_ui_refresh_coalesces(window: MainWindow, app: QApplicatio
     _seed_engine(window)
     calls: list[int] = []
 
-    monkeypatch.setattr(window, "_update_ui_from_engine_deferred", lambda: calls.append(window.engine.session.current_index if window.engine else -1))
+    monkeypatch.setattr(
+        window,
+        "_update_ui_from_engine_deferred",
+        lambda **_kwargs: calls.append(window.engine.session.current_index if window.engine else -1),
+    )
 
     window._schedule_deferred_step_ui_refresh()
     window._schedule_deferred_step_ui_refresh()

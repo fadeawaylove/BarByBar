@@ -7,7 +7,7 @@ from math import floor
 import re
 import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -3006,6 +3006,13 @@ class MainWindow(QMainWindow):
         self._deferred_step_ui_timer.setSingleShot(True)
         self._deferred_step_ui_timer.timeout.connect(self._flush_deferred_step_ui_refresh)
         self._deferred_step_ui_pending = False
+        self._last_synced_tick_size: float | None = None
+        self._last_synced_position_signature: tuple[object, ...] | None = None
+        self._last_synced_order_lines_signature: tuple[object, ...] | None = None
+        self._last_synced_draw_controls_signature: tuple[bool, bool] | None = None
+        self._last_deferred_trade_signature: tuple[int, int, int] | None = None
+        self._last_training_stats_signature: tuple[object, ...] | None = None
+        self._last_empty_startup_state: bool | None = None
         self._session_dirty = False
         self._viewport_window_extension_active = False
         self._last_viewport_window_extension_at = 0.0
@@ -3068,20 +3075,20 @@ class MainWindow(QMainWindow):
         if self.case_title_label is None or self.case_meta_label is None or self.case_save_state_label is None:
             return
         if not self.engine:
-            self.case_title_label.setText("BarByBar")
-            self.case_meta_label.setText("未打开案例")
-            self.case_save_state_label.setText("准备就绪")
-            self.case_save_state_label.setProperty("state", "idle")
-            self._refresh_case_save_state_style()
+            self._set_label_text_if_changed(self.case_title_label, "BarByBar")
+            self._set_label_text_if_changed(self.case_meta_label, "未打开案例")
+            self._set_label_text_if_changed(self.case_save_state_label, "准备就绪")
+            self._set_case_save_state_if_changed("idle")
             self._refresh_empty_startup_actions()
             self._refresh_empty_startup_visibility()
             return
         session = self.engine.session
         dataset_name = self.current_dataset.display_name if self.current_dataset is not None else session.symbol
         title = session.title or dataset_name or "未命名案例"
-        self.case_title_label.setText(title)
+        self._set_label_text_if_changed(self.case_title_label, title)
         status_text = "已完成" if session.status is SessionStatus.COMPLETED else "训练中"
-        self.case_meta_label.setText(
+        self._set_label_text_if_changed(
+            self.case_meta_label,
             f"{session.symbol} · {session.chart_timeframe} · {status_text} · Bar {session.current_index + 1}/{self.engine.total_count}"
         )
         if self._auto_save_timer.isActive() or self._has_pending_step_forward_save():
@@ -3090,10 +3097,20 @@ class MainWindow(QMainWindow):
             state, text = "dirty", "有未保存更改"
         else:
             state, text = "saved", "已保存"
-        self.case_save_state_label.setText(text)
+        self._set_label_text_if_changed(self.case_save_state_label, text)
+        self._set_case_save_state_if_changed(state)
+        self._refresh_empty_startup_visibility()
+
+    @staticmethod
+    def _set_label_text_if_changed(label: QLabel, text: str) -> None:
+        if label.text() != text:
+            label.setText(text)
+
+    def _set_case_save_state_if_changed(self, state: str) -> None:
+        if self.case_save_state_label is None or self.case_save_state_label.property("state") == state:
+            return
         self.case_save_state_label.setProperty("state", state)
         self._refresh_case_save_state_style()
-        self._refresh_empty_startup_visibility()
 
     def _refresh_case_save_state_style(self) -> None:
         if self.case_save_state_label is None:
@@ -3119,6 +3136,9 @@ class MainWindow(QMainWindow):
         if self.empty_startup_panel is None:
             return
         is_empty = self.engine is None
+        if self._last_empty_startup_state is is_empty:
+            return
+        self._last_empty_startup_state = is_empty
         self.empty_startup_panel.setVisible(is_empty)
         if hasattr(self, "chart_widget"):
             self.chart_widget.setVisible(not is_empty)
@@ -4677,62 +4697,118 @@ class MainWindow(QMainWindow):
         if not self.engine:
             return
         current = self.engine.session.current_index
-        total = self.engine.total_count
-        bar = self.engine.current_bar
-        self.chart_widget.set_right_padding(DEFAULT_RIGHT_PADDING)
-        self.chart_widget.set_tick_size(self.engine.session.tick_size)
-        self.chart_widget.set_position_direction(self.engine.session.position.direction)
+        tick_size = float(self.engine.session.tick_size)
+        position = self.engine.session.position
+        position_signature = (
+            self.engine.session.status.value,
+            position.direction,
+            round(float(position.quantity), 8),
+            round(float(position.average_price), 8),
+            round(float(position.realized_pnl), 8),
+        )
+        order_lines_signature = self._workbench_order_lines_signature()
+        draw_controls_signature = (position.is_open, self.engine.has_active_entry_order_line())
+        full_refresh = not fast_cursor
+
+        if full_refresh:
+            self.chart_widget.set_right_padding(DEFAULT_RIGHT_PADDING)
+        if full_refresh or self._last_synced_tick_size != tick_size:
+            self.chart_widget.set_tick_size(tick_size)
+            self.tick_size_spin.blockSignals(True)
+            self.tick_size_spin.setValue(tick_size)
+            self.tick_size_spin.blockSignals(False)
+            self._last_synced_tick_size = tick_size
+        if full_refresh or self._last_synced_position_signature != position_signature:
+            self.chart_widget.set_position_direction(position.direction)
         if fast_cursor:
             self.chart_widget.set_cursor_fast(current)
         else:
             self.chart_widget.set_cursor(current)
-        self.chart_widget.set_order_lines(self.engine.display_order_lines())
+        if full_refresh or self._last_synced_order_lines_signature != order_lines_signature:
+            self.chart_widget.set_order_lines(self.engine.display_order_lines())
+            self._last_synced_order_lines_signature = order_lines_signature
         if not self._transient_message_active:
             self.progress_label.clear()
         self._sync_case_header()
         self._sync_trade_price_to_current_bar()
-        position = self.engine.session.position
-        direction = position.direction or "flat"
-        quantity_text = (
-            str(int(position.quantity))
-            if float(position.quantity).is_integer()
-            else f"{position.quantity:.2f}"
-        )
-        self.stats_label.setText(
-            "\n".join(
-                [
-                    f"方向 {direction}",
-                    f"仓位 {quantity_text} · 均价 {format_average_price(position.average_price, self.engine.session.tick_size)}",
-                    f"已实现PnL {position.realized_pnl:.2f}",
-                ]
+        if full_refresh or self._last_synced_position_signature != position_signature:
+            direction = position.direction or "flat"
+            quantity_text = (
+                str(int(position.quantity))
+                if float(position.quantity).is_integer()
+                else f"{position.quantity:.2f}"
             )
-        )
-        position_state = "completed" if self.engine.session.status is SessionStatus.COMPLETED else direction
-        self._set_position_readout_state(position_state if position_state in {"flat", "long", "short", "completed"} else "flat")
-        self._sync_draw_order_controls()
-        self.tick_size_spin.blockSignals(True)
-        self.tick_size_spin.setValue(self.engine.session.tick_size)
-        self.tick_size_spin.blockSignals(False)
+            self.stats_label.setText(
+                "\n".join(
+                    [
+                        f"方向 {direction}",
+                        f"仓位 {quantity_text} · 均价 {format_average_price(position.average_price, tick_size)}",
+                        f"已实现PnL {position.realized_pnl:.2f}",
+                    ]
+                )
+            )
+            position_state = "completed" if self.engine.session.status is SessionStatus.COMPLETED else direction
+            self._set_position_readout_state(
+                position_state if position_state in {"flat", "long", "short", "completed"} else "flat"
+            )
+            self._last_synced_position_signature = position_signature
+        if full_refresh or self._last_synced_draw_controls_signature != draw_controls_signature:
+            self._sync_draw_order_controls()
+            self._last_synced_draw_controls_signature = draw_controls_signature
 
-    def _update_ui_from_engine_deferred(self) -> None:
+    def _workbench_order_lines_signature(self) -> tuple[object, ...]:
+        if not self.engine:
+            return ()
+        lines = tuple(
+            (
+                line.id,
+                line.chart_timeframe,
+                line.order_type.value,
+                round(float(line.price), 8),
+                round(float(line.quantity), 8),
+                line.status.value,
+                line.active_from_bar_index,
+                line.triggered_bar_index,
+            )
+            for line in self.engine.order_lines
+            if line.is_active
+        )
+        position = self.engine.session.position
+        average_line = (
+            position.direction,
+            round(float(position.average_price), 8),
+            round(float(position.quantity), 8),
+            round(float(self.engine.current_bar.close), 8),
+        ) if position.is_open else ()
+        return lines, average_line
+
+    def _update_ui_from_engine_deferred(self, *, fast_step: bool = False) -> None:
         if not self.engine:
             return
-        self._trade_review_items = self.engine.trade_review_items()
-        self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
-        self.chart_widget.set_trade_review_items(self._trade_review_items)
+        trade_review_items = self.engine.trade_review_items()
+        trade_signature = (len(self.engine.actions), len(self.engine.trades), len(trade_review_items))
+        trade_state_changed = not fast_step or self._last_deferred_trade_signature != trade_signature
+        if trade_state_changed:
+            self._trade_review_items = trade_review_items
+            self.chart_widget.set_trade_actions(self.engine.actions, self.engine.trades)
+            self.chart_widget.set_trade_review_items(self._trade_review_items)
+            self._trade_review_controller.refresh_selection(
+                [item.trade_number for item in self._trade_review_items],
+                [item.trade_number for item in self._trade_review_items],
+            )
+            self._selected_trade_number = self._trade_review_controller.selected_trade_number
+            self._selected_trade_view = self._trade_review_controller.focus_mode
+            self._sync_selected_trade_focus()
+            if self._trade_history_dialog is not None:
+                self._trade_history_dialog.refresh_items()
+            if self.trade_review_sidebar is not None and self.trade_review_sidebar.isVisible():
+                self.trade_review_sidebar.refresh_items()
+            self._last_deferred_trade_signature = trade_signature
         self.chart_widget.refresh_cursor_dependent_overlays()
-        self._trade_review_controller.refresh_selection(
-            [item.trade_number for item in self._trade_review_items],
-            [item.trade_number for item in self._trade_review_items],
-        )
-        self._selected_trade_number = self._trade_review_controller.selected_trade_number
-        self._selected_trade_view = self._trade_review_controller.focus_mode
-        self._update_training_stats()
-        self._sync_selected_trade_focus()
-        if self._trade_history_dialog is not None:
-            self._trade_history_dialog.refresh_items()
-        if self.trade_review_sidebar is not None and self.trade_review_sidebar.isVisible():
-            self.trade_review_sidebar.refresh_items()
+        stats_signature = astuple(self.engine.session.stats)
+        if not fast_step or self._last_training_stats_signature != stats_signature:
+            self._update_training_stats()
+            self._last_training_stats_signature = stats_signature
 
     def _schedule_deferred_step_ui_refresh(self) -> None:
         self._deferred_step_ui_pending = True
@@ -4745,7 +4821,7 @@ class MainWindow(QMainWindow):
         if not self._deferred_step_ui_pending:
             return
         self._deferred_step_ui_pending = False
-        self._update_ui_from_engine_deferred()
+        self._update_ui_from_engine_deferred(fast_step=True)
 
     def _handle_trade_markers_toggled(self, checked: bool) -> None:
         if self.show_trade_markers_check.isChecked() != bool(checked):
@@ -4847,6 +4923,8 @@ class MainWindow(QMainWindow):
             self._focus_selected_trade_view(item)
 
     def _set_position_readout_state(self, state: str) -> None:
+        if self.stats_label.property("state") == state:
+            return
         self.stats_label.setProperty("state", state)
         self.stats_label.style().unpolish(self.stats_label)
         self.stats_label.style().polish(self.stats_label)

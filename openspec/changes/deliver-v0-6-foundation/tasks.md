@@ -7,11 +7,11 @@
 
 ## 2. Replay and Chart Responsiveness
 
-- [ ] 2.1 Add focused tests that identify which workbench regions currently update during an unchanged step-forward fast path.
-- [ ] 2.2 Introduce stable state signatures or equivalent comparisons for position, order lines, statistics, price controls, drawing controls, and case header updates.
-- [ ] 2.3 Skip unchanged workbench region updates during deferred step-forward while preserving the complete refresh path for load, restore, step-back, and state transitions.
-- [ ] 2.4 Add transition tests for order trigger, position open/close/reverse, completed session, timeframe switch, save state, and trade review refresh.
-- [ ] 2.5 Benchmark the optimized fast path and record median, P95, maximum latency, and scenario sizes against the baseline.
+- [x] 2.1 Add focused tests that identify which workbench regions currently update during an unchanged step-forward fast path.
+- [x] 2.2 Introduce stable state signatures or equivalent comparisons for position, order lines, statistics, price controls, drawing controls, and case header updates.
+- [x] 2.3 Skip unchanged workbench region updates during deferred step-forward while preserving the complete refresh path for load, restore, step-back, and state transitions.
+- [x] 2.4 Add transition tests for order trigger, position open/close/reverse, completed session, timeframe switch, save state, and trade review refresh.
+- [x] 2.5 Benchmark the optimized fast path and record median, P95, maximum latency, and scenario sizes against the baseline.
 - [ ] 2.6 Add chunked or cached candlestick picture rebuilding and verify window extension does not redraw unchanged chunks.
 - [ ] 2.7 Add incremental EMA or indicator updates for cursor and bounded-window changes, with full rebuild fallback tests.
 - [ ] 2.8 Add viewport-aware prefiltering for drawing, trade marker, and trade link hover hit testing and verify selection correctness.
