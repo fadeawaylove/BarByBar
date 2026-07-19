@@ -54,7 +54,7 @@ def build_synthetic_session(root: Path, bar_count: int) -> tuple[Path, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Measure interactive step-forward latency for an existing session.")
+    parser = argparse.ArgumentParser(description="Measure interactive replay latency for an existing session.")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--db", type=Path, help="Existing BarByBar database to benchmark.")
     source.add_argument(
@@ -64,6 +64,7 @@ def main() -> None:
         help="Build an isolated deterministic 1-minute dataset with COUNT source bars.",
     )
     parser.add_argument("--session", type=int, help="Existing session id; required together with --db.")
+    parser.add_argument("--operation", choices=("step-forward", "step-back"), default="step-forward")
     parser.add_argument("--steps", type=int, default=30)
     parser.add_argument("--warmup", type=int, default=3)
     args = parser.parse_args()
@@ -107,17 +108,24 @@ def main() -> None:
     # This benchmark isolates the click-to-render path. Persistence capture is
     # measured independently and is coalesced by the application.
     window._enqueue_step_forward_save = lambda _trigger="step_forward": None  # type: ignore[method-assign]
+    window.save_session = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    iterations = max(1, args.warmup + args.steps)
+    if args.operation == "step-back":
+        for _ in range(iterations):
+            window.step_forward()
+            app.processEvents()
     samples: list[float] = []
-    for index in range(max(1, args.warmup + args.steps)):
+    operation = window.step_forward if args.operation == "step-forward" else window.step_back
+    for index in range(iterations):
         started = perf_counter()
-        window.step_forward()
+        operation()
         for _ in range(4):
             app.processEvents()
         elapsed_ms = (perf_counter() - started) * 1000
         if index >= args.warmup:
             samples.append(elapsed_ms)
 
-    print(f"source={source_label}")
+    print(f"source={source_label} operation={args.operation}")
     print(f"samples={len(samples)} median_ms={median(samples):.2f} p95_ms={percentile(samples, 0.95):.2f} max_ms={max(samples):.2f}")
     window.close()
     for _ in range(20):

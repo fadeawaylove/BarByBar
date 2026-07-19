@@ -15,7 +15,7 @@
 - [x] 2.6 Add chunked or cached candlestick picture rebuilding and verify window extension does not redraw unchanged chunks.
 - [x] 2.7 Add incremental EMA or indicator updates for cursor and bounded-window changes, with full rebuild fallback tests.
 - [x] 2.8 Add viewport-aware prefiltering for drawing, trade marker, and trade link hover hit testing and verify selection correctness.
-- [ ] 2.9 Re-run large-case pan, zoom, step-forward, step-back, and window-extension benchmarks and document remaining budget warnings.
+- [x] 2.9 Re-run large-case pan, zoom, step-forward, step-back, and window-extension benchmarks and document remaining budget warnings.
 
 ## 3. Local Data Safety and Export
 
