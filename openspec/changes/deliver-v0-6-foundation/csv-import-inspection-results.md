@@ -50,4 +50,21 @@ Complete automated suite: 737 passed
 OpenSpec strict validation: passed
 ```
 
-Next task: build the import review dialog for mapping, samples, summary, findings, and blocked confirmation in task 4.4.
+## Import review dialog slice
+
+`CsvImportReviewDialog` presents the selected filename and the pre-persistence guarantee, importable row count, parsed time range, blocking and warning totals, all six required field mappings, numbered raw samples, and structured quality findings. Mapping changes trigger a fresh pure inspection and keep the selected mapping visible.
+
+Blocking findings disable confirmation at the widget level and show a Chinese recovery action. Confirmable warnings retain an explicit `确认并导入` action. Severity is communicated through text, counts, table rows, and button state rather than color alone. Internal English parser messages are not exposed in the user-facing review.
+
+Verification:
+
+```text
+Focused review-dialog tests: 4 passed
+Main-window tests: 265 passed
+Complete automated suite: 741 passed
+OpenSpec strict validation: passed
+```
+
+Visual verification covered warning and blocking states at 980 x 720. The mapping grid, sample table, finding labels, row examples, recovery guidance, and footer actions fit without clipping or horizontal overflow.
+
+Next task: connect confirmed single-file review to persistence using exactly the displayed mapping and report imported, skipped, and failed outcomes in task 4.5.

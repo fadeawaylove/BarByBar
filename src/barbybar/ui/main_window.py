@@ -52,13 +52,23 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTextEdit,
     QTableView,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut, QTextCursor
 
 from barbybar import __version__
-from barbybar.data.csv_importer import CsvImportError, MissingColumnsError, infer_symbol_from_filename
+from barbybar.data.csv_importer import (
+    CsvFindingSeverity,
+    CsvImportError,
+    CsvInspectionResult,
+    CsvQualityCode,
+    MissingColumnsError,
+    infer_symbol_from_filename,
+    inspect_csv,
+)
 from barbybar.data.tick_size import format_average_price, format_price, price_decimals_for_tick, snap_price
 from barbybar.data.timeframe import (
     SUPPORTED_REPLAY_TIMEFRAMES,
@@ -1024,6 +1034,275 @@ class ColumnMappingDialog(InlineErrorDialog):
             self._set_error(f"请补齐以下字段: {', '.join(missing)}")
             return
         self._set_error()
+        super().accept()
+
+
+class CsvImportReviewDialog(QDialog):
+    _FIELD_LABELS = {
+        "datetime": "时间",
+        "open": "开盘价",
+        "high": "最高价",
+        "low": "最低价",
+        "close": "收盘价",
+        "volume": "成交量",
+    }
+    _FINDING_LABELS = {
+        CsvQualityCode.MISSING_REQUIRED_FIELDS: "缺少必要字段",
+        CsvQualityCode.PARSE_FAILURE: "数据无法解析",
+        CsvQualityCode.EMPTY_DATA: "没有可导入数据",
+        CsvQualityCode.DUPLICATE_TIMESTAMP: "时间重复",
+        CsvQualityCode.REVERSED_ORDER: "时间顺序倒置",
+        CsvQualityCode.OHLC_INCONSISTENCY: "行情数值关系异常",
+        CsvQualityCode.ABNORMAL_INTERVAL: "时间间隔异常",
+    }
+
+    def __init__(
+        self,
+        csv_path: str | Path,
+        inspection: CsvInspectionResult | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.csv_path = Path(csv_path)
+        self.inspection = inspection or inspect_csv(self.csv_path)
+        self._updating_mapping_controls = False
+        self.mapping_combos: dict[str, QComboBox] = {}
+        self.setWindowTitle("审查 CSV 导入")
+        self.resize(980, 720)
+        self.setMinimumSize(820, 620)
+        self.setStyleSheet(dialog_stylesheet())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        heading = QLabel("导入前检查")
+        heading.setProperty("role", "dialogTitle")
+        heading.setStyleSheet(emphasized_status_stylesheet())
+        layout.addWidget(heading)
+        source_label = QLabel(f"{self.csv_path.name} · 确认前不会写入数据集")
+        source_label.setProperty("role", "statusMuted")
+        source_label.setStyleSheet(muted_status_stylesheet())
+        layout.addWidget(source_label)
+
+        summary_row = QHBoxLayout()
+        summary_row.setSpacing(8)
+        self.valid_count_label = self._summary_card("可导入行", "0")
+        self.time_range_label = self._summary_card("时间范围", "--")
+        self.quality_summary_label = self._summary_card("数据质量", "--")
+        summary_row.addWidget(self.valid_count_label, 1)
+        summary_row.addWidget(self.time_range_label, 2)
+        summary_row.addWidget(self.quality_summary_label, 1)
+        layout.addLayout(summary_row)
+
+        mapping_group = QGroupBox("字段映射")
+        mapping_layout = QGridLayout(mapping_group)
+        mapping_layout.setHorizontalSpacing(8)
+        mapping_layout.setVerticalSpacing(6)
+        for index, field in enumerate(REQUIRED_IMPORT_FIELDS):
+            row = index // 3
+            column = (index % 3) * 2
+            mapping_layout.addWidget(QLabel(self._FIELD_LABELS[field]), row, column)
+            combo = QComboBox()
+            combo.addItem("未映射", None)
+            for header in self.inspection.detected_columns:
+                combo.addItem(header, header)
+            suggested = self.inspection.suggested_mapping.get(field)
+            if suggested in self.inspection.detected_columns:
+                combo.setCurrentText(suggested)
+            combo.currentIndexChanged.connect(self._handle_mapping_changed)
+            self.mapping_combos[field] = combo
+            mapping_layout.addWidget(combo, row, column + 1)
+        layout.addWidget(mapping_group)
+
+        tables = QSplitter(Qt.Orientation.Vertical)
+        sample_panel = QWidget()
+        sample_layout = QVBoxLayout(sample_panel)
+        sample_layout.setContentsMargins(0, 0, 0, 0)
+        sample_layout.setSpacing(4)
+        sample_layout.addWidget(QLabel("数据样例"))
+        self.sample_table = QTableWidget()
+        self.sample_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.sample_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.sample_table.verticalHeader().setVisible(False)
+        sample_layout.addWidget(self.sample_table)
+        tables.addWidget(sample_panel)
+
+        finding_panel = QWidget()
+        finding_layout = QVBoxLayout(finding_panel)
+        finding_layout.setContentsMargins(0, 0, 0, 0)
+        finding_layout.setSpacing(4)
+        finding_layout.addWidget(QLabel("质量检查"))
+        self.findings_table = QTableWidget()
+        self.findings_table.setColumnCount(4)
+        self.findings_table.setHorizontalHeaderLabels(["级别", "问题", "数量", "示例"])
+        self.findings_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.findings_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.findings_table.setWordWrap(True)
+        self.findings_table.verticalHeader().setVisible(False)
+        for section in (0, 1, 2):
+            self.findings_table.horizontalHeader().setSectionResizeMode(
+                section,
+                QHeaderView.ResizeMode.ResizeToContents,
+            )
+        self.findings_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        finding_layout.addWidget(self.findings_table)
+        tables.addWidget(finding_panel)
+        tables.setSizes([230, 200])
+        layout.addWidget(tables, 1)
+
+        self.decision_label = QLabel("")
+        self.decision_label.setWordWrap(True)
+        self.decision_label.setAccessibleName("导入检查结果")
+        layout.addWidget(self.decision_label)
+
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        cancel_button = QPushButton("取消")
+        cancel_button.setProperty("role", "quiet")
+        cancel_button.clicked.connect(self.reject)
+        self.confirm_button = QPushButton("确认导入")
+        self.confirm_button.setProperty("role", "primary")
+        self.confirm_button.setAccessibleName("确认导入已审查的 CSV")
+        self.confirm_button.clicked.connect(self.accept)
+        footer.addWidget(cancel_button)
+        footer.addWidget(self.confirm_button)
+        layout.addLayout(footer)
+
+        self._refresh_inspection_view()
+
+    @staticmethod
+    def _summary_card(title: str, value: str) -> QLabel:
+        label = QLabel(f"{title}\n{value}")
+        label.setProperty("card", True)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setMinimumHeight(54)
+        return label
+
+    def selected_field_map(self) -> dict[str, str]:
+        return {
+            field: str(combo.currentData())
+            for field, combo in self.mapping_combos.items()
+            if combo.currentData() is not None
+        }
+
+    def _handle_mapping_changed(self, *_args: object) -> None:
+        if self._updating_mapping_controls:
+            return
+        try:
+            self.inspection = inspect_csv(
+                self.csv_path,
+                field_map=self.selected_field_map(),
+            )
+        except (OSError, UnicodeError, CsvImportError) as exc:
+            self.decision_label.setText(f"无法重新检查文件：{exc}")
+            self.decision_label.setStyleSheet(error_banner_stylesheet())
+            self.confirm_button.setEnabled(False)
+            return
+        self._sync_mapping_controls()
+        self._refresh_inspection_view()
+
+    def _sync_mapping_controls(self) -> None:
+        self._updating_mapping_controls = True
+        try:
+            for field, combo in self.mapping_combos.items():
+                suggested = self.inspection.suggested_mapping.get(field)
+                if suggested in self.inspection.detected_columns:
+                    combo.setCurrentText(suggested)
+        finally:
+            self._updating_mapping_controls = False
+
+    def _refresh_inspection_view(self) -> None:
+        inspection = self.inspection
+        self.valid_count_label.setText(f"可导入行\n{inspection.valid_row_count}")
+        if inspection.start_time is None or inspection.end_time is None:
+            time_range = "--"
+        else:
+            time_range = (
+                f"{inspection.start_time:%Y-%m-%d %H:%M}  →  "
+                f"{inspection.end_time:%Y-%m-%d %H:%M}"
+            )
+        self.time_range_label.setText(f"时间范围\n{time_range}")
+        blocking_count = sum(item.count for item in inspection.blocking_findings)
+        warning_count = sum(item.count for item in inspection.warning_findings)
+        self.quality_summary_label.setText(
+            f"数据质量\n阻断 {blocking_count} · 警告 {warning_count}"
+        )
+        self._refresh_sample_table()
+        self._refresh_findings_table()
+        self.confirm_button.setEnabled(inspection.can_confirm_import)
+        if blocking_count:
+            self.confirm_button.setText("确认导入")
+            self.decision_label.setText(
+                f"发现 {blocking_count} 项阻断问题。请修正文件或字段映射后再导入。"
+            )
+            self.decision_label.setStyleSheet(error_banner_stylesheet())
+        elif warning_count:
+            self.confirm_button.setText("确认并导入")
+            self.decision_label.setText(
+                f"发现 {warning_count} 项警告。请检查示例，确认后仍可继续导入。"
+            )
+            self.decision_label.setStyleSheet(muted_status_stylesheet())
+        else:
+            self.confirm_button.setText("确认导入")
+            self.decision_label.setText("检查通过，可以安全导入。")
+            self.decision_label.setStyleSheet(emphasized_status_stylesheet())
+
+    def _refresh_sample_table(self) -> None:
+        inspection = self.inspection
+        self.sample_table.clear()
+        self.sample_table.setColumnCount(len(inspection.detected_columns) + 1)
+        self.sample_table.setHorizontalHeaderLabels(["行"] + list(inspection.detected_columns))
+        self.sample_table.setRowCount(len(inspection.sample_rows))
+        for row_index, sample in enumerate(inspection.sample_rows):
+            self.sample_table.setItem(row_index, 0, QTableWidgetItem(str(sample.row_number)))
+            for column_index, value in enumerate(sample.values, start=1):
+                self.sample_table.setItem(row_index, column_index, QTableWidgetItem(value))
+        if self.sample_table.columnCount():
+            self.sample_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+            self.sample_table.horizontalHeader().setStretchLastSection(True)
+
+    def _refresh_findings_table(self) -> None:
+        findings = self.inspection.quality_findings
+        self.findings_table.setRowCount(len(findings))
+        for row_index, finding in enumerate(findings):
+            severity = "阻断" if finding.severity is CsvFindingSeverity.BLOCKING else "警告"
+            examples = []
+            for example in finding.examples:
+                location = f"第 {example.row_number} 行" if example.row_number else "文件"
+                field_label = self._FIELD_LABELS.get(example.field or "", example.field or "")
+                field = f" · {field_label}" if field_label else ""
+                value = f" · {example.value}" if example.value else ""
+                examples.append(
+                    f"{location}{field}{value}: {self._finding_example_message(finding.code)}"
+                )
+            values = (
+                severity,
+                self._FINDING_LABELS[finding.code],
+                str(finding.count),
+                "\n".join(examples),
+            )
+            for column_index, value in enumerate(values):
+                self.findings_table.setItem(row_index, column_index, QTableWidgetItem(value))
+        self.findings_table.resizeRowsToContents()
+
+    @staticmethod
+    def _finding_example_message(code: CsvQualityCode) -> str:
+        return {
+            CsvQualityCode.MISSING_REQUIRED_FIELDS: "没有对应的 CSV 列，请调整字段映射。",
+            CsvQualityCode.PARSE_FAILURE: "该值无法解析为所需的时间或数字。",
+            CsvQualityCode.EMPTY_DATA: "文件中没有可用于导入的有效行情行。",
+            CsvQualityCode.DUPLICATE_TIMESTAMP: "与前面可导入行的时间重复。",
+            CsvQualityCode.REVERSED_ORDER: "早于上一条可解析的时间。",
+            CsvQualityCode.OHLC_INCONSISTENCY: "开高低收或成交量关系不合法。",
+            CsvQualityCode.ABNORMAL_INTERVAL: "相邻时间间隔明显大于文件中的常规间隔。",
+        }[code]
+
+    def accept(self) -> None:
+        if not self.inspection.can_confirm_import:
+            self.decision_label.setText("仍有阻断问题，当前文件不能导入。")
+            self.decision_label.setStyleSheet(error_banner_stylesheet())
+            return
         super().accept()
 
 

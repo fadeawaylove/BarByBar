@@ -26,6 +26,7 @@ from barbybar.ui.main_window import (
     BatchImportOutcome,
     BatchImportProgress,
     ColumnMappingDialog,
+    CsvImportReviewDialog,
     DataSetManagerDialog,
     DrawingPropertiesDialog,
     DrawingTemplateDialog,
@@ -3492,6 +3493,138 @@ def test_column_mapping_dialog_shows_inline_error_for_missing_fields() -> None:
         assert dialog.error_label.isHidden() is False
         assert "datetime" in dialog.error_label.text()
         assert "volume" in dialog.error_label.text()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_csv_import_review_dialog_presents_valid_summary_and_samples(
+    app: QApplication,
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "valid.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:00,1,2,0.5,1.5,10\n"
+        "2025-01-01 09:01,1.5,2.5,1,2,20\n",
+        encoding="utf-8",
+    )
+    dialog = CsvImportReviewDialog(csv_path)
+    try:
+        dialog.show()
+        app.processEvents()
+
+        assert "2" in dialog.valid_count_label.text()
+        assert "2025-01-01 09:00" in dialog.time_range_label.text()
+        assert dialog.mapping_combos["datetime"].currentText() == "datetime"
+        assert dialog.mapping_combos["volume"].currentText() == "volume"
+        assert dialog.sample_table.rowCount() == 2
+        assert dialog.sample_table.item(0, 0).text() == "2"
+        assert dialog.findings_table.rowCount() == 0
+        assert dialog.confirm_button.isEnabled() is True
+        assert "检查通过" in dialog.decision_label.text()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_csv_import_review_dialog_disables_confirmation_for_blocking_findings(
+    app: QApplication,
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "missing-volume.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close\n"
+        "2025-01-01 09:00,1,2,0.5,1.5\n",
+        encoding="utf-8",
+    )
+    dialog = CsvImportReviewDialog(csv_path)
+    try:
+        dialog.show()
+        app.processEvents()
+
+        assert dialog.confirm_button.isEnabled() is False
+        assert dialog.findings_table.rowCount() >= 1
+        assert dialog.findings_table.item(0, 0).text() == "阻断"
+        assert "缺少必要字段" in dialog.findings_table.item(0, 1).text()
+        assert "调整字段映射" in dialog.findings_table.item(0, 3).text()
+        assert "Required field" not in dialog.findings_table.item(0, 3).text()
+        assert "修正文件或字段映射" in dialog.decision_label.text()
+        dialog.accept()
+        assert dialog.result() == 0
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_csv_import_review_dialog_allows_confirmable_warnings(
+    app: QApplication,
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "warning.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:02,2,3,1,2.5,20\n"
+        "2025-01-01 09:01,1,2,0.5,1.5,10\n"
+        "2025-01-01 09:02,4,5,3,4.5,30\n",
+        encoding="utf-8",
+    )
+    dialog = CsvImportReviewDialog(csv_path)
+    try:
+        dialog.show()
+        app.processEvents()
+
+        assert dialog.confirm_button.isEnabled() is True
+        assert dialog.findings_table.rowCount() == 2
+        assert {
+            dialog.findings_table.item(row, 0).text()
+            for row in range(dialog.findings_table.rowCount())
+        } == {"警告"}
+        assert "确认后仍可继续" in dialog.decision_label.text()
+        assert dialog.confirm_button.text() == "确认并导入"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_csv_import_review_dialog_rechecks_custom_mapping(
+    app: QApplication,
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "custom.csv"
+    csv_path.write_text(
+        "When,First,Top,Bottom,Last,Amount\n"
+        "2025-01-01 09:00,1,2,0.5,1.5,10\n",
+        encoding="utf-8",
+    )
+    dialog = CsvImportReviewDialog(csv_path)
+    try:
+        dialog.show()
+        app.processEvents()
+        assert dialog.confirm_button.isEnabled() is False
+
+        for field, header in {
+            "datetime": "When",
+            "open": "First",
+            "high": "Top",
+            "low": "Bottom",
+            "close": "Last",
+            "volume": "Amount",
+        }.items():
+            dialog.mapping_combos[field].setCurrentText(header)
+            app.processEvents()
+
+        assert dialog.selected_field_map() == {
+            "datetime": "When",
+            "open": "First",
+            "high": "Top",
+            "low": "Bottom",
+            "close": "Last",
+            "volume": "Amount",
+        }
+        assert dialog.inspection.valid_row_count == 1
+        assert dialog.findings_table.rowCount() == 0
+        assert dialog.confirm_button.isEnabled() is True
     finally:
         dialog.close()
         dialog.deleteLater()
