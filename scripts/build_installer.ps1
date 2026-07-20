@@ -25,6 +25,7 @@ if (-not $InnoCompiler) {
 
 if (-not $InnoCompiler) {
     $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
         "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
         "C:\Program Files\Inno Setup 6\ISCC.exe",
         "C:\ProgramData\chocolatey\bin\ISCC.exe"

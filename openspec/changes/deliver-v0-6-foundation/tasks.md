@@ -53,7 +53,7 @@
 - [x] 6.1 Run all focused engine, repository, async-task, main-window, chart, trade-history, logging, update, and release tests affected by v0.6.
 - [x] 6.2 Run the complete automated test suite and record the final result in the milestone checkpoint.
 - [x] 6.3 Run the final representative performance matrix and confirm or explicitly document every remaining budget warning.
-- [ ] 6.4 Build the Windows portable package and installer, then complete the v0.6 packaged-app smoke checklist.
-- [ ] 6.5 Validate the OpenSpec change strictly and confirm every completed task has matching implementation or verification evidence.
+- [x] 6.4 Build the Windows portable package and installer, then complete the v0.6 packaged-app smoke checklist.
+- [x] 6.5 Validate the OpenSpec change strictly and confirm every completed task has matching implementation or verification evidence.
 - [ ] 6.6 Update the roadmap current milestone to v0.7, archive the completed v0.6 OpenSpec change, and preserve the archived specifications.
 - [ ] 6.7 Publish the v0.6 release, verify the remote tag, Release page, installer, portable ZIP, and release notes.

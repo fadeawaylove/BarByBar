@@ -48,3 +48,20 @@ OpenSpec strict validation: passed
 ## Non-blocking packaging warnings
 
 PyInstaller reported conditional POSIX modules that do not apply on Windows and optional pyqtgraph integrations such as OpenGL, SciPy, Matplotlib, CUDA, and CuPy. BarByBar does not use those integrations; the packaged application started and completed the exercised chart, storage, and UI paths without a missing-module error. No blocking font, high-DPI, text-fit, keyboard-focus, or common-size issue remains from this pass.
+
+## Final v0.6.0 package validation
+
+After setting the application version to 0.6.0, the final portable bundle and Simplified Chinese Inno Setup installer were rebuilt from the same source tree:
+
+```text
+Portable ZIP: dist/BarByBar-v0.6.0-windows-x64.zip (66,053,453 bytes)
+Installer: dist/BarByBar-v0.6.0-windows-x64-setup.exe (45,861,620 bytes)
+Packaged EXE: dist/release/BarByBar/BarByBar.exe (6,527,910 bytes)
+ZIP entries: 331, including BarByBar.exe
+ZIP SHA-256: 2B2C86062AF5D6AB31EC8083F7712688D8C2069CE09B10C253CC59C6EB76364E
+Installer SHA-256: 7026E276F58C70AD973489CEEAE1F502D2DFBF86550182883464EFF0A66D8C5D
+```
+
+The installer was then silently installed into `C:\tmp\barbybar-v060-install` and the installed executable was launched for five seconds at forced 125% Qt scale with `C:\tmp\barbybar-v060-smoke-data` as its isolated data directory. The process remained alive, created a valid local database, wrote no error log entry, and recorded `BarByBar starting version=0.6.0` in `app.log`. The installer metadata also reports product version 0.6.0.
+
+The local build initially exposed that `build_installer.ps1` did not discover a per-user Inno Setup installation. The script now checks `%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`; the corrected auto-discovery path successfully produced the final installer.
