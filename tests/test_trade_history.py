@@ -56,7 +56,7 @@ def test_trade_history_model_normalizes_rows_for_table_and_detail() -> None:
     assert model.rowCount() == 1
     assert model.columnCount() == len(TRADE_HISTORY_COLUMNS)
     assert model.data(model.index(0, 0)) == "1"
-    assert model.data(model.index(0, 1)) == "空"
+    assert model.data(model.index(0, 1)) == "空单"
     assert model.data(model.index(0, 6)) == "-2.50"
     assert model.data(model.index(0, 0), Qt.ItemDataRole.UserRole) == 1
 
@@ -65,6 +65,10 @@ def test_trade_history_model_normalizes_rows_for_table_and_detail() -> None:
     assert "亏损" in detail
     assert "止损" in detail
     assert "执行概览" in detail
+    assert "盈亏 -2.50" in detail
+    assert "持仓 3 根K线" in detail
+    assert "PnL" not in detail
+    assert "bars" not in detail
     assert model.rows()[0].entry_note == "入场计划"
     assert model.rows()[0].review_note == "复盘记录"
 
@@ -88,6 +92,8 @@ def test_trade_history_exit_reason_formats_engine_codes_as_chinese() -> None:
 
     assert format_exit_reason("manual_close") == "手动平仓"
     assert format_exit_reason("stop_loss") == "止损触发"
+    assert format_exit_reason("future_internal_code") == "其他原因"
+    assert [column.title for column in TRADE_HISTORY_COLUMNS][6] == "盈亏"
     assert model.data(model.index(0, 7)) == "止损触发"
     assert "出场原因：止损触发" in model.rows()[0].detail_text
 

@@ -140,6 +140,38 @@ def _candle_visible_scene_bounds(widget: ChartWidget, index: int) -> tuple[float
     return visible_left, visible_right
 
 
+def test_trade_tooltips_use_chinese_status_copy(widget: ChartWidget) -> None:
+    action = SessionAction(
+        ActionType.CLOSE,
+        4,
+        datetime(2025, 1, 1, 9, 4),
+        price=101.5,
+        quantity=1,
+    )
+    marker = TradeMarker(
+        action,
+        1,
+        "exit",
+        "long",
+        "flat",
+        4.0,
+        101.5,
+        "t",
+        "#000000",
+        8.0,
+        [],
+    )
+
+    lines = widget._trade_action_detail_lines(marker)
+
+    assert lines[0].startswith("平仓 | 多单持平")
+    assert "第 5 根K线" in lines
+    assert all("Bar " not in line for line in lines)
+    assert widget._order_preview_label("hover") == "订单线"
+    assert widget._drawing_tool_label(DrawingToolType.EXTENDED_LINE) == "扩展线"
+    assert widget._drawing_tool_label(DrawingToolType.PRICE_RANGE) == "价格区间"
+
+
 def _candle_body_scene_bounds(widget: ChartWidget, index: int) -> tuple[float, float]:
     assert widget._candles._view_box is not None
     pixels_per_bar = widget._pixels_per_bar()

@@ -3504,11 +3504,16 @@ class ChartWidget(QWidget):
             DrawingToolType.TREND_LINE: "线段",
             DrawingToolType.RAY: "箭头线",
             DrawingToolType.ARROW: "箭头",
+            DrawingToolType.EXTENDED_LINE: "扩展线",
             DrawingToolType.FIB_RETRACEMENT: "斐波那契",
             DrawingToolType.HORIZONTAL_LINE: "水平线",
+            DrawingToolType.HORIZONTAL_RAY: "水平射线",
+            DrawingToolType.VERTICAL_LINE: "垂直线",
+            DrawingToolType.PARALLEL_CHANNEL: "平行通道",
             DrawingToolType.RECTANGLE: "矩形",
+            DrawingToolType.PRICE_RANGE: "价格区间",
             DrawingToolType.TEXT: "文字",
-        }.get(tool, tool.value)
+        }.get(tool, "绘图工具")
 
     @staticmethod
     def _order_preview_label(order_type: str) -> str:
@@ -3519,7 +3524,7 @@ class ChartWidget(QWidget):
             OrderLineType.REVERSE.value: "反手线",
             OrderLineType.STOP_LOSS.value: "止损线",
             OrderLineType.TAKE_PROFIT.value: "止盈线",
-        }.get(str(order_type), str(order_type))
+        }.get(str(order_type), "订单线")
 
     @staticmethod
     def _order_preview_color(order_type: str) -> str:
@@ -4627,12 +4632,12 @@ class ChartWidget(QWidget):
             "exit": "平仓",
             "add": "加仓",
             "reduce": "减仓",
-        }.get(marker.role, action.action_type.value)
+        }.get(marker.role, "交易操作")
         direction_label = {"long": "多单", "short": "空单"}.get(marker.direction)
         outcome_label = {
             "win": "盈利",
             "loss": "亏损",
-            "flat": "保本",
+            "flat": "持平",
             "mixed": "结果混合",
         }.get(marker.outcome)
         title = action_label
@@ -4645,7 +4650,7 @@ class ChartWidget(QWidget):
             f"{title} | {action.timestamp:%Y-%m-%d %H:%M}",
             f"价格 {format_price(float(action.price or 0.0), self._tick_size)}",
             f"手数 {quantity}",
-            f"Bar {action.bar_index + 1}",
+            f"第 {action.bar_index + 1} 根K线",
             "自动触发" if action.extra.get("auto") else "手动成交",
         ]
 
@@ -4690,8 +4695,8 @@ class ChartWidget(QWidget):
                         y2=float(item.exit_price),
                         pnl=float(item.pnl),
                         detail_lines=[
-                            f"{'多单' if direction == 'long' else '空单'}{'盈利' if outcome == 'win' else '亏损' if outcome == 'loss' else '保本'} | {leg['timestamp']:%Y-%m-%d %H:%M} -> {item.exit_time:%Y-%m-%d %H:%M}",
-                            f"入场 {format_price(float(leg['price']), self._tick_size)} -> 出场 {format_price(float(item.exit_price), self._tick_size)}",
+                            f"{'多单' if direction == 'long' else '空单'}{'盈利' if outcome == 'win' else '亏损' if outcome == 'loss' else '持平'} · {leg['timestamp']:%Y-%m-%d %H:%M} → {item.exit_time:%Y-%m-%d %H:%M}",
+                            f"入场 {format_price(float(leg['price']), self._tick_size)} → 出场 {format_price(float(item.exit_price), self._tick_size)}",
                             f"本段手数 {qty_text} · 本段盈亏 {self._trade_link_pnl_text(leg_pnl)}",
                             f"本单总盈亏 {self._trade_link_pnl_text(float(item.pnl))}",
                             f"开仓想法 {entry_note}",

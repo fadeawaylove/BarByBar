@@ -25,7 +25,7 @@ TRADE_HISTORY_COLUMNS: tuple[TradeHistoryColumn, ...] = (
     TradeHistoryColumn("exit_time", "出场", Qt.AlignmentFlag.AlignLeft),
     TradeHistoryColumn("holding_bars", "持仓", Qt.AlignmentFlag.AlignRight),
     TradeHistoryColumn("quantity", "数量", Qt.AlignmentFlag.AlignRight),
-    TradeHistoryColumn("pnl", "PnL", Qt.AlignmentFlag.AlignRight),
+    TradeHistoryColumn("pnl", "盈亏", Qt.AlignmentFlag.AlignRight),
     TradeHistoryColumn("exit_reason", "原因", Qt.AlignmentFlag.AlignLeft),
     TradeHistoryColumn("flags", "标记", Qt.AlignmentFlag.AlignLeft),
 )
@@ -44,7 +44,7 @@ EXIT_REASON_LABELS: dict[str, str] = {
 def format_exit_reason(exit_reason: str | None) -> str:
     if not exit_reason:
         return "-"
-    return EXIT_REASON_LABELS.get(exit_reason, exit_reason)
+    return EXIT_REASON_LABELS.get(exit_reason, "其他原因")
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +78,7 @@ class TradeHistoryRow:
 
     @property
     def direction_text(self) -> str:
-        return "多" if self.item.direction == "long" else "空"
+        return "多单" if self.item.direction == "long" else "空单"
 
     @property
     def outcome(self) -> str:
@@ -112,9 +112,9 @@ class TradeHistoryRow:
         return "\n".join(
             [
                 f"交易 #{self.item.trade_number} · {self.direction_text} · {self.outcome_text}",
-                f"入场 {self.item.entry_time:%Y-%m-%d %H:%M} @ {self.item.entry_price:.2f}",
-                f"出场 {self.item.exit_time:%Y-%m-%d %H:%M} @ {self.item.exit_price:.2f}",
-                f"PnL {self.item.pnl:.2f} · 数量 {self.quantity_text} 手 · 持仓 {self.item.holding_bars} bars",
+                f"入场 {self.item.entry_time:%Y-%m-%d %H:%M} · 价格 {self.item.entry_price:.2f}",
+                f"出场 {self.item.exit_time:%Y-%m-%d %H:%M} · 价格 {self.item.exit_price:.2f}",
+                f"盈亏 {self.item.pnl:.2f} · 数量 {self.quantity_text} 手 · 持仓 {self.item.holding_bars} 根K线",
                 f"出场原因：{format_exit_reason(self.item.exit_reason)}",
                 f"执行标记：{self.flags_text}",
                 f"执行概览：{self.action_summary}",

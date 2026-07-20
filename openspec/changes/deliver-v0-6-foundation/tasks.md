@@ -40,7 +40,7 @@
 
 ## 5. Foundation Experience Polish
 
-- [ ] 5.1 Replace user-visible `flat`, `long`, `short`, `hover`, and other inconsistent status copy with clear Chinese terminology while preserving internal enum values.
+- [x] 5.1 Replace user-visible `flat`, `long`, `short`, `hover`, and other inconsistent status copy with clear Chinese terminology while preserving internal enum values.
 - [ ] 5.2 Add a bounded adaptive initial chart viewport for sessions with fewer revealed bars than the default viewport and preserve right-side planning space.
 - [ ] 5.3 Add tests for adaptive viewport behavior at empty, short, normal, minimum-zoom, reset, and narrow-window states.
 - [ ] 5.4 Make saving, saved, and save-failed states explicit; prevent ordinary transient hints from overwriting an unresolved save failure.

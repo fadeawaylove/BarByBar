@@ -207,6 +207,16 @@ def normalize_color_value(value: object, default: str) -> str:
     return color.name()
 
 
+def position_direction_text(direction: str | None) -> str:
+    return {
+        None: "空仓",
+        "": "空仓",
+        "flat": "空仓",
+        "long": "做多",
+        "short": "做空",
+    }.get(direction, "未知方向")
+
+
 @dataclass(slots=True)
 class BatchImportOutcome:
     imported: list[str]
@@ -2022,7 +2032,7 @@ class SessionLibraryDialog(QDialog):
             status_text = "完成" if session.status is SessionStatus.COMPLETED else "进行中"
             item = QListWidgetItem(
                 f"{session.title or session.symbol}\n"
-                f"{session.symbol} · {session.chart_timeframe} · {status_text} · PnL {session.stats.total_pnl:.2f}"
+                f"{session.symbol} · {session.chart_timeframe} · {status_text} · 总盈亏 {session.stats.total_pnl:.2f}"
             )
             item.setSizeHint(QSize(0, 48))
             item.setData(32, session.id)
@@ -2131,8 +2141,8 @@ class TradeHistoryDialog(QDialog):
 
         self.direction_filter = QComboBox()
         self.direction_filter.addItem("全部方向", "all")
-        self.direction_filter.addItem("只看多", "long")
-        self.direction_filter.addItem("只看空", "short")
+        self.direction_filter.addItem("只看多单", "long")
+        self.direction_filter.addItem("只看空单", "short")
         self.direction_filter.currentIndexChanged.connect(self._handle_filters_changed)
         filter_layout.addWidget(QLabel("方向"), 0, 2)
         filter_layout.addWidget(self.direction_filter, 0, 3)
@@ -2182,7 +2192,7 @@ class TradeHistoryDialog(QDialog):
         self.min_pnl_filter = QDoubleSpinBox()
         self.min_pnl_filter.setRange(-1_000_000, 1_000_000)
         self.min_pnl_filter.setDecimals(2)
-        self.min_pnl_filter.setSpecialValueText("最小PnL")
+        self.min_pnl_filter.setSpecialValueText("最低盈亏")
         self.min_pnl_filter.setValue(self.min_pnl_filter.minimum())
         self.min_pnl_filter.valueChanged.connect(self._handle_filters_changed)
         filter_layout.addWidget(self.min_pnl_filter, 2, 0, 1, 2)
@@ -2190,7 +2200,7 @@ class TradeHistoryDialog(QDialog):
         self.max_pnl_filter = QDoubleSpinBox()
         self.max_pnl_filter.setRange(-1_000_000, 1_000_000)
         self.max_pnl_filter.setDecimals(2)
-        self.max_pnl_filter.setSpecialValueText("最大PnL")
+        self.max_pnl_filter.setSpecialValueText("最高盈亏")
         self.max_pnl_filter.setValue(self.max_pnl_filter.minimum())
         self.max_pnl_filter.valueChanged.connect(self._handle_filters_changed)
         filter_layout.addWidget(self.max_pnl_filter, 2, 2, 1, 2)
@@ -2672,14 +2682,14 @@ class TradeReviewSidebar(QWidget):
 
     def _card_text(self, row) -> str:  # noqa: ANN001
         item = row.item
-        direction = "多" if item.direction == "long" else "空"
+        direction = row.direction_text
         outcome = "盈利" if row.outcome == "win" else "亏损" if row.outcome == "loss" else "持平"
         pnl_text = f"+{item.pnl:.2f}" if item.pnl > 0 else f"{item.pnl:.2f}"
         note_state = self._note_state_text(row)
         return (
             f"#{item.trade_number:02d} · {direction} · {outcome} · {note_state}\n"
-            f"PnL {pnl_text} · {item.entry_time:%m-%d %H:%M} -> {item.exit_time:%H:%M}\n"
-            f"持仓 {item.holding_bars}根 · {format_exit_reason(item.exit_reason)}"
+            f"盈亏 {pnl_text} · {item.entry_time:%m-%d %H:%M} → {item.exit_time:%H:%M}\n"
+            f"持仓 {item.holding_bars} 根K线 · {format_exit_reason(item.exit_reason)}"
         )
 
     @staticmethod
@@ -2807,9 +2817,9 @@ class TradeLinkNoteDialog(QDialog):
         summary = QLabel(
             "\n".join(
                 [
-                    f"#{trade.trade_number} {direction_text} {quantity_text}手 | PnL {trade.pnl:.2f}",
-                    f"{trade.entry_time:%Y-%m-%d %H:%M} -> {trade.exit_time:%Y-%m-%d %H:%M}",
-                    f"开 {trade.entry_price:g} -> 平 {trade.exit_price:g} | {format_exit_reason(trade.exit_reason)}",
+                    f"#{trade.trade_number} {direction_text} {quantity_text}手 · 盈亏 {trade.pnl:.2f}",
+                    f"{trade.entry_time:%Y-%m-%d %H:%M} → {trade.exit_time:%Y-%m-%d %H:%M}",
+                    f"开仓 {trade.entry_price:g} → 平仓 {trade.exit_price:g} · {format_exit_reason(trade.exit_reason)}",
                 ]
             )
         )
@@ -3711,7 +3721,8 @@ class MainWindow(QMainWindow):
         status_text = "已完成" if session.status is SessionStatus.COMPLETED else "训练中"
         self._set_label_text_if_changed(
             self.case_meta_label,
-            f"{session.symbol} · {session.chart_timeframe} · {status_text} · Bar {session.current_index + 1}/{self.engine.total_count}"
+            f"{session.symbol} · {session.chart_timeframe} · {status_text} · "
+            f"第 {session.current_index + 1}/{self.engine.total_count} 根K线"
         )
         if self._auto_save_timer.isActive() or self._has_pending_step_forward_save():
             state, text = "saving", "保存中"
@@ -5523,7 +5534,7 @@ class MainWindow(QMainWindow):
                 button.setVisible(False)
                 continue
             button.setText(template.note or f"模板{index}")
-            button.setToolTip(f"{self._drawing_tool_label(template.tool_type)} | {template.note or 'Template'}")
+            button.setToolTip(f"{self._drawing_tool_label(template.tool_type)} · {template.note or '模板'}")
             button.setProperty("template_id", template.id)
             button.setEnabled(True)
             button.setVisible(True)
@@ -5656,9 +5667,9 @@ class MainWindow(QMainWindow):
             self.stats_label.setText(
                 "\n".join(
                     [
-                        f"方向 {direction}",
+                        f"方向 {position_direction_text(direction)}",
                         f"仓位 {quantity_text} · 均价 {format_average_price(position.average_price, tick_size)}",
-                        f"已实现PnL {position.realized_pnl:.2f}",
+                        f"已实现盈亏 {position.realized_pnl:.2f}",
                     ]
                 )
             )
@@ -5929,7 +5940,10 @@ class MainWindow(QMainWindow):
         local_index = target_index - self.engine.window_start_index
         if 0 <= local_index < len(self.engine.bars):
             timestamp = self.engine.bars[local_index].timestamp
-            self.progress_label.setText(f"查看交易 #{item.trade_number} | Bar {target_index + 1} | {timestamp:%Y-%m-%d %H:%M}")
+            self.progress_label.setText(
+                f"查看交易 #{item.trade_number} · 第 {target_index + 1} 根K线 · "
+                f"{timestamp:%Y-%m-%d %H:%M}"
+            )
 
     @staticmethod
     def _trade_history_focus_right_edge(

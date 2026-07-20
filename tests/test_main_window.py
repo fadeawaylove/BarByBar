@@ -577,6 +577,29 @@ def test_position_readout_uses_state_property_for_scanability(window: MainWindow
     assert window.stats_label.property("state") == "completed"
 
 
+def test_position_and_case_statuses_use_chinese_display_copy(window: MainWindow) -> None:
+    _seed_engine(window)
+
+    for direction, expected in ((None, "空仓"), ("long", "做多"), ("short", "做空")):
+        window.engine.session.position = PositionState(
+            direction=direction,
+            quantity=0 if direction is None else 1,
+            average_price=0 if direction is None else 101.5,
+            realized_pnl=2.5,
+        )
+        window._last_synced_position_signature = None
+        window._update_ui_from_engine_sync()
+
+        assert f"方向 {expected}" in window.stats_label.text()
+        assert "已实现盈亏 2.50" in window.stats_label.text()
+        assert "方向 flat" not in window.stats_label.text()
+        assert "方向 long" not in window.stats_label.text()
+        assert "方向 short" not in window.stats_label.text()
+
+    assert "根K线" in window.case_meta_label.text()
+    assert "Bar " not in window.case_meta_label.text()
+
+
 def test_right_panel_uses_training_and_history_tabs(window: MainWindow) -> None:
     assert window.right_sidebar_stack is not None
     assert window.replay_sidebar_panel is not None
@@ -4325,9 +4348,9 @@ def test_trade_history_sidebar_uses_right_panel_tabs(window: MainWindow) -> None
     assert sidebar.objectName() == "tradeReviewSidebar"
     assert sidebar.trade_card_list.objectName() == "tradeReviewCardList"
     assert sidebar.trade_card_list.count() == 1
-    assert "#01 · 多 · 盈利 · 待补充" in sidebar.trade_card_list.item(0).text()
-    assert "PnL +2.00" in sidebar.trade_card_list.item(0).text()
-    assert "持仓 2根 · 手动平仓" in sidebar.trade_card_list.item(0).text()
+    assert "#01 · 多单 · 盈利 · 待补充" in sidebar.trade_card_list.item(0).text()
+    assert "盈亏 +2.00" in sidebar.trade_card_list.item(0).text()
+    assert "持仓 2 根K线 · 手动平仓" in sidebar.trade_card_list.item(0).text()
     header_buttons = [button.text() for button in sidebar.findChildren(QPushButton)]
     assert "上一笔" in header_buttons
     assert "下一笔" in header_buttons
