@@ -54,6 +54,11 @@ class CsvQualityCode(str, Enum):
     ABNORMAL_INTERVAL = "abnormal_interval"
 
 
+class CsvFindingSeverity(str, Enum):
+    BLOCKING = "blocking"
+    WARNING = "warning"
+
+
 @dataclass(frozen=True, slots=True)
 class CsvQualityExample:
     row_number: int | None
@@ -65,6 +70,7 @@ class CsvQualityExample:
 @dataclass(frozen=True, slots=True)
 class CsvQualityFinding:
     code: CsvQualityCode
+    severity: CsvFindingSeverity
     count: int
     message: str
     examples: tuple[CsvQualityExample, ...]
@@ -81,6 +87,26 @@ class CsvInspectionResult:
     end_time: datetime | None
     duplicates_removed: int = 0
     quality_findings: tuple[CsvQualityFinding, ...] = ()
+
+    @property
+    def blocking_findings(self) -> tuple[CsvQualityFinding, ...]:
+        return tuple(
+            finding
+            for finding in self.quality_findings
+            if finding.severity is CsvFindingSeverity.BLOCKING
+        )
+
+    @property
+    def warning_findings(self) -> tuple[CsvQualityFinding, ...]:
+        return tuple(
+            finding
+            for finding in self.quality_findings
+            if finding.severity is CsvFindingSeverity.WARNING
+        )
+
+    @property
+    def can_confirm_import(self) -> bool:
+        return not self.blocking_findings
 
 
 @dataclass(slots=True)
@@ -445,10 +471,20 @@ def inspect_csv(
         CsvQualityCode.OHLC_INCONSISTENCY: "Some rows contain inconsistent OHLCV values.",
         CsvQualityCode.ABNORMAL_INTERVAL: "Some timestamp intervals are unusually large.",
     }
+    finding_severities = {
+        CsvQualityCode.MISSING_REQUIRED_FIELDS: CsvFindingSeverity.BLOCKING,
+        CsvQualityCode.PARSE_FAILURE: CsvFindingSeverity.BLOCKING,
+        CsvQualityCode.EMPTY_DATA: CsvFindingSeverity.BLOCKING,
+        CsvQualityCode.DUPLICATE_TIMESTAMP: CsvFindingSeverity.WARNING,
+        CsvQualityCode.REVERSED_ORDER: CsvFindingSeverity.WARNING,
+        CsvQualityCode.OHLC_INCONSISTENCY: CsvFindingSeverity.BLOCKING,
+        CsvQualityCode.ABNORMAL_INTERVAL: CsvFindingSeverity.WARNING,
+    }
     finding_order = tuple(CsvQualityCode)
     quality_findings = tuple(
         CsvQualityFinding(
             code=code,
+            severity=finding_severities[code],
             count=finding_counts[code],
             message=finding_messages[code],
             examples=tuple(finding_examples[code]),

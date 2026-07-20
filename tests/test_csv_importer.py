@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from barbybar.data.csv_importer import (
+    CsvFindingSeverity,
     CsvQualityCode,
     MissingColumnsError,
     infer_symbol_from_filename,
@@ -40,6 +41,8 @@ def test_inspect_csv_returns_mapping_samples_count_and_time_range() -> None:
     assert result.duplicates_removed == 0
     assert result.start_time == datetime(2025, 1, 2, 9, 30)
     assert result.end_time == datetime(2025, 1, 2, 9, 39)
+    assert result.quality_findings == ()
+    assert result.can_confirm_import is True
 
 
 def test_inspect_csv_is_read_only_and_uses_explicit_mapping(tmp_path: Path) -> None:
@@ -117,6 +120,8 @@ def test_inspect_csv_reports_missing_required_fields_without_raising(tmp_path: P
     assert result.valid_row_count == 0
     assert result.start_time is None
     assert result.end_time is None
+    assert finding.severity is CsvFindingSeverity.BLOCKING
+    assert result.can_confirm_import is False
 
 
 def test_inspect_csv_collects_datetime_and_numeric_parse_failures(tmp_path: Path) -> None:
@@ -136,6 +141,8 @@ def test_inspect_csv_collects_datetime_and_numeric_parse_failures(tmp_path: Path
     assert [example.row_number for example in finding.examples] == [2, 3]
     assert result.valid_row_count == 1
     assert result.start_time == datetime(2025, 1, 1, 9, 2)
+    assert finding.severity is CsvFindingSeverity.BLOCKING
+    assert result.can_confirm_import is False
 
 
 def test_inspect_csv_reports_empty_data(tmp_path: Path) -> None:
@@ -146,6 +153,8 @@ def test_inspect_csv_reports_empty_data(tmp_path: Path) -> None:
 
     assert result.valid_row_count == 0
     assert [item.code for item in result.quality_findings] == [CsvQualityCode.EMPTY_DATA]
+    assert result.blocking_findings == result.quality_findings
+    assert result.can_confirm_import is False
 
 
 def test_inspect_csv_reports_duplicate_and_reversed_timestamps(tmp_path: Path) -> None:
@@ -165,6 +174,9 @@ def test_inspect_csv_reports_duplicate_and_reversed_timestamps(tmp_path: Path) -
     assert by_code[CsvQualityCode.DUPLICATE_TIMESTAMP].examples[0].row_number == 4
     assert result.valid_row_count == 2
     assert result.duplicates_removed == 1
+    assert {item.severity for item in result.quality_findings} == {CsvFindingSeverity.WARNING}
+    assert result.warning_findings == result.quality_findings
+    assert result.can_confirm_import is True
 
 
 def test_inspect_csv_reports_ohlc_inconsistency_with_row_example(tmp_path: Path) -> None:
@@ -183,6 +195,8 @@ def test_inspect_csv_reports_ohlc_inconsistency_with_row_example(tmp_path: Path)
     assert finding.examples[0].row_number == 2
     assert "open must be between" in finding.examples[0].message
     assert result.valid_row_count == 1
+    assert finding.severity is CsvFindingSeverity.BLOCKING
+    assert result.can_confirm_import is False
 
 
 def test_inspect_csv_reports_abnormal_intervals_against_median(tmp_path: Path) -> None:
@@ -202,6 +216,8 @@ def test_inspect_csv_reports_abnormal_intervals_against_median(tmp_path: Path) -
     assert finding.count == 1
     assert finding.examples[0].row_number == 5
     assert "1080" in (finding.examples[0].value or "")
+    assert finding.severity is CsvFindingSeverity.WARNING
+    assert result.can_confirm_import is True
 
 
 def test_import_custom_headers() -> None:

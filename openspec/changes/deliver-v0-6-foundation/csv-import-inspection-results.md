@@ -36,4 +36,18 @@ Complete automated suite: 737 passed
 OpenSpec strict validation: passed
 ```
 
-Next task: classify every finding as a blocking error or confirmable warning and add severity-focused tests in task 4.3.
+## Severity and confirmation slice
+
+Every quality finding now has an explicit `blocking` or `warning` severity. Missing mappings, parse failures, empty data, and invalid OHLCV relationships block import confirmation because the current persistence parser cannot safely import them. Duplicate timestamps, reversed source ordering, and abnormal intervals are confirmable warnings because the existing importer deterministically deduplicates and sorts those rows without inventing market values.
+
+`CsvInspectionResult` exposes blocking and warning collections plus `can_confirm_import`, giving the review interface one tested decision boundary instead of duplicating quality rules in UI code.
+
+Verification:
+
+```text
+Focused parser and quality-rule tests: 27 passed
+Complete automated suite: 737 passed
+OpenSpec strict validation: passed
+```
+
+Next task: build the import review dialog for mapping, samples, summary, findings, and blocked confirmation in task 4.4.
