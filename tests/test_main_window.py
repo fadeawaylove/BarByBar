@@ -16,6 +16,7 @@ from barbybar.data.tick_size import default_tick_size_for_symbol, format_average
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLine, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, TradeEntryLeg, TradeReviewItem, WindowBars
 from barbybar.performance_metrics import clear_metrics, recent_metrics, record_metric
+from barbybar.storage.data_safety import create_database_backup
 from barbybar.storage.repository import Repository
 from barbybar.ui.chart_widget import InteractionMode
 import barbybar.ui.main_window as main_window_module
@@ -997,9 +998,18 @@ def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWi
         checkboxes = {checkbox.text() for checkbox in dialog.findChildren(QCheckBox)}
         buttons = {button.text() for button in dialog.findChildren(QPushButton)}
 
-        assert categories == ["图表显示", "复盘交易", "日志与诊断"]
+        assert categories == ["图表显示", "复盘交易", "数据管理", "日志与诊断"]
         assert {"显示K线序号", "隐藏画线", "显示成交点", "显示交易连线", "不过夜"} <= checkboxes
-        assert {"查看日志", "打开日志目录", "复制日志目录路径", "刷新性能指标"} <= buttons
+        assert {
+            "创建数据库备份",
+            "选择备份并准备恢复",
+            "打开备份目录",
+            "复制数据库路径",
+            "查看日志",
+            "打开日志目录",
+            "复制日志目录路径",
+            "刷新性能指标",
+        } <= buttons
         assert dialog.default_order_quantity_spin.value() == window.quantity_spin.value()
         assert dialog.default_draw_order_quantity_spin.value() == window.draw_quantity_spin.value()
         assert dialog.trade_marker_alpha_slider.value() == 45
@@ -1017,6 +1027,12 @@ def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWi
         assert dialog.open_log_dir_button.property("role") == "secondary"
         assert dialog.copy_log_dir_button.property("role") == "secondary"
         assert dialog.refresh_performance_button.property("role") == "secondary"
+        assert dialog.create_backup_button.property("role") == "primary"
+        assert dialog.choose_restore_button.property("role") == "secondary"
+        assert dialog.data_safety_status_label.property("role") == "statusMuted"
+        assert dialog.data_safety_progress.isVisible() is False
+        assert dialog.database_path_label.text() == str(window.active_database_path())
+        assert dialog.backup_dir_label.text() == str(paths.default_backup_dir())
         label_texts = {label.text() for label in dialog.findChildren(QLabel)}
         assert "Alt + 左键拖拽" in label_texts
         assert "悬停 K 线时显示开盘时间和收盘时间" in label_texts
@@ -1173,6 +1189,92 @@ def test_settings_dialog_log_directory_actions(window: MainWindow, app: QApplica
 
     assert [Path(path) for path in opened_urls] == [paths.default_log_dir()]
     assert QApplication.clipboard().text() == str(paths.default_log_dir())
+
+
+def test_settings_dialog_creates_database_backup_in_background(
+    window: MainWindow,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "manual-backup.db"
+    notices: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        "barbybar.ui.main_window.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(target), "SQLite 数据库 (*.db)"),
+    )
+    monkeypatch.setattr(window, "_show_notice", lambda *args: notices.append(args))
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+    dialog.category_list.setCurrentRow(2)
+
+    dialog.create_backup_button.click()
+    assert dialog.create_backup_button.isEnabled() is False
+    assert dialog.data_safety_progress.isVisible() is True
+    _wait_until(app, lambda: not window.data_safety_operation_running())
+
+    assert target.is_file()
+    assert "备份已完成" in dialog.data_safety_status_label.text()
+    assert dialog.create_backup_button.isEnabled() is True
+    assert dialog.data_safety_progress.isVisible() is False
+    assert notices and notices[-1][0] == "备份完成"
+
+
+def test_settings_dialog_stages_restore_and_shows_restart_guidance(
+    window: MainWindow,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    selected = tmp_path / "selected-backup.db"
+    create_database_backup(window.active_database_path(), selected)
+    notices: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        "barbybar.ui.main_window.QFileDialog.getOpenFileName",
+        lambda *args, **kwargs: (str(selected), "SQLite 数据库 (*.db)"),
+    )
+    monkeypatch.setattr(UpdateActionDialog, "exec", lambda _dialog: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(window, "_show_notice", lambda *args: notices.append(args))
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+
+    dialog.choose_restore_button.click()
+    assert dialog.choose_restore_button.isEnabled() is False
+    _wait_until(app, lambda: not window.data_safety_operation_running())
+
+    assert paths.default_pending_restore_manifest_path().is_file()
+    assert "退出并重新打开" in dialog.data_safety_status_label.text()
+    assert dialog.choose_restore_button.isEnabled() is True
+    assert notices and notices[-1][0] == "恢复已准备"
+
+
+def test_settings_dialog_restore_error_is_actionable_and_preserves_current_database(
+    window: MainWindow,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    invalid = tmp_path / "invalid.db"
+    invalid.write_text("not sqlite", encoding="utf-8")
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        "barbybar.ui.main_window.QFileDialog.getOpenFileName",
+        lambda *args, **kwargs: (str(invalid), "SQLite 数据库 (*.db)"),
+    )
+    monkeypatch.setattr(UpdateActionDialog, "exec", lambda _dialog: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(window, "_show_error", lambda *args: errors.append(args))
+    window.open_settings_dialog()
+    dialog = window._settings_dialog
+    assert dialog is not None
+
+    dialog.choose_restore_button.click()
+    _wait_until(app, lambda: not window.data_safety_operation_running())
+
+    assert "准备恢复失败" in dialog.data_safety_status_label.text()
+    assert "当前数据库未被替换" in errors[-1][2]
+    assert window.repo.list_datasets()[0].symbol == "IF"
 
 
 def test_log_viewer_dialog_reads_selected_log_file(app: QApplication, tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from copy import deepcopy
+from datetime import datetime
 import json
 from math import floor
 import re
@@ -88,8 +89,16 @@ from barbybar.domain.models import (
 )
 from barbybar.logging_config import log_dir
 from barbybar.logging_config import register_fatal_error_handler, unregister_fatal_error_handler
-from barbybar.paths import default_drawing_templates_path, default_ui_settings_path, default_updates_dir
+from barbybar.paths import (
+    default_backup_dir,
+    default_db_path,
+    default_drawing_templates_path,
+    default_pending_restore_manifest_path,
+    default_ui_settings_path,
+    default_updates_dir,
+)
 from barbybar.performance_metrics import performance_summary_lines, record_metric
+from barbybar.storage.data_safety import create_database_backup, stage_pending_restore
 from barbybar.storage.repository import Repository
 from barbybar.ui.async_tasks import AsyncTaskCoordinator
 from barbybar.ui.chart_widget import (
@@ -652,6 +661,45 @@ class UpdateDownloadWorker(QObject):
             self.failed.emit(self.task_id, str(exc))
             return
         self.finished.emit(self.task_id, str(downloaded_path))
+
+
+class DataSafetyWorker(QObject):
+    finished = Signal(str, object)
+    failed = Signal(str, str)
+
+    def __init__(
+        self,
+        operation: str,
+        source_path: str | Path,
+        *,
+        target_path: str | Path | None = None,
+        current_database_path: str | Path | None = None,
+        manifest_path: str | Path | None = None,
+    ) -> None:
+        super().__init__()
+        self.operation = operation
+        self.source_path = Path(source_path)
+        self.target_path = Path(target_path) if target_path is not None else None
+        self.current_database_path = Path(current_database_path) if current_database_path is not None else None
+        self.manifest_path = Path(manifest_path) if manifest_path is not None else None
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            if self.operation == "backup" and self.target_path is not None:
+                result = create_database_backup(self.source_path, self.target_path)
+            elif self.operation == "restore" and self.current_database_path is not None:
+                result = stage_pending_restore(
+                    self.source_path,
+                    current_database_path=self.current_database_path,
+                    manifest_path=self.manifest_path,
+                )
+            else:
+                raise ValueError(f"Unsupported data-safety operation: {self.operation}")
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(self.operation, str(exc))
+            return
+        self.finished.emit(self.operation, result)
 
 
 class FlatTextLabel(QLabel):
@@ -2652,7 +2700,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.owner = owner
         self.setWindowTitle("设置")
-        self.resize(820, 620)
+        self.resize(900, 680)
         self.setStyleSheet(dialog_stylesheet())
 
         layout = QHBoxLayout(self)
@@ -2662,7 +2710,7 @@ class SettingsDialog(QDialog):
         self.category_list = QListWidget()
         self.category_list.setObjectName("settingsSidebar")
         self.category_list.setFixedWidth(164)
-        for label in ["图表显示", "复盘交易", "日志与诊断"]:
+        for label in ["图表显示", "复盘交易", "数据管理", "日志与诊断"]:
             self.category_list.addItem(label)
         layout.addWidget(self.category_list)
 
@@ -2671,6 +2719,7 @@ class SettingsDialog(QDialog):
         for page in (
             self._build_chart_page(),
             self._build_replay_page(),
+            self._build_data_page(),
             self._build_diagnostics_page(),
         ):
             scroll = QScrollArea()
@@ -2783,6 +2832,143 @@ class SettingsDialog(QDialog):
         layout.addWidget(behavior_group)
         layout.addStretch(1)
         return page
+
+    def _build_data_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
+
+        location_group = QGroupBox("数据位置")
+        location_layout = QVBoxLayout(location_group)
+        location_layout.setContentsMargins(10, 14, 10, 10)
+        location_layout.setSpacing(8)
+        location_hint = QLabel("BarByBar 的案例、行情和复盘记录都保存在本地数据库中。")
+        location_hint.setWordWrap(True)
+        self.database_path_label = QLabel()
+        self.database_path_label.setWordWrap(True)
+        self.database_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.backup_dir_label = QLabel()
+        self.backup_dir_label.setWordWrap(True)
+        self.backup_dir_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        location_actions = QHBoxLayout()
+        location_actions.setSpacing(6)
+        self.open_backup_dir_button = QPushButton("打开备份目录")
+        self.open_backup_dir_button.setProperty("role", "secondary")
+        self.open_backup_dir_button.clicked.connect(self._open_backup_directory)
+        self.copy_database_path_button = QPushButton("复制数据库路径")
+        self.copy_database_path_button.setProperty("role", "secondary")
+        self.copy_database_path_button.clicked.connect(self._copy_database_path)
+        location_actions.addWidget(self.open_backup_dir_button)
+        location_actions.addWidget(self.copy_database_path_button)
+        location_actions.addStretch(1)
+        location_layout.addWidget(location_hint)
+        location_layout.addWidget(QLabel("当前数据库"))
+        location_layout.addWidget(self.database_path_label)
+        location_layout.addWidget(QLabel("默认备份目录"))
+        location_layout.addWidget(self.backup_dir_label)
+        location_layout.addLayout(location_actions)
+        layout.addWidget(location_group)
+
+        backup_group = QGroupBox("创建安全备份")
+        backup_layout = QVBoxLayout(backup_group)
+        backup_layout.setContentsMargins(10, 14, 10, 10)
+        backup_layout.setSpacing(8)
+        backup_hint = QLabel("生成经过完整性校验的 SQLite 一致性快照；完成前不会出现不完整的最终文件。")
+        backup_hint.setWordWrap(True)
+        self.create_backup_button = QPushButton("创建数据库备份")
+        self.create_backup_button.setProperty("role", "primary")
+        self.create_backup_button.setFixedWidth(152)
+        self.create_backup_button.clicked.connect(self._choose_backup_target)
+        backup_layout.addWidget(backup_hint)
+        backup_layout.addWidget(self.create_backup_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(backup_group)
+
+        restore_group = QGroupBox("从备份恢复")
+        restore_layout = QVBoxLayout(restore_group)
+        restore_layout.setContentsMargins(10, 14, 10, 10)
+        restore_layout.setSpacing(8)
+        restore_hint = QLabel(
+            "所选文件会先校验并复制到安全暂存区，本次运行不会覆盖当前数据库。"
+            "退出并重新打开 BarByBar 后，程序会先自动备份当前数据库，再完成恢复。"
+        )
+        restore_hint.setWordWrap(True)
+        self.choose_restore_button = QPushButton("选择备份并准备恢复")
+        self.choose_restore_button.setProperty("role", "secondary")
+        self.choose_restore_button.setFixedWidth(176)
+        self.choose_restore_button.clicked.connect(self._choose_restore_source)
+        restore_layout.addWidget(restore_hint)
+        restore_layout.addWidget(self.choose_restore_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(restore_group)
+
+        status_group = QGroupBox("操作状态")
+        status_layout = QVBoxLayout(status_group)
+        status_layout.setContentsMargins(10, 14, 10, 10)
+        status_layout.setSpacing(8)
+        self.data_safety_progress = QProgressBar()
+        self.data_safety_progress.setRange(0, 0)
+        self.data_safety_progress.setTextVisible(False)
+        self.data_safety_progress.setStyleSheet(progress_bar_stylesheet())
+        self.data_safety_progress.setVisible(False)
+        self.data_safety_status_label = QLabel("尚未执行数据管理操作。")
+        self.data_safety_status_label.setWordWrap(True)
+        self.data_safety_status_label.setProperty("role", "statusMuted")
+        self.data_safety_status_label.setStyleSheet(muted_status_stylesheet())
+        status_layout.addWidget(self.data_safety_progress)
+        status_layout.addWidget(self.data_safety_status_label)
+        layout.addWidget(status_group)
+        layout.addStretch(1)
+        return page
+
+    def _choose_backup_target(self) -> None:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        suggested = default_backup_dir() / f"barbybar-backup-{timestamp}.db"
+        selected, _filter = QFileDialog.getSaveFileName(
+            self,
+            "创建数据库备份",
+            str(suggested),
+            "SQLite 数据库 (*.db);;所有文件 (*)",
+        )
+        if selected:
+            self.owner.start_database_backup(Path(selected))
+
+    def _choose_restore_source(self) -> None:
+        selected, _filter = QFileDialog.getOpenFileName(
+            self,
+            "选择 BarByBar 备份",
+            str(default_backup_dir()),
+            "SQLite 数据库 (*.db *.sqlite *.sqlite3);;所有文件 (*)",
+        )
+        if not selected:
+            return
+        confirmation = UpdateActionDialog(
+            "准备恢复",
+            "确认准备从此备份恢复？",
+            "本次运行只会校验并登记恢复请求，不会覆盖正在使用的数据库。",
+            f"所选文件：{selected}\n\n登记成功后，请退出并重新打开 BarByBar。启动时会先备份当前数据库，再完成恢复。",
+            accept_text="确认并准备恢复",
+            cancel_text="取消",
+            accept_role="primary",
+            parent=self,
+        )
+        if confirmation.exec() == QDialog.DialogCode.Accepted:
+            self.owner.start_database_restore(Path(selected))
+
+    def _open_backup_directory(self) -> None:
+        path = default_backup_dir()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _copy_database_path(self) -> None:
+        QApplication.clipboard().setText(str(self.owner.active_database_path()))
+
+    def set_data_safety_state(self, *, busy: bool, message: str, error: bool = False) -> None:
+        self.create_backup_button.setEnabled(not busy)
+        self.choose_restore_button.setEnabled(not busy)
+        self.data_safety_progress.setVisible(busy)
+        self.data_safety_status_label.setText(message)
+        self.data_safety_status_label.setStyleSheet(
+            error_banner_stylesheet() if error else muted_status_stylesheet()
+        )
 
     def _build_diagnostics_page(self) -> QWidget:
         page = QWidget()
@@ -2899,6 +3085,13 @@ class SettingsDialog(QDialog):
         return container
 
     def sync_from_owner(self) -> None:
+        self.database_path_label.setText(str(self.owner.active_database_path()))
+        self.backup_dir_label.setText(str(default_backup_dir()))
+        if default_pending_restore_manifest_path().exists() and not self.owner.data_safety_operation_running():
+            self.set_data_safety_state(
+                busy=False,
+                message="已有待恢复请求；请退出并重新打开 BarByBar 以完成恢复。",
+            )
         pairs = [
             (self.bar_count_check, self.owner.bar_count_toggle_button.isChecked() if self.owner.bar_count_toggle_button else self.owner._bar_count_labels_default_visible()),
             (self.hide_drawings_check, self.owner.hide_drawings_toggle_button.isChecked() if self.owner.hide_drawings_toggle_button else self.owner._drawings_hidden_default()),
@@ -2985,6 +3178,9 @@ class MainWindow(QMainWindow):
         self._active_update_download_thread: QThread | None = None
         self._active_update_download_worker: UpdateDownloadWorker | None = None
         self._active_update_download_token = 0
+        self._data_safety_tasks = AsyncTaskCoordinator(self, component="data_safety", shutdown_timeout_ms=5000)
+        self._active_data_safety_thread: QThread | None = None
+        self._active_data_safety_worker: DataSafetyWorker | None = None
         self._active_session_save_thread: QThread | None = None
         self._active_session_save_worker: SessionSaveWorker | None = None
         self._step_forward_save_generation = 0
@@ -4420,6 +4616,104 @@ class MainWindow(QMainWindow):
 
     def copy_log_directory_path(self) -> None:
         QApplication.clipboard().setText(str(log_dir()))
+
+    def active_database_path(self) -> Path:
+        return Path(self.repo.db_path or default_db_path()).expanduser().resolve()
+
+    def data_safety_operation_running(self) -> bool:
+        return self._data_safety_tasks.is_running()
+
+    def start_database_backup(self, target_path: str | Path) -> None:
+        self._start_data_safety_operation(
+            DataSafetyWorker(
+                "backup",
+                self.active_database_path(),
+                target_path=target_path,
+            ),
+            "正在创建并校验数据库备份...",
+        )
+
+    def start_database_restore(self, source_path: str | Path) -> None:
+        self._start_data_safety_operation(
+            DataSafetyWorker(
+                "restore",
+                source_path,
+                current_database_path=self.active_database_path(),
+                manifest_path=default_pending_restore_manifest_path(),
+            ),
+            "正在校验备份并登记待恢复请求...",
+        )
+
+    def _start_data_safety_operation(self, worker: DataSafetyWorker, status_message: str) -> None:
+        if self._data_safety_tasks.is_running():
+            self._show_notice(
+                "数据管理",
+                "已有数据操作正在进行",
+                "请等待当前备份或恢复准备完成后再试。",
+            )
+            return
+        if self._settings_dialog is not None:
+            self._settings_dialog.set_data_safety_state(busy=True, message=status_message)
+        thread = self._data_safety_tasks.start(
+            worker,
+            finished_slot=self._handle_data_safety_finished,
+            failed_slot=self._handle_data_safety_failed,
+            thread_finished_slot=self._handle_data_safety_thread_finished,
+        )
+        self._active_data_safety_thread = thread
+        self._active_data_safety_worker = worker
+
+    @Slot(str, object)
+    def _handle_data_safety_finished(self, operation: str, result: object) -> None:
+        if operation == "backup":
+            path = Path(getattr(result, "path"))
+            message = f"备份已完成：{path}"
+            if self._settings_dialog is not None:
+                self._settings_dialog.set_data_safety_state(busy=False, message=message)
+            logger.bind(component="data_safety", path=str(path)).info("event=database_backup_complete")
+            self._show_notice(
+                "备份完成",
+                "数据库备份已安全创建",
+                "备份已通过完整性校验。",
+                str(path),
+            )
+            return
+
+        manifest_path = Path(getattr(result, "manifest_path"))
+        message = "恢复请求已登记；请退出并重新打开 BarByBar。"
+        if self._settings_dialog is not None:
+            self._settings_dialog.set_data_safety_state(busy=False, message=message)
+        logger.bind(component="data_safety", manifest_path=str(manifest_path)).info(
+            "event=pending_restore_staged"
+        )
+        self._show_notice(
+            "恢复已准备",
+            "备份校验通过，恢复请求已登记",
+            "请退出并重新打开 BarByBar。启动时会先备份当前数据库，再完成恢复。",
+            str(manifest_path),
+        )
+
+    @Slot(str, str)
+    def _handle_data_safety_failed(self, operation: str, message: str) -> None:
+        action = "创建备份" if operation == "backup" else "准备恢复"
+        status = f"{action}失败：{message}"
+        if self._settings_dialog is not None:
+            self._settings_dialog.set_data_safety_state(busy=False, message=status, error=True)
+        logger.bind(component="data_safety", operation=operation).warning(
+            "event=data_safety_operation_failed message={message}",
+            message=message,
+        )
+        self._show_error(
+            f"{action}失败",
+            f"未能{action}",
+            "当前数据库未被替换。请检查所选文件和目标目录后重试。",
+            message,
+        )
+
+    @Slot()
+    def _handle_data_safety_thread_finished(self) -> None:
+        self._active_data_safety_thread = self._data_safety_tasks.active_thread
+        self._active_data_safety_worker = self._data_safety_tasks.active_worker
 
     def open_settings_dialog(self) -> None:
         if self._settings_dialog is None:
@@ -6184,6 +6478,7 @@ class MainWindow(QMainWindow):
             ("forward_prefetch", self._active_forward_prefetch_thread, 2000),
             ("update_check", self._active_update_check_thread, 2000),
             ("update_download", self._active_update_download_thread, 2000),
+            ("data_safety", self._active_data_safety_thread, 5000),
             ("session_save_async", self._active_session_save_thread, 2000),
         ]
         all_stopped = True

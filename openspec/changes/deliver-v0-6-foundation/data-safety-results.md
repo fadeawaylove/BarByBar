@@ -66,4 +66,27 @@ Focused data-safety, path, desktop-startup, repository, and logging tests: 75 pa
 Complete automated suite: 710 passed
 ```
 
-Next task: add the settings/data-management UI for manual backup, restore selection, restart guidance, paths, progress, and actionable errors.
+## Data management UI slice
+
+The settings dialog now includes a dedicated `数据管理` category with four clear regions: local data paths, consistent backup creation, staged restore selection, and operation status. It follows the existing professional light theme and uses the established primary/secondary button roles rather than introducing one-off colors or decoration.
+
+Interaction behavior:
+
+- The page shows the resolved active database path and default backup directory, with copy/open actions.
+- Manual backup uses a timestamped default filename and runs in a background worker so chart and window interaction remain responsive.
+- Restore selection explains before confirmation that the current process will only validate and stage the file, and that replacement happens after exit and reopen.
+- Backup and restore buttons are disabled while work runs, an indeterminate progress bar is shown, and success feedback includes the resulting path and next action.
+- Invalid restore files and write failures show persistent inline status plus a detailed recovery dialog stating that the active database was not replaced.
+- The main window waits for an active data-safety worker during safe shutdown.
+
+UI verification:
+
+- Settings/data-management controls, paths, roles, background success, restart guidance, and invalid-file recovery are covered by automated UI tests.
+- A 900×680 offscreen render confirmed complete grouping, path wrapping, button fit, status visibility, and no horizontal clipping. The test host lacks Chinese glyphs in its offscreen font, so glyph appearance remains part of the packaged-app font smoke gate rather than this layout check.
+
+```text
+Focused main-window suite: 257 passed
+Complete automated suite: 713 passed
+```
+
+Next task: define a stable session/trade export view model independent of internal database column names.
