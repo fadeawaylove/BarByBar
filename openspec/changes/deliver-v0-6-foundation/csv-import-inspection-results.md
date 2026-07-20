@@ -20,4 +20,20 @@ OpenSpec strict validation: passed
 
 Covered inspection cases include standard columns, explicit custom mappings, bounded numbered samples, read-only operation, unordered input, duplicate timestamps, importable row totals, parsed time range, and invalid sample limits.
 
-Next task: add structured row-level quality findings for missing fields, parse errors, empty input, duplicate timestamps, reversed ordering, OHLC inconsistencies, and abnormal intervals in task 4.2.
+## Structured quality detection slice
+
+Inspection now returns deterministic `CsvQualityFinding` entries with stable codes, total occurrence counts, and up to five bounded row-level examples per category. It detects unmapped required fields, datetime or numeric parse failures, no importable data, duplicate timestamps, reversed source ordering, invalid OHLCV relationships, and abnormal positive intervals.
+
+The interval rule uses the median of at least three positive source intervals as a robust local baseline and flags gaps greater than three times that value. This intentionally identifies candidates only; task 4.3 assigns blocking or confirmable severity.
+
+Invalid rows no longer stop inspection at the first error. Valid rows continue to contribute to the importable count and time range, while the strict persistence parser retains its existing fail-fast behavior.
+
+Verification:
+
+```text
+Focused CSV importer and quality tests: 27 passed
+Complete automated suite: 737 passed
+OpenSpec strict validation: passed
+```
+
+Next task: classify every finding as a blocking error or confirmable warning and add severity-focused tests in task 4.3.

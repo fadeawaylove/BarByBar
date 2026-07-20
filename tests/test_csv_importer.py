@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from barbybar.data.csv_importer import (
+    CsvQualityCode,
     MissingColumnsError,
     infer_symbol_from_filename,
     inspect_csv,
@@ -97,6 +98,110 @@ def test_inspect_csv_reports_importable_rows_after_deduplication(tmp_path: Path)
 def test_inspect_csv_rejects_negative_sample_limit() -> None:
     with pytest.raises(ValueError, match="sample_limit"):
         inspect_csv(Path("sample_data/if_sample.csv"), sample_limit=-1)
+
+
+def test_inspect_csv_reports_missing_required_fields_without_raising(tmp_path: Path) -> None:
+    csv_path = tmp_path / "missing.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close\n"
+        "2025-01-01 09:00,1,2,0.5,1.5\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_csv(csv_path)
+
+    finding = next(item for item in result.quality_findings if item.code is CsvQualityCode.MISSING_REQUIRED_FIELDS)
+    assert finding.count == 1
+    assert finding.examples[0].field == "volume"
+    assert result.suggested_mapping["datetime"] == "datetime"
+    assert result.valid_row_count == 0
+    assert result.start_time is None
+    assert result.end_time is None
+
+
+def test_inspect_csv_collects_datetime_and_numeric_parse_failures(tmp_path: Path) -> None:
+    csv_path = tmp_path / "parse-failures.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "not-a-time,1,2,0.5,1.5,10\n"
+        "2025-01-01 09:01,1,2,0.5,bad,10\n"
+        "2025-01-01 09:02,1,2,0.5,1.5,10\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_csv(csv_path)
+
+    finding = next(item for item in result.quality_findings if item.code is CsvQualityCode.PARSE_FAILURE)
+    assert finding.count == 2
+    assert [example.row_number for example in finding.examples] == [2, 3]
+    assert result.valid_row_count == 1
+    assert result.start_time == datetime(2025, 1, 1, 9, 2)
+
+
+def test_inspect_csv_reports_empty_data(tmp_path: Path) -> None:
+    csv_path = tmp_path / "empty.csv"
+    csv_path.write_text("datetime,open,high,low,close,volume\n", encoding="utf-8")
+
+    result = inspect_csv(csv_path)
+
+    assert result.valid_row_count == 0
+    assert [item.code for item in result.quality_findings] == [CsvQualityCode.EMPTY_DATA]
+
+
+def test_inspect_csv_reports_duplicate_and_reversed_timestamps(tmp_path: Path) -> None:
+    csv_path = tmp_path / "timestamp-quality.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:02,2,3,1,2.5,20\n"
+        "2025-01-01 09:01,1,2,0.5,1.5,10\n"
+        "2025-01-01 09:02,4,5,3,4.5,30\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_csv(csv_path)
+
+    by_code = {item.code: item for item in result.quality_findings}
+    assert by_code[CsvQualityCode.REVERSED_ORDER].examples[0].row_number == 3
+    assert by_code[CsvQualityCode.DUPLICATE_TIMESTAMP].examples[0].row_number == 4
+    assert result.valid_row_count == 2
+    assert result.duplicates_removed == 1
+
+
+def test_inspect_csv_reports_ohlc_inconsistency_with_row_example(tmp_path: Path) -> None:
+    csv_path = tmp_path / "bad-ohlc.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:00,3,2,1,1.5,10\n"
+        "2025-01-01 09:01,1,2,0.5,1.5,10\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_csv(csv_path)
+
+    finding = next(item for item in result.quality_findings if item.code is CsvQualityCode.OHLC_INCONSISTENCY)
+    assert finding.count == 1
+    assert finding.examples[0].row_number == 2
+    assert "open must be between" in finding.examples[0].message
+    assert result.valid_row_count == 1
+
+
+def test_inspect_csv_reports_abnormal_intervals_against_median(tmp_path: Path) -> None:
+    csv_path = tmp_path / "gap.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:00,1,2,0.5,1.5,10\n"
+        "2025-01-01 09:01,1,2,0.5,1.5,10\n"
+        "2025-01-01 09:02,1,2,0.5,1.5,10\n"
+        "2025-01-01 09:20,1,2,0.5,1.5,10\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_csv(csv_path)
+
+    finding = next(item for item in result.quality_findings if item.code is CsvQualityCode.ABNORMAL_INTERVAL)
+    assert finding.count == 1
+    assert finding.examples[0].row_number == 5
+    assert "1080" in (finding.examples[0].value or "")
 
 
 def test_import_custom_headers() -> None:
