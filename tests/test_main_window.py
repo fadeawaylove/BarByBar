@@ -5876,6 +5876,37 @@ def test_import_csv_cancelled_review_does_not_persist(monkeypatch, app: QApplica
     app.processEvents()
 
 
+def test_import_csv_blocking_review_cannot_persist(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    csv_path = case_dir / "blocked.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close\n"
+        "2025-01-01 09:00:00,100,101,99,100.5\n",
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+
+    def attempt_blocked_accept(dialog: CsvImportReviewDialog) -> int:
+        assert dialog.confirm_button.isEnabled() is False
+        dialog.accept()
+        return dialog.result()
+
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
+    monkeypatch.setattr(CsvImportReviewDialog, "exec", attempt_blocked_accept)
+    monkeypatch.setattr(window, "show_busy_overlay", lambda *args, **kwargs: None)
+    monkeypatch.setattr(window, "hide_busy_overlay", lambda: None)
+
+    window.import_csv()
+
+    assert repo.list_datasets() == []
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
 def test_import_csv_reports_persistence_failure(monkeypatch, app: QApplication) -> None:
     temp_root = Path("C:/code/BarByBar/.pytest-temp")
     case_dir = temp_root / uuid4().hex

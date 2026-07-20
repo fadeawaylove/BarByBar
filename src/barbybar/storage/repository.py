@@ -72,43 +72,43 @@ class Repository:
         result = load_bars_from_csv(path, field_map=field_map)
         bars = result.bars
         resolved_display_name = (display_name or Path(path).name).strip() or Path(path).name
-        cursor = self.conn.execute(
-            """
-            INSERT INTO datasets(display_name, symbol, timeframe, source_path, total_bars, start_time, end_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                resolved_display_name,
-                symbol,
-                timeframe,
-                str(path),
-                len(bars),
-                self._resolve_open_timestamp(bars[0], timeframe).isoformat(),
-                bars[-1].close_timestamp.isoformat(),
-            ),
-        )
-        dataset_id = int(cursor.lastrowid)
-        self.conn.executemany(
-            """
-            INSERT INTO bars(dataset_id, open_ts, close_ts, ts, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
+        with self.conn:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO datasets(display_name, symbol, timeframe, source_path, total_bars, start_time, end_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
-                    dataset_id,
-                    self._resolve_open_timestamp(bar, timeframe).isoformat(),
-                    bar.close_timestamp.isoformat(),
-                    bar.close_timestamp.isoformat(),
-                    bar.open,
-                    bar.high,
-                    bar.low,
-                    bar.close,
-                    bar.volume,
-                )
-                for bar in bars
-            ],
-        )
-        self.conn.commit()
+                    resolved_display_name,
+                    symbol,
+                    timeframe,
+                    str(path),
+                    len(bars),
+                    self._resolve_open_timestamp(bars[0], timeframe).isoformat(),
+                    bars[-1].close_timestamp.isoformat(),
+                ),
+            )
+            dataset_id = int(cursor.lastrowid)
+            self.conn.executemany(
+                """
+                INSERT INTO bars(dataset_id, open_ts, close_ts, ts, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        dataset_id,
+                        self._resolve_open_timestamp(bar, timeframe).isoformat(),
+                        bar.close_timestamp.isoformat(),
+                        bar.close_timestamp.isoformat(),
+                        bar.open,
+                        bar.high,
+                        bar.low,
+                        bar.close,
+                        bar.volume,
+                    )
+                    for bar in bars
+                ],
+            )
         return self.get_dataset(dataset_id)
 
     def find_dataset_by_symbol(self, symbol: str) -> DataSet | None:

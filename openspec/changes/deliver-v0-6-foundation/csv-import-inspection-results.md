@@ -101,4 +101,20 @@ OpenSpec strict validation: passed
 
 The mixed-folder regression verifies clean import, duplicate skip, warning deferral, blocking failure, actionable summaries, and that all CSV inspection calls execute away from the UI thread.
 
-Next task: complete the consolidated import UI and repository regression matrix, including cleanup and cancellation behavior, in task 4.7.
+## Import regression and cleanup slice
+
+The consolidated regression matrix covers clean review, custom remapping, blocked confirmation, confirmed warnings, duplicate dataset handling, background batch progress, review cancellation, persistence failure, and mixed-folder reporting. A repository-level failure injection now verifies cleanup after the dataset row has been inserted but before bar persistence completes.
+
+`Repository.import_csv` wraps dataset and bar insertion in one SQLite transaction. Any exception rolls back both tables and ends the transaction, preventing a later operation from accidentally committing a partial dataset.
+
+Verification:
+
+```text
+Repository tests: 43 passed
+Focused import workflow tests: 12 passed
+Main-window tests: 271 passed
+Complete automated suite: 748 passed
+OpenSpec strict validation: passed
+```
+
+The CSV import quality-review phase (tasks 4.1 through 4.7) is complete. Next task: normalize user-visible position and interaction terminology in task 5.1 while preserving internal enum values.

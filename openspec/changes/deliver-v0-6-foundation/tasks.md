@@ -36,7 +36,7 @@
 - [x] 4.4 Build an import review dialog that presents mapping, samples, summary, warnings, and disabled confirmation for blocking errors.
 - [x] 4.5 Ensure confirmed single-file import uses exactly the reviewed mapping and reports imported, skipped, and failed results.
 - [x] 4.6 Integrate the same inspection and reporting rules into folder import without blocking the UI thread.
-- [ ] 4.7 Add UI and repository regression tests for successful review, remapping, blocked import, warned import, duplicate dataset, batch progress, and cancellation or failure cleanup.
+- [x] 4.7 Add UI and repository regression tests for successful review, remapping, blocked import, warned import, duplicate dataset, batch progress, and cancellation or failure cleanup.
 
 ## 5. Foundation Experience Polish
 

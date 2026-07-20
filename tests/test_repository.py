@@ -69,6 +69,38 @@ def test_repository_roundtrip() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_import_csv_rolls_back_dataset_when_bar_persistence_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = tmp_path / "rollback.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:00:00,100,101,99,100.5,1000\n"
+        "2025-01-01 09:01:00,101,102,100,101.5,1100\n",
+        encoding="utf-8",
+    )
+    repo = Repository(tmp_path / "barbybar.db")
+    original_resolver = repo._resolve_open_timestamp
+    calls = 0
+
+    def fail_after_dataset_insert(bar: Bar, timeframe: str) -> datetime:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated bar persistence failure")
+        return original_resolver(bar, timeframe)
+
+    monkeypatch.setattr(repo, "_resolve_open_timestamp", fail_after_dataset_insert)
+
+    with pytest.raises(RuntimeError, match="simulated bar persistence failure"):
+        repo.import_csv(csv_path, "IF", "1m")
+
+    assert repo.list_datasets() == []
+    assert repo.conn.execute("SELECT COUNT(*) FROM bars").fetchone()[0] == 0
+    assert repo.conn.in_transaction is False
+
+
 def test_repository_persists_trade_review_items_with_entry_legs() -> None:
     temp_dir = Path(".test_tmp") / f"repo-{uuid4().hex}"
     temp_dir.mkdir(parents=True, exist_ok=True)
