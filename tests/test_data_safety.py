@@ -11,7 +11,9 @@ from barbybar.storage.data_safety import (
     DatabaseBackupError,
     PendingRestoreError,
     RestoreValidationError,
+    apply_pending_restore,
     create_database_backup,
+    read_pending_restore_manifest,
     stage_pending_restore,
     validate_restore_database,
 )
@@ -22,6 +24,14 @@ def _dataset_count(path: Path) -> int:
     connection = sqlite3.connect(path)
     try:
         return int(connection.execute("SELECT COUNT(*) FROM datasets").fetchone()[0])
+    finally:
+        connection.close()
+
+
+def _dataset_symbols(path: Path) -> list[str]:
+    connection = sqlite3.connect(path)
+    try:
+        return [str(row[0]) for row in connection.execute("SELECT symbol FROM datasets ORDER BY id")]
     finally:
         connection.close()
 
@@ -249,3 +259,185 @@ def test_stage_pending_restore_rejects_manifest_path_that_is_active_database(tmp
 
     assert current.read_bytes() == original
     assert validate_restore_database(current).path == current.resolve()
+
+
+def test_read_pending_restore_manifest_rejects_path_traversal(tmp_path: Path) -> None:
+    manifest = tmp_path / "restore" / "pending_restore.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "manifest_version": 1,
+                "sha256": "0" * 64,
+                "size_bytes": 1,
+                "source_name": "backup.db",
+                "staged_at": "2026-07-20T12:00:00+00:00",
+                "staged_database": "../outside.db",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PendingRestoreError, match="unsafe staged database name"):
+        read_pending_restore_manifest(manifest)
+
+
+def test_apply_pending_restore_replaces_database_and_preserves_safety_backup(tmp_path: Path) -> None:
+    current = tmp_path / "data" / "barbybar.db"
+    selected = tmp_path / "selected.db"
+    manifest = tmp_path / "data" / "restore" / "pending_restore.json"
+    backup_dir = tmp_path / "data" / "backups"
+    current.parent.mkdir(parents=True)
+    active_repo = Repository(current)
+    active_repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+    active_repo.conn.close()
+    selected_repo = Repository(selected)
+    selected_repo.import_csv(Path("sample_data/if_sample.csv"), "IH", "1m")
+    selected_repo.conn.close()
+    staged = stage_pending_restore(
+        selected,
+        current_database_path=current,
+        manifest_path=manifest,
+    )
+
+    result = apply_pending_restore(
+        current_database_path=current,
+        manifest_path=manifest,
+        backup_dir=backup_dir,
+    )
+
+    assert result is not None
+    assert result.database_path == current.resolve()
+    assert result.safety_backup_path is not None
+    assert result.safety_backup_path.parent == backup_dir.resolve()
+    assert result.cleanup_warning is None
+    assert _dataset_symbols(current) == ["IH"]
+    assert _dataset_symbols(result.safety_backup_path) == ["IF"]
+    assert not manifest.exists()
+    assert not staged.staged_database_path.exists()
+    assert list(current.parent.glob(".*.restore-ready")) == []
+
+
+def test_apply_pending_restore_rejects_tampered_staged_database_and_keeps_current(tmp_path: Path) -> None:
+    current = tmp_path / "barbybar.db"
+    selected = tmp_path / "selected.db"
+    manifest = tmp_path / "restore" / "pending_restore.json"
+    active_repo = Repository(current)
+    active_repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+    active_repo.conn.close()
+    selected_repo = Repository(selected)
+    selected_repo.import_csv(Path("sample_data/if_sample.csv"), "IH", "1m")
+    selected_repo.conn.close()
+    staged = stage_pending_restore(
+        selected,
+        current_database_path=current,
+        manifest_path=manifest,
+    )
+    with staged.staged_database_path.open("ab") as handle:
+        handle.write(b"tampered")
+
+    with pytest.raises(PendingRestoreError, match="no longer matches"):
+        apply_pending_restore(
+            current_database_path=current,
+            manifest_path=manifest,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert _dataset_symbols(current) == ["IF"]
+    assert manifest.exists()
+    assert staged.staged_database_path.exists()
+    assert list((tmp_path / "backups").glob("*.db")) == []
+
+
+def test_apply_pending_restore_keeps_current_when_atomic_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = tmp_path / "data" / "barbybar.db"
+    selected = tmp_path / "selected.db"
+    manifest = tmp_path / "data" / "restore" / "pending_restore.json"
+    backup_dir = tmp_path / "data" / "backups"
+    current.parent.mkdir(parents=True)
+    active_repo = Repository(current)
+    active_repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+    active_repo.conn.close()
+    selected_repo = Repository(selected)
+    selected_repo.import_csv(Path("sample_data/if_sample.csv"), "IH", "1m")
+    selected_repo.conn.close()
+    staged = stage_pending_restore(
+        selected,
+        current_database_path=current,
+        manifest_path=manifest,
+    )
+    real_replace = data_safety.os.replace
+
+    def fail_current_replace(source: str | Path, target: str | Path) -> None:
+        if Path(target).resolve() == current.resolve():
+            raise OSError("forced atomic replace failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(data_safety.os, "replace", fail_current_replace)
+
+    with pytest.raises(PendingRestoreError, match="forced atomic replace failure"):
+        apply_pending_restore(
+            current_database_path=current,
+            manifest_path=manifest,
+            backup_dir=backup_dir,
+        )
+
+    assert _dataset_symbols(current) == ["IF"]
+    assert _dataset_symbols(next(backup_dir.glob("pre-restore-*.db"))) == ["IF"]
+    assert manifest.exists()
+    assert staged.staged_database_path.exists()
+    assert list(current.parent.glob(".*.restore-ready")) == []
+
+
+def test_apply_pending_restore_keeps_current_when_safety_backup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = tmp_path / "barbybar.db"
+    selected = tmp_path / "selected.db"
+    manifest = tmp_path / "restore" / "pending_restore.json"
+    active_repo = Repository(current)
+    active_repo.import_csv(Path("sample_data/if_sample.csv"), "IF", "1m")
+    active_repo.conn.close()
+    selected_repo = Repository(selected)
+    selected_repo.import_csv(Path("sample_data/if_sample.csv"), "IH", "1m")
+    selected_repo.conn.close()
+    staged = stage_pending_restore(
+        selected,
+        current_database_path=current,
+        manifest_path=manifest,
+    )
+    real_create_backup = data_safety.create_database_backup
+
+    def fail_current_backup(source: str | Path, target: str | Path):  # noqa: ANN202
+        if Path(source).resolve() == current.resolve():
+            raise DatabaseBackupError("forced safety backup failure")
+        return real_create_backup(source, target)
+
+    monkeypatch.setattr(data_safety, "create_database_backup", fail_current_backup)
+
+    with pytest.raises(PendingRestoreError, match="forced safety backup failure"):
+        apply_pending_restore(
+            current_database_path=current,
+            manifest_path=manifest,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert _dataset_symbols(current) == ["IF"]
+    assert manifest.exists()
+    assert staged.staged_database_path.exists()
+    assert list(current.parent.glob(".*.restore-ready")) == []
+
+
+def test_apply_pending_restore_returns_none_without_manifest(tmp_path: Path) -> None:
+    assert (
+        apply_pending_restore(
+            current_database_path=tmp_path / "barbybar.db",
+            manifest_path=tmp_path / "missing.json",
+            backup_dir=tmp_path / "backups",
+        )
+        is None
+    )

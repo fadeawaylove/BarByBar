@@ -45,4 +45,25 @@ Focused data-safety, path, and repository tests: 58 passed
 Complete automated suite: 702 passed
 ```
 
-Next task: apply a validated pending restore before Repository creation, automatically back up the active database, and preserve the original database on every failure path.
+## Startup restore application slice
+
+`apply_pending_restore` reads and validates the versioned manifest, rejects unsafe staged paths, and rechecks the staged database size, SHA-256 digest, SQLite integrity, tables, and identifying columns. When a request is valid, it creates a timestamped `pre-restore-*.db` safety backup of the active database before preparing any replacement.
+
+The replacement is rebuilt and validated in the active database directory, SQLite WAL state is checkpointed, stale WAL/SHM sidecars are removed, and `os.replace` performs the final same-directory atomic switch. The application invokes this flow after logging starts but before `QApplication`, `Repository`, windows, or background workers are created.
+
+Failure and recovery behavior:
+
+- A missing manifest is a no-op and normal startup continues.
+- A malformed manifest, path traversal, staged-file tampering, validation failure, safety-backup failure, busy database, or atomic-replace failure leaves the active database in place and retains the pending request for diagnosis or retry.
+- An atomic-replace failure still leaves the verified pre-restore safety backup available.
+- A successful restore removes the manifest first and then the staged snapshot; a cleanup failure does not invalidate the completed restore and is surfaced as a startup log warning.
+- Startup logs both successful restore paths and actionable restore failures before opening the repository.
+
+Verification:
+
+```text
+Focused data-safety, path, desktop-startup, repository, and logging tests: 75 passed
+Complete automated suite: 710 passed
+```
+
+Next task: add the settings/data-management UI for manual backup, restore selection, restart guidance, paths, progress, and actionable errors.

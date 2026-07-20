@@ -61,3 +61,9 @@ def default_restore_dir() -> Path:
 
 def default_pending_restore_manifest_path() -> Path:
     return default_restore_dir() / "pending_restore.json"
+
+
+def default_backup_dir() -> Path:
+    root = default_data_root() / "backups"
+    root.mkdir(parents=True, exist_ok=True)
+    return root

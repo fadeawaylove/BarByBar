@@ -40,3 +40,13 @@ def test_default_pending_restore_manifest_path_uses_dedicated_directory(monkeypa
 
     assert path == custom_root.resolve() / "restore" / "pending_restore.json"
     assert path.parent.is_dir()
+
+
+def test_default_backup_dir_uses_data_root(monkeypatch, tmp_path: Path) -> None:
+    custom_root = tmp_path / "portable-data"
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(custom_root))
+
+    path = paths.default_backup_dir()
+
+    assert path == custom_root.resolve() / "backups"
+    assert path.is_dir()
