@@ -67,4 +67,21 @@ OpenSpec strict validation: passed
 
 Visual verification covered warning and blocking states at 980 x 720. The mapping grid, sample table, finding labels, row examples, recovery guidance, and footer actions fit without clipping or horizontal overflow.
 
-Next task: connect confirmed single-file review to persistence using exactly the displayed mapping and report imported, skipped, and failed outcomes in task 4.5.
+## Confirmed single-file import slice
+
+The single-file entry now inspects first, opens the review dialog without creating a dataset, and persists only after explicit confirmation. The exact mapping returned by the reviewed controls is passed to the repository with non-interactive parsing, so persistence cannot silently reopen the legacy mapping dialog or substitute a different mapping.
+
+The workflow rechecks duplicate display names before and after review, preserves the database on cancellation or failure, hides the busy state before presenting errors, and reports every terminal outcome as `成功 / 跳过 / 失败`. Successful warning imports also report the number of quality warnings explicitly confirmed by the user.
+
+Verification:
+
+```text
+Focused single-file and folder import tests: 10 passed
+Main-window tests: 269 passed
+Complete automated suite: 745 passed
+OpenSpec strict validation: passed
+```
+
+Covered cases include standard reviewed import, exact custom mapping reuse, review cancellation, duplicate skip, persistence failure, and confirmed duplicate/reversed timestamp warnings with deterministic deduplication and ordering.
+
+Next task: apply the same inspection and result rules to background folder import in task 4.6.

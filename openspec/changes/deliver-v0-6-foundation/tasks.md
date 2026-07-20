@@ -34,7 +34,7 @@
 - [x] 4.2 Detect missing required fields, parse failures, empty data, duplicate timestamps, reversed ordering, OHLC inconsistencies, and abnormal intervals with row-level examples.
 - [x] 4.3 Classify findings into blocking errors and confirmable warnings, and add focused parser and quality-rule tests.
 - [x] 4.4 Build an import review dialog that presents mapping, samples, summary, warnings, and disabled confirmation for blocking errors.
-- [ ] 4.5 Ensure confirmed single-file import uses exactly the reviewed mapping and reports imported, skipped, and failed results.
+- [x] 4.5 Ensure confirmed single-file import uses exactly the reviewed mapping and reports imported, skipped, and failed results.
 - [ ] 4.6 Integrate the same inspection and reporting rules into folder import without blocking the UI thread.
 - [ ] 4.7 Add UI and repository regression tests for successful review, remapping, blocked import, warned import, duplicate dataset, batch progress, and cancellation or failure cleanup.
 

@@ -4715,18 +4715,99 @@ class MainWindow(QMainWindow):
             return
         display_name = Path(path).name
         if self.repo.find_dataset_by_display_name(display_name) is not None:
-            self._show_notice("重复数据集", "该数据集已存在", f"同名文件已存在：{display_name}")
+            self._show_single_csv_import_result(
+                heading="已跳过重复数据集",
+                imported=0,
+                skipped=1,
+                failed=0,
+                detail=f"同名文件已存在：{display_name}",
+            )
             return
-        self.show_busy_overlay("正在导入 CSV...", "正在读取并校验数据")
+        self.show_busy_overlay("正在检查 CSV...", "正在识别字段、样例和数据质量")
+        inspection: CsvInspectionResult | None = None
+        inspection_error: Exception | None = None
         try:
-            self._import_csv_with_mapping(
-                path,
-                infer_symbol_from_filename(path),
-                "1m",
-                display_name=display_name,
+            inspection = inspect_csv(path)
+        except Exception as exc:  # noqa: BLE001
+            inspection_error = exc
+            logger.bind(component="csv_import", path=path).exception(
+                "event=single_import_inspection_failed error={error}",
+                error=str(exc),
             )
         finally:
             self.hide_busy_overlay()
+        if inspection_error is not None or inspection is None:
+            self._show_error(
+                "CSV 导入结果",
+                "文件检查失败",
+                "成功 0 · 跳过 0 · 失败 1",
+                str(inspection_error or "未生成检查结果"),
+            )
+            return
+
+        review_dialog = CsvImportReviewDialog(path, inspection=inspection, parent=self)
+        if review_dialog.exec() != QDialog.DialogCode.Accepted:
+            logger.bind(component="csv_import", path=path).info("event=single_import_review_cancelled")
+            return
+        reviewed_mapping = review_dialog.selected_field_map()
+        warning_count = sum(item.count for item in review_dialog.inspection.warning_findings)
+        if self.repo.find_dataset_by_display_name(display_name) is not None:
+            self._show_single_csv_import_result(
+                heading="已跳过重复数据集",
+                imported=0,
+                skipped=1,
+                failed=0,
+                detail=f"审查期间已存在同名数据集：{display_name}",
+            )
+            return
+
+        self.show_busy_overlay("正在导入 CSV...", "正在使用已确认的字段映射写入数据")
+        dataset: DataSet | None = None
+        import_error: Exception | None = None
+        try:
+            dataset = self._import_csv_with_mapping(
+                path,
+                infer_symbol_from_filename(path),
+                "1m",
+                field_map=reviewed_mapping,
+                display_name=display_name,
+                interactive=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            import_error = exc
+        finally:
+            self.hide_busy_overlay()
+        if import_error is not None or dataset is None:
+            self._show_error(
+                "CSV 导入结果",
+                "数据集导入失败",
+                "成功 0 · 跳过 0 · 失败 1",
+                str(import_error or "导入未返回数据集"),
+            )
+            return
+        detail = f"{dataset.display_name} · {dataset.total_bars} 行"
+        if warning_count:
+            detail += f"\n已确认 {warning_count} 项数据质量警告。"
+        self._show_single_csv_import_result(
+            heading="数据集已导入",
+            imported=1,
+            skipped=0,
+            failed=0,
+            detail=detail,
+        )
+
+    def _show_single_csv_import_result(
+        self,
+        *,
+        heading: str,
+        imported: int,
+        skipped: int,
+        failed: int,
+        detail: str,
+    ) -> None:
+        summary = f"成功 {imported} · 跳过 {skipped} · 失败 {failed}"
+        self._show_transient_message(f"CSV 导入：{summary}", 5000)
+        self._show_notice("CSV 导入结果", heading, summary, detail)
 
     def import_csv_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "选择 CSV 文件夹", str(Path.cwd()))

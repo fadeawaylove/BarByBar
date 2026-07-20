@@ -13,7 +13,7 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QAbstractSpinBox, QCheckBox, QDialog, QGroupBox, QLabel, QLineEdit, QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from barbybar import paths
-from barbybar.data.csv_importer import MissingColumnsError
+from barbybar.data.csv_importer import CsvImportError, MissingColumnsError
 from barbybar.data.tick_size import default_tick_size_for_symbol, format_average_price, format_price, price_decimals_for_tick
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, ChartDrawing, DrawingAnchor, DrawingTemplate, DrawingToolType, OrderLine, OrderLineType, PositionState, ReviewSession, SessionAction, SessionStats, SessionStatus, TradeEntryLeg, TradeReviewItem, WindowBars
@@ -5661,17 +5661,24 @@ def test_import_csv_imports_single_file_and_uses_busy_overlay(monkeypatch, app: 
     window = MainWindow(repo)
     shown: list[tuple[str, str]] = []
     hidden: list[bool] = []
+    notices: list[tuple[object, ...]] = []
     monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
+    monkeypatch.setattr(CsvImportReviewDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
     monkeypatch.setattr(window, "show_busy_overlay", lambda title, detail="": shown.append((title, detail)))
     monkeypatch.setattr(window, "hide_busy_overlay", lambda: hidden.append(True))
+    monkeypatch.setattr(window, "_show_notice", lambda *args: notices.append(args))
 
     window.import_csv()
 
     datasets = repo.list_datasets()
     assert len(datasets) == 1
     assert datasets[0].display_name == "AG9999.single.csv"
-    assert shown == [("正在导入 CSV...", "正在读取并校验数据")]
-    assert hidden == [True]
+    assert shown == [
+        ("正在检查 CSV...", "正在识别字段、样例和数据质量"),
+        ("正在导入 CSV...", "正在使用已确认的字段映射写入数据"),
+    ]
+    assert hidden == [True, True]
+    assert notices[-1][:3] == ("CSV 导入结果", "数据集已导入", "成功 1 · 跳过 0 · 失败 0")
     window.close()
     window.deleteLater()
     app.processEvents()
@@ -5706,9 +5713,175 @@ def test_import_csv_skips_duplicate_display_name(monkeypatch, app: QApplication)
     window.import_csv()
 
     assert repo.list_datasets()[0].display_name == "dup.csv"
-    assert messages == [("重复数据集", "该数据集已存在", "同名文件已存在：dup.csv")]
+    assert messages == [("CSV 导入结果", "已跳过重复数据集", "成功 0 · 跳过 1 · 失败 0")]
     assert shown == []
     assert hidden == []
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_import_csv_persists_exact_reviewed_mapping(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    csv_path = case_dir / "custom-map.csv"
+    csv_path.write_text(
+        "When,First,Top,Bottom,Last,Amount\n"
+        "2025-01-01 09:00:00,100,101,99,100.5,1000\n",
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+    captured_mappings: list[dict[str, str] | None] = []
+    original_import = repo.import_csv
+
+    def capture_import(path, symbol, timeframe, field_map=None, *, display_name=None):
+        captured_mappings.append(dict(field_map) if field_map is not None else None)
+        return original_import(
+            path,
+            symbol,
+            timeframe,
+            field_map=field_map,
+            display_name=display_name,
+        )
+
+    def review_with_custom_mapping(dialog: CsvImportReviewDialog) -> QDialog.DialogCode:
+        for field, header in {
+            "datetime": "When",
+            "open": "First",
+            "high": "Top",
+            "low": "Bottom",
+            "close": "Last",
+            "volume": "Amount",
+        }.items():
+            dialog.mapping_combos[field].setCurrentText(header)
+        assert dialog.inspection.can_confirm_import is True
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
+    monkeypatch.setattr(CsvImportReviewDialog, "exec", review_with_custom_mapping)
+    monkeypatch.setattr(repo, "import_csv", capture_import)
+    monkeypatch.setattr(window, "show_busy_overlay", lambda *args, **kwargs: None)
+    monkeypatch.setattr(window, "hide_busy_overlay", lambda: None)
+    monkeypatch.setattr(window, "_show_notice", lambda *args, **kwargs: None)
+
+    window.import_csv()
+
+    assert captured_mappings == [
+        {
+            "datetime": "When",
+            "open": "First",
+            "high": "Top",
+            "low": "Bottom",
+            "close": "Last",
+            "volume": "Amount",
+        }
+    ]
+    assert repo.list_datasets()[0].display_name == "custom-map.csv"
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_import_csv_cancelled_review_does_not_persist(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    csv_path = case_dir / "cancel.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:00:00,100,101,99,100.5,1000\n",
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+    shown: list[tuple[object, ...]] = []
+    hidden: list[bool] = []
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
+    monkeypatch.setattr(CsvImportReviewDialog, "exec", lambda self: QDialog.DialogCode.Rejected)
+    monkeypatch.setattr(window, "show_busy_overlay", lambda *args: shown.append(args))
+    monkeypatch.setattr(window, "hide_busy_overlay", lambda: hidden.append(True))
+
+    window.import_csv()
+
+    assert repo.list_datasets() == []
+    assert len(shown) == 1
+    assert hidden == [True]
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_import_csv_reports_persistence_failure(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    csv_path = case_dir / "failure.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:00:00,100,101,99,100.5,1000\n",
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
+    monkeypatch.setattr(CsvImportReviewDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(
+        window,
+        "_import_csv_with_mapping",
+        lambda *args, **kwargs: (_ for _ in ()).throw(CsvImportError("disk full")),
+    )
+    monkeypatch.setattr(window, "show_busy_overlay", lambda *args, **kwargs: None)
+    monkeypatch.setattr(window, "hide_busy_overlay", lambda: None)
+    monkeypatch.setattr(window, "_show_error", lambda *args: errors.append(args))
+
+    window.import_csv()
+
+    assert repo.list_datasets() == []
+    assert errors[-1][:3] == (
+        "CSV 导入结果",
+        "数据集导入失败",
+        "成功 0 · 跳过 0 · 失败 1",
+    )
+    assert errors[-1][3] == "disk full"
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_import_csv_reports_confirmed_warning_count(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    csv_path = case_dir / "warning.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:02:00,102,103,101,102.5,1000\n"
+        "2025-01-01 09:01:00,101,102,100,101.5,900\n"
+        "2025-01-01 09:02:00,104,105,103,104.5,1100\n",
+        encoding="utf-8",
+    )
+    repo = Repository(case_dir / "import.db")
+    window = MainWindow(repo)
+    notices: list[tuple[object, ...]] = []
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(csv_path), "CSV Files (*.csv)"))
+    monkeypatch.setattr(CsvImportReviewDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(window, "show_busy_overlay", lambda *args, **kwargs: None)
+    monkeypatch.setattr(window, "hide_busy_overlay", lambda: None)
+    monkeypatch.setattr(window, "_show_notice", lambda *args: notices.append(args))
+
+    window.import_csv()
+
+    dataset = repo.list_datasets()[0]
+    assert dataset.total_bars == 2
+    assert notices[-1][:3] == (
+        "CSV 导入结果",
+        "数据集已导入",
+        "成功 1 · 跳过 0 · 失败 0",
+    )
+    assert "已确认 2 项数据质量警告" in notices[-1][3]
     window.close()
     window.deleteLater()
     app.processEvents()
