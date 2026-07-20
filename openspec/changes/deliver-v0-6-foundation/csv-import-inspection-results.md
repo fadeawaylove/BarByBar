@@ -84,4 +84,21 @@ OpenSpec strict validation: passed
 
 Covered cases include standard reviewed import, exact custom mapping reuse, review cancellation, duplicate skip, persistence failure, and confirmed duplicate/reversed timestamp warnings with deterministic deduplication and ordering.
 
-Next task: apply the same inspection and result rules to background folder import in task 4.6.
+## Background folder import slice
+
+`BatchImportWorker` now inspects every non-duplicate CSV on its existing background thread before persistence. Clean files import with the inspection's suggested mapping, blocking files fail with categorized Chinese reasons, and warning files are reported as `待确认` without being silently written. Users can review those files through the single-file flow and explicitly confirm the warnings.
+
+Batch progress and final results now distinguish `成功 / 跳过 / 待确认 / 失败`, include bounded examples for duplicate, warning, and failure categories, and preserve the existing non-blocking progress overlay and dataset-manager progress panel. The synchronous folder helper follows the same decision rules for consistency.
+
+Verification:
+
+```text
+Focused folder-import and batch-progress tests: 9 passed
+Main-window tests: 270 passed
+Complete automated suite: 746 passed
+OpenSpec strict validation: passed
+```
+
+The mixed-folder regression verifies clean import, duplicate skip, warning deferral, blocking failure, actionable summaries, and that all CSV inspection calls execute away from the UI thread.
+
+Next task: complete the consolidated import UI and repository regression matrix, including cleanup and cancellation behavior, in task 4.7.

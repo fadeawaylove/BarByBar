@@ -8,7 +8,7 @@ from math import floor
 import re
 import subprocess
 import threading
-from dataclasses import astuple, dataclass
+from dataclasses import astuple, dataclass, field
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -65,6 +65,7 @@ from barbybar.data.csv_importer import (
     CsvImportError,
     CsvInspectionResult,
     CsvQualityCode,
+    CsvQualityFinding,
     MissingColumnsError,
     infer_symbol_from_filename,
     inspect_csv,
@@ -183,6 +184,15 @@ LOG_VIEWER_TAIL_BYTES = 512 * 1024
 LOG_VIEWER_TAIL_LINES = 2000
 LOG_VIEWER_REFRESH_INTERVAL_MS = 1500
 LOG_VIEWER_MAX_BLOCK_COUNT = 4000
+CSV_QUALITY_LABELS = {
+    CsvQualityCode.MISSING_REQUIRED_FIELDS: "缺少必要字段",
+    CsvQualityCode.PARSE_FAILURE: "数据无法解析",
+    CsvQualityCode.EMPTY_DATA: "没有可导入数据",
+    CsvQualityCode.DUPLICATE_TIMESTAMP: "时间重复",
+    CsvQualityCode.REVERSED_ORDER: "时间顺序倒置",
+    CsvQualityCode.OHLC_INCONSISTENCY: "行情数值关系异常",
+    CsvQualityCode.ABNORMAL_INTERVAL: "时间间隔异常",
+}
 
 
 def configure_spinbox(spinbox: QAbstractSpinBox) -> QAbstractSpinBox:
@@ -203,6 +213,8 @@ class BatchImportOutcome:
     skipped_duplicates: list[str]
     failed_files: list[str]
     failure_details: list[tuple[str, str]]
+    review_required: list[str] = field(default_factory=list)
+    review_details: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -213,6 +225,14 @@ class BatchImportProgress:
     imported_count: int
     skipped_count: int
     failed_count: int
+    review_count: int = 0
+
+
+def _quality_findings_summary(findings: tuple[CsvQualityFinding, ...]) -> str:
+    return "、".join(
+        f"{CSV_QUALITY_LABELS[finding.code]} {finding.count} 项"
+        for finding in findings
+    )
 
 
 @dataclass(slots=True)
@@ -414,23 +434,70 @@ class BatchImportWorker(QObject):
                     outcome.skipped_duplicates.append(display_name)
                     self.progress.emit(
                         self.task_id,
-                        BatchImportProgress(index, total, display_name, len(outcome.imported), len(outcome.skipped_duplicates), len(outcome.failed_files)),
+                        BatchImportProgress(
+                            current=index,
+                            total=total,
+                            current_name=display_name,
+                            imported_count=len(outcome.imported),
+                            skipped_count=len(outcome.skipped_duplicates),
+                            failed_count=len(outcome.failed_files),
+                            review_count=len(outcome.review_required),
+                        ),
                     )
                     continue
                 try:
-                    repo.import_csv(str(csv_path), infer_symbol_from_filename(csv_path), "1m", display_name=display_name)
-                    outcome.imported.append(display_name)
-                except MissingColumnsError:
-                    log.warning("event=batch_import_missing_columns file={file}", file=display_name)
-                    outcome.failed_files.append(display_name)
-                    outcome.failure_details.append((display_name, "缺少必需列，且批量导入不会弹出列映射"))
+                    inspection = inspect_csv(csv_path)
+                    if inspection.blocking_findings:
+                        log.warning(
+                            "event=batch_import_blocked file={file} findings={findings}",
+                            file=display_name,
+                            findings=_quality_findings_summary(inspection.blocking_findings),
+                        )
+                        outcome.failed_files.append(display_name)
+                        outcome.failure_details.append(
+                            (
+                                display_name,
+                                "阻断问题：" + _quality_findings_summary(inspection.blocking_findings),
+                            )
+                        )
+                    elif inspection.warning_findings:
+                        log.info(
+                            "event=batch_import_review_required file={file} findings={findings}",
+                            file=display_name,
+                            findings=_quality_findings_summary(inspection.warning_findings),
+                        )
+                        outcome.review_required.append(display_name)
+                        outcome.review_details.append(
+                            (
+                                display_name,
+                                _quality_findings_summary(inspection.warning_findings)
+                                + "；请单独导入并确认警告",
+                            )
+                        )
+                    else:
+                        repo.import_csv(
+                            str(csv_path),
+                            infer_symbol_from_filename(csv_path),
+                            "1m",
+                            field_map=inspection.suggested_mapping,
+                            display_name=display_name,
+                        )
+                        outcome.imported.append(display_name)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("event=batch_import_failed file={file} error={error}", file=display_name, error=str(exc))
                     outcome.failed_files.append(display_name)
                     outcome.failure_details.append((display_name, str(exc)))
                 self.progress.emit(
                     self.task_id,
-                    BatchImportProgress(index, total, display_name, len(outcome.imported), len(outcome.skipped_duplicates), len(outcome.failed_files)),
+                    BatchImportProgress(
+                        current=index,
+                        total=total,
+                        current_name=display_name,
+                        imported_count=len(outcome.imported),
+                        skipped_count=len(outcome.skipped_duplicates),
+                        failed_count=len(outcome.failed_files),
+                        review_count=len(outcome.review_required),
+                    ),
                 )
             self.finished.emit(self.task_id, outcome)
         except Exception as exc:  # noqa: BLE001
@@ -1046,15 +1113,7 @@ class CsvImportReviewDialog(QDialog):
         "close": "收盘价",
         "volume": "成交量",
     }
-    _FINDING_LABELS = {
-        CsvQualityCode.MISSING_REQUIRED_FIELDS: "缺少必要字段",
-        CsvQualityCode.PARSE_FAILURE: "数据无法解析",
-        CsvQualityCode.EMPTY_DATA: "没有可导入数据",
-        CsvQualityCode.DUPLICATE_TIMESTAMP: "时间重复",
-        CsvQualityCode.REVERSED_ORDER: "时间顺序倒置",
-        CsvQualityCode.OHLC_INCONSISTENCY: "行情数值关系异常",
-        CsvQualityCode.ABNORMAL_INTERVAL: "时间间隔异常",
-    }
+    _FINDING_LABELS = CSV_QUALITY_LABELS
 
     def __init__(
         self,
@@ -1831,7 +1890,9 @@ class DataSetManagerDialog(QDialog):
         assert isinstance(payload, BatchImportProgress)
         self._show_batch_progress(
             f"正在批量导入 {payload.current}/{payload.total}",
-            f"当前文件: {payload.current_name}\n成功 {payload.imported_count} 个，跳过 {payload.skipped_count} 个，失败 {payload.failed_count} 个",
+            f"当前文件: {payload.current_name}\n"
+            f"成功 {payload.imported_count} 个，跳过 {payload.skipped_count} 个，"
+            f"待确认 {payload.review_count} 个，失败 {payload.failed_count} 个",
             payload.current,
             payload.total,
         )
@@ -1842,12 +1903,16 @@ class DataSetManagerDialog(QDialog):
             return
         if isinstance(payload, BatchImportOutcome):
             total = max(
-                len(payload.imported) + len(payload.skipped_duplicates) + len(payload.failed_files),
+                len(payload.imported)
+                + len(payload.skipped_duplicates)
+                + len(payload.review_required)
+                + len(payload.failed_files),
                 1,
             )
             self._show_batch_progress(
                 f"正在批量导入 {total}/{total}",
-                f"成功 {len(payload.imported)} 个，跳过 {len(payload.skipped_duplicates)} 个，失败 {len(payload.failed_files)} 个",
+                f"成功 {len(payload.imported)} 个，跳过 {len(payload.skipped_duplicates)} 个，"
+                f"待确认 {len(payload.review_required)} 个，失败 {len(payload.failed_files)} 个",
                 total,
                 total,
             )
@@ -4828,10 +4893,31 @@ class MainWindow(QMainWindow):
                 outcome.skipped_duplicates.append(csv_path.name)
                 continue
             try:
+                inspection = inspect_csv(csv_path)
+                if inspection.blocking_findings:
+                    outcome.failed_files.append(csv_path.name)
+                    outcome.failure_details.append(
+                        (
+                            csv_path.name,
+                            "阻断问题：" + _quality_findings_summary(inspection.blocking_findings),
+                        )
+                    )
+                    continue
+                if inspection.warning_findings:
+                    outcome.review_required.append(csv_path.name)
+                    outcome.review_details.append(
+                        (
+                            csv_path.name,
+                            _quality_findings_summary(inspection.warning_findings)
+                            + "；请单独导入并确认警告",
+                        )
+                    )
+                    continue
                 self._import_csv_with_mapping(
                     str(csv_path),
                     infer_symbol_from_filename(csv_path),
                     "1m",
+                    field_map=inspection.suggested_mapping,
                     display_name=display_name,
                     interactive=False,
                 )
@@ -4873,7 +4959,8 @@ class MainWindow(QMainWindow):
         title = f"正在批量导入 {payload.current}/{payload.total}"
         detail = (
             f"当前文件: {payload.current_name}\n"
-            f"成功 {payload.imported_count} 个，跳过 {payload.skipped_count} 个，失败 {payload.failed_count} 个"
+            f"成功 {payload.imported_count} 个，跳过 {payload.skipped_count} 个，"
+            f"待确认 {payload.review_count} 个，失败 {payload.failed_count} 个"
         )
         if self._busy_overlay is not None:
             self._busy_overlay.set_message(title, detail)
@@ -4885,18 +4972,33 @@ class MainWindow(QMainWindow):
             return
         self.hide_busy_overlay()
         assert isinstance(payload, BatchImportOutcome)
-        if not payload.imported and not payload.skipped_duplicates and not payload.failed_files:
+        if (
+            not payload.imported
+            and not payload.skipped_duplicates
+            and not payload.review_required
+            and not payload.failed_files
+        ):
             self._show_notice("批量导入", "未找到可导入的 CSV 文件", "所选文件夹中没有找到 CSV 文件。")
             return
         parts = [f"成功导入 {len(payload.imported)} 个数据集"]
         if payload.skipped_duplicates:
             parts.append(f"重复跳过 {len(payload.skipped_duplicates)} 个")
+        if payload.review_required:
+            parts.append(f"待单独确认 {len(payload.review_required)} 个")
         if payload.failed_files:
             parts.append(f"导入失败 {len(payload.failed_files)} 个")
         if payload.skipped_duplicates:
             samples = "、".join(payload.skipped_duplicates[:3])
             suffix = "" if len(payload.skipped_duplicates) <= 3 else f" 等 {len(payload.skipped_duplicates)} 个文件"
             parts.append(f"重复示例: {samples}{suffix}")
+        if payload.review_details:
+            samples = "；".join(f"{name}: {reason}" for name, reason in payload.review_details[:3])
+            suffix = "" if len(payload.review_details) <= 3 else f"；等 {len(payload.review_details)} 个文件"
+            parts.append(f"待确认示例: {samples}{suffix}")
+        elif payload.review_required:
+            samples = "、".join(payload.review_required[:3])
+            suffix = "" if len(payload.review_required) <= 3 else f" 等 {len(payload.review_required)} 个文件"
+            parts.append(f"待确认示例: {samples}{suffix}")
         if payload.failure_details:
             samples = "；".join(f"{name}: {reason}" for name, reason in payload.failure_details[:3])
             suffix = "" if len(payload.failure_details) <= 3 else f"；等 {len(payload.failure_details)} 个文件"
@@ -4906,13 +5008,15 @@ class MainWindow(QMainWindow):
             suffix = "" if len(payload.failed_files) <= 3 else f" 等 {len(payload.failed_files)} 个文件"
             parts.append(f"失败示例: {samples}{suffix}")
         self._show_transient_message(
-            f"批量导入完成：成功 {len(payload.imported)}，跳过 {len(payload.skipped_duplicates)}，失败 {len(payload.failed_files)}",
+            f"批量导入完成：成功 {len(payload.imported)}，跳过 {len(payload.skipped_duplicates)}，"
+            f"待确认 {len(payload.review_required)}，失败 {len(payload.failed_files)}",
             5000,
         )
         self._show_notice(
             "批量导入结果",
             "批量导入已完成",
-            f"成功 {len(payload.imported)} 个，跳过 {len(payload.skipped_duplicates)} 个，失败 {len(payload.failed_files)} 个。",
+            f"成功 {len(payload.imported)} 个，跳过 {len(payload.skipped_duplicates)} 个，"
+            f"待确认 {len(payload.review_required)} 个，失败 {len(payload.failed_files)} 个。",
             "\n".join(parts),
         )
 

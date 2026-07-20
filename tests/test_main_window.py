@@ -1,5 +1,6 @@
 import csv
 import json
+import threading
 from dataclasses import replace
 from datetime import datetime, timedelta
 from math import floor
@@ -5721,6 +5722,68 @@ def test_import_csv_skips_duplicate_display_name(monkeypatch, app: QApplication)
     app.processEvents()
 
 
+def test_import_csv_folder_applies_quality_rules_in_background(monkeypatch, app: QApplication) -> None:
+    temp_root = Path("C:/code/BarByBar/.pytest-temp")
+    case_dir = temp_root / uuid4().hex
+    case_dir.mkdir()
+    folder = case_dir / "batch"
+    folder.mkdir()
+    clean = folder / "clean.csv"
+    clean.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:00:00,100,101,99,100.5,1000\n"
+        "2025-01-01 09:01:00,101,102,100,101.5,1100\n",
+        encoding="utf-8",
+    )
+    warning = folder / "warning.csv"
+    warning.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:02:00,102,103,101,102.5,1000\n"
+        "2025-01-01 09:01:00,101,102,100,101.5,900\n"
+        "2025-01-01 09:02:00,104,105,103,104.5,1100\n",
+        encoding="utf-8",
+    )
+    blocking = folder / "blocking.csv"
+    blocking.write_text(
+        "datetime,open,high,low,close\n"
+        "2025-01-01 09:00:00,100,101,99,100.5\n",
+        encoding="utf-8",
+    )
+    duplicate = folder / "duplicate.csv"
+    duplicate.write_text(clean.read_text(encoding="utf-8"), encoding="utf-8")
+    repo = Repository(case_dir / "import.db")
+    repo.import_csv(duplicate, "DUP", "1m", display_name=duplicate.name)
+    window = MainWindow(repo)
+    captured: list[tuple[object, ...]] = []
+    inspection_thread_ids: list[int] = []
+    main_thread_id = threading.get_ident()
+    original_inspect = main_window_module.inspect_csv
+
+    def capture_inspection_thread(*args, **kwargs):
+        inspection_thread_ids.append(threading.get_ident())
+        return original_inspect(*args, **kwargs)
+
+    monkeypatch.setattr("barbybar.ui.main_window.QFileDialog.getExistingDirectory", lambda *args, **kwargs: str(folder))
+    monkeypatch.setattr(main_window_module, "inspect_csv", capture_inspection_thread)
+    monkeypatch.setattr(window, "_show_notice", lambda *args: captured.append(args))
+
+    window.import_csv_folder()
+    _wait_for_batch_import(app, window)
+
+    assert {dataset.display_name for dataset in repo.list_datasets()} == {
+        "clean.csv",
+        "duplicate.csv",
+    }
+    assert inspection_thread_ids
+    assert all(thread_id != main_thread_id for thread_id in inspection_thread_ids)
+    assert captured[-1][2] == "成功 1 个，跳过 1 个，待确认 1 个，失败 1 个。"
+    assert "warning.csv: 时间重复 1 项、时间顺序倒置 1 项" in captured[-1][3]
+    assert "blocking.csv: 阻断问题" in captured[-1][3]
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
 def test_import_csv_persists_exact_reviewed_mapping(monkeypatch, app: QApplication) -> None:
     temp_root = Path("C:/code/BarByBar/.pytest-temp")
     case_dir = temp_root / uuid4().hex
@@ -5937,12 +6000,15 @@ def test_batch_import_progress_updates_busy_overlay(window: MainWindow) -> None:
             imported_count=2,
             skipped_count=1,
             failed_count=0,
+            review_count=1,
         ),
     )
 
     assert window._busy_overlay is not None
     assert window._busy_overlay.title_label.text() == "正在批量导入 3/8"
-    assert window._busy_overlay.detail_label.text() == "当前文件: sample.csv\n成功 2 个，跳过 1 个，失败 0 个"
+    assert window._busy_overlay.detail_label.text() == (
+        "当前文件: sample.csv\n成功 2 个，跳过 1 个，待确认 1 个，失败 0 个"
+    )
     assert window._busy_overlay.progress.maximum() == 8
     assert window._busy_overlay.progress.value() == 3
 
@@ -5960,13 +6026,15 @@ def test_dataset_manager_shows_batch_import_progress_in_dialog(window: MainWindo
                 imported_count=1,
                 skipped_count=0,
                 failed_count=1,
+                review_count=2,
             ),
         )
 
         assert dialog._batch_progress_panel.isHidden() is False
         assert dialog._batch_progress_title.text() == "正在批量导入 2/5"
         assert dialog._batch_progress_detail.text() == (
-            "当前文件: IC9999.CCFX_2005_1min.csv\n成功 1 个，跳过 0 个，失败 1 个"
+            "当前文件: IC9999.CCFX_2005_1min.csv\n"
+            "成功 1 个，跳过 0 个，待确认 2 个，失败 1 个"
         )
         assert dialog._batch_progress_bar.maximum() == 5
         assert dialog._batch_progress_bar.value() == 2
@@ -6005,9 +6073,12 @@ def test_batch_import_result_message_includes_failure_reason(window: MainWindow,
             skipped_duplicates=[],
             failed_files=["IC9999.CCFX_2005_1min.csv"],
             failure_details=[("IC9999.CCFX_2005_1min.csv", "Invalid row for timestamp 2005-01-04 09:16:00: numeric field 'close' is empty")],
+            review_required=["warning.csv"],
+            review_details=[("warning.csv", "时间重复 1 项；请单独导入并确认警告")],
         ),
     )
 
     assert len(captured) == 1
-    assert "成功 1 个，跳过 0 个，失败 1 个" in captured[0][2]
+    assert "成功 1 个，跳过 0 个，待确认 1 个，失败 1 个" in captured[0][2]
+    assert "warning.csv: 时间重复 1 项；请单独导入并确认警告" in captured[0][3]
     assert "IC9999.CCFX_2005_1min.csv: Invalid row for timestamp 2005-01-04 09:16:00: numeric field 'close' is empty" in captured[0][3]
