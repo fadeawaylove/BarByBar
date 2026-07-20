@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import csv
 from datetime import datetime
+from io import StringIO
+import json
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +16,14 @@ from barbybar.domain.models import (
     TradeEntryLeg,
     TradeReviewItem,
 )
-from barbybar.trade_export import TRADE_EXPORT_SCHEMA_VERSION, build_session_trade_export
+from barbybar import trade_export
+from barbybar.trade_export import (
+    CSV_EXPORT_FIELDS,
+    TRADE_EXPORT_SCHEMA_VERSION,
+    TradeExportError,
+    build_session_trade_export,
+    export_session_trade_data,
+)
 
 
 def _dataset() -> DataSet:
@@ -136,3 +147,91 @@ def test_build_session_trade_export_rejects_mismatched_dataset() -> None:
 
     with pytest.raises(ValueError, match="does not belong"):
         build_session_trade_export(_session(), dataset, [])
+
+
+def test_export_session_trade_data_writes_deterministic_utf8_json(tmp_path: Path) -> None:
+    export = build_session_trade_export(_session(), _dataset(), [_trade()])
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+
+    result = export_session_trade_data(export, first, format="json")
+    export_session_trade_data(export, second, format="JSON")
+
+    assert result.path == first.resolve()
+    assert result.format == "json"
+    assert result.trade_count == 1
+    assert result.size_bytes == first.stat().st_size
+    assert first.read_bytes() == second.read_bytes()
+    assert not first.read_bytes().startswith(b"\xef\xbb\xbf")
+    payload = json.loads(first.read_text(encoding="utf-8"))
+    assert payload == export.to_dict()
+    assert "执行符合计划" in first.read_text(encoding="utf-8")
+
+
+def test_export_session_trade_data_writes_stable_excel_friendly_csv(tmp_path: Path) -> None:
+    export = build_session_trade_export(_session(), _dataset(), [_trade(2), _trade(1)])
+    target = tmp_path / "trades.csv"
+
+    result = export_session_trade_data(export, target, format="csv")
+
+    raw = target.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    reader = csv.DictReader(StringIO(raw.decode("utf-8-sig")))
+    rows = list(reader)
+    assert tuple(reader.fieldnames or ()) == CSV_EXPORT_FIELDS
+    assert [row["trade_number"] for row in rows] == ["1", "2"]
+    assert all(row["case_id"] == "12" for row in rows)
+    assert rows[0]["dataset_name"] == "IF 主连 1分钟"
+    assert rows[0]["direction"] == "long"
+    assert rows[0]["entry_note"] == "等待确认后入场"
+    assert json.loads(rows[0]["entry_legs"])[0]["leg_number"] == 1
+    assert result.trade_count == 2
+
+
+def test_export_empty_session_csv_keeps_summary_row(tmp_path: Path) -> None:
+    session = _session()
+    session.stats = SessionStats()
+    export = build_session_trade_export(session, _dataset(), [])
+    target = tmp_path / "empty.csv"
+
+    export_session_trade_data(export, target, format="csv")
+
+    rows = list(csv.DictReader(StringIO(target.read_text(encoding="utf-8-sig"))))
+    assert len(rows) == 1
+    assert rows[0]["case_id"] == "12"
+    assert rows[0]["total_trades"] == "0"
+    assert rows[0]["trade_number"] == ""
+    assert rows[0]["review_note"] == ""
+
+
+def test_export_failure_preserves_existing_target_and_cleans_partial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    export = build_session_trade_export(_session(), _dataset(), [_trade()])
+    target = tmp_path / "trades.json"
+    target.write_text("existing", encoding="utf-8")
+
+    def fail_replace(_source: str | Path, _target: str | Path) -> None:
+        raise OSError("forced replace failure")
+
+    monkeypatch.setattr(trade_export.os, "replace", fail_replace)
+
+    with pytest.raises(TradeExportError, match="forced replace failure"):
+        export_session_trade_data(export, target, format="json")
+
+    assert target.read_text(encoding="utf-8") == "existing"
+    assert list(tmp_path.glob(".*.partial")) == []
+
+
+def test_export_rejects_unsupported_format_without_creating_file(tmp_path: Path) -> None:
+    target = tmp_path / "trades.xml"
+
+    with pytest.raises(TradeExportError, match="Unsupported"):
+        export_session_trade_data(
+            build_session_trade_export(_session(), _dataset(), []),
+            target,
+            format="xml",
+        )
+
+    assert not target.exists()

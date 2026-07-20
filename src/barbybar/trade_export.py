@@ -1,13 +1,74 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from datetime import datetime
+from io import StringIO
+import json
+import os
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from barbybar.domain.models import DataSet, ReviewSession, TradeEntryLeg, TradeReviewItem
 
 
 TRADE_EXPORT_SCHEMA_VERSION = "1.0"
+CSV_EXPORT_FIELDS = (
+    "schema_version",
+    "case_id",
+    "dataset_id",
+    "dataset_name",
+    "title",
+    "symbol",
+    "source_timeframe",
+    "chart_timeframe",
+    "status",
+    "dataset_start_time",
+    "dataset_end_time",
+    "start_bar_index",
+    "current_bar_index",
+    "current_bar_time",
+    "created_at",
+    "updated_at",
+    "session_notes",
+    "tags",
+    "total_trades",
+    "wins",
+    "losses",
+    "win_rate",
+    "total_pnl",
+    "average_pnl",
+    "profit_factor",
+    "max_drawdown",
+    "expectancy",
+    "long_trades",
+    "short_trades",
+    "average_holding_bars",
+    "trade_number",
+    "direction",
+    "entry_time",
+    "exit_time",
+    "quantity",
+    "entry_price",
+    "exit_price",
+    "pnl",
+    "entry_bar_index",
+    "exit_bar_index",
+    "holding_bars",
+    "exit_reason",
+    "is_manual",
+    "had_stop_protection",
+    "had_adverse_add",
+    "is_planned",
+    "entry_note",
+    "review_note",
+    "entry_legs",
+)
+
+
+class TradeExportError(RuntimeError):
+    """Raised when a stable trade export cannot be published."""
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -164,6 +225,15 @@ class SessionTradeExport:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class TradeExportFileResult:
+    path: Path
+    format: str
+    case_id: int
+    trade_count: int
+    size_bytes: int
+
+
 def _entry_leg_export(leg: TradeEntryLeg, leg_number: int) -> TradeEntryLegExport:
     return TradeEntryLegExport(
         leg_number=leg_number,
@@ -252,3 +322,87 @@ def build_session_trade_export(
         session=summary,
         trades=records,
     )
+
+
+def _csv_value(value: Any) -> str | int:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return format(value, ".15g")
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return value
+
+
+def _csv_rows(export: SessionTradeExport) -> list[dict[str, str | int]]:
+    session = export.session.to_dict()
+    session_values: dict[str, Any] = {
+        "schema_version": export.schema_version,
+        **session,
+        "session_notes": session["notes"],
+    }
+    session_values.pop("notes", None)
+    trade_payloads = [trade.to_dict() for trade in export.trades] or [{}]
+    return [
+        {
+            field: _csv_value(
+                session_values[field]
+                if field in session_values
+                else trade.get(field)
+            )
+            for field in CSV_EXPORT_FIELDS
+        }
+        for trade in trade_payloads
+    ]
+
+
+def _json_bytes(export: SessionTradeExport) -> bytes:
+    text = json.dumps(export.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    return text.encode("utf-8")
+
+
+def _csv_bytes(export: SessionTradeExport) -> bytes:
+    stream = StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=CSV_EXPORT_FIELDS, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(_csv_rows(export))
+    return stream.getvalue().encode("utf-8-sig")
+
+
+def export_session_trade_data(
+    export: SessionTradeExport,
+    target_path: str | Path,
+    *,
+    format: str,
+) -> TradeExportFileResult:
+    normalized_format = format.strip().lower()
+    if normalized_format not in {"csv", "json"}:
+        raise TradeExportError(f"Unsupported trade export format: {format}")
+    target = Path(target_path).expanduser().resolve()
+    temporary: Path | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.parent / f".{target.name}.{uuid4().hex}.partial"
+        payload = _csv_bytes(export) if normalized_format == "csv" else _json_bytes(export)
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        temporary = None
+        return TradeExportFileResult(
+            path=target,
+            format=normalized_format,
+            case_id=export.session.case_id,
+            trade_count=len(export.trades),
+            size_bytes=target.stat().st_size,
+        )
+    except TradeExportError:
+        raise
+    except Exception as exc:
+        raise TradeExportError(f"Could not export case {export.session.case_id} to {target}: {exc}") from exc
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
