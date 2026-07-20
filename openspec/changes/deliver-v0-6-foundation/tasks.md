@@ -43,8 +43,8 @@
 - [x] 5.1 Replace user-visible `flat`, `long`, `short`, `hover`, and other inconsistent status copy with clear Chinese terminology while preserving internal enum values.
 - [x] 5.2 Add a bounded adaptive initial chart viewport for sessions with fewer revealed bars than the default viewport and preserve right-side planning space.
 - [x] 5.3 Add tests for adaptive viewport behavior at empty, short, normal, minimum-zoom, reset, and narrow-window states.
-- [ ] 5.4 Make saving, saved, and save-failed states explicit; prevent ordinary transient hints from overwriting an unresolved save failure.
-- [ ] 5.5 Add retry or detail access for save failures and verify recovery after a later successful save.
+- [x] 5.4 Make saving, saved, and save-failed states explicit; prevent ordinary transient hints from overwriting an unresolved save failure.
+- [x] 5.5 Add retry or detail access for save failures and verify recovery after a later successful save.
 - [ ] 5.6 Re-capture and inspect startup, active session, long, short, completed, plan, drawing, review, settings, dataset, session library, error, and narrow-layout screenshots.
 - [ ] 5.7 Run a packaged-app font, high-DPI, text-fit, keyboard-focus, and common desktop-size smoke pass and record unresolved issues.
 

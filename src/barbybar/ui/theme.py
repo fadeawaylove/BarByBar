@@ -306,6 +306,30 @@ QLabel[role='caseSaveState'][state='saving'] {{
     border-color: {AppTheme.active_mode_border};
     color: {AppTheme.active_mode};
 }}
+QLabel[role='caseSaveState'][state='failed'] {{
+    background: {AppTheme.danger_soft};
+    border-color: {rgba(AppTheme.danger, 96)};
+    color: {AppTheme.danger};
+}}
+QPushButton[role='saveRetry'] {{
+    min-height: 18px;
+    padding: 0 6px;
+    border: 1px solid {rgba(AppTheme.danger, 96)};
+    border-radius: {AppTheme.radius_sm}px;
+    background: {AppTheme.danger_soft};
+    color: {AppTheme.danger};
+    font-size: 10px;
+    font-weight: 800;
+}}
+QPushButton[role='saveRetry']:hover {{
+    border-color: {AppTheme.danger};
+    background: {rgba(AppTheme.danger_soft, 232)};
+}}
+QPushButton[role='saveRetry']:disabled {{
+    color: {AppTheme.text_disabled};
+    border-color: {AppTheme.border_soft};
+    background: {AppTheme.surface_soft};
+}}
 QLabel[role='sidebarCardTitle'] {{
     color: {AppTheme.text};
     font-size: 11px;

@@ -37,3 +37,20 @@ OpenSpec strict validation: passed
 ```
 
 Next task: make save progress, success, and persistent failure states explicit in task 5.4.
+
+## Persistent save feedback slice
+
+The case header now has explicit `保存中`, `已保存`, `有未保存更改`, and `保存失败` states for both synchronous and asynchronous persistence. A save failure remains the highest-priority header state until a later save succeeds, so ordinary drawing, mode, and workflow hints in the transient message area cannot hide it.
+
+Failure details are available from the state and retry-control tooltips. A compact `重试保存` action appears only while a failure is unresolved, disables itself as `重试中…` during recovery, and clears the failure only after confirmed persistence. Failed synchronous saves retain the dirty state and no longer escape into the UI event handler as an unhandled exception.
+
+Verification:
+
+```text
+Focused save, case-header, theme, and transient-message tests: 26 passed
+Complete automated suite: 761 passed
+1240x820 save-failure layout capture: inspected; status and retry controls fit without displacing workflow actions
+OpenSpec strict validation: passed
+```
+
+Next task: recapture the complete critical-state screenshot matrix in task 5.6.

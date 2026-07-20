@@ -3589,6 +3589,7 @@ class MainWindow(QMainWindow):
         self.case_title_label: QLabel | None = None
         self.case_meta_label: QLabel | None = None
         self.case_save_state_label: QLabel | None = None
+        self.case_save_retry_button: QPushButton | None = None
         self.empty_startup_panel: QFrame | None = None
         self.empty_startup_recent_layout: QVBoxLayout | None = None
         self.empty_startup_recent_label: QLabel | None = None
@@ -3625,6 +3626,10 @@ class MainWindow(QMainWindow):
         self._failed_step_forward_save_generation = 0
         self._step_forward_save_in_flight = False
         self._pending_step_forward_save_trigger: str | None = None
+        self._sync_save_in_progress = False
+        self._save_retry_in_progress = False
+        self._save_failure_message: str | None = None
+        self._save_failure_generation = 0
         self._pending_download_update_info: UpdateInfo | None = None
         self._updates_dir = default_updates_dir()
         self._close_pending = False
@@ -3710,7 +3715,9 @@ class MainWindow(QMainWindow):
             self._set_label_text_if_changed(self.case_title_label, "BarByBar")
             self._set_label_text_if_changed(self.case_meta_label, "未打开案例")
             self._set_label_text_if_changed(self.case_save_state_label, "准备就绪")
+            self.case_save_state_label.setToolTip("")
             self._set_case_save_state_if_changed("idle")
+            self._sync_case_save_retry_control()
             self._refresh_empty_startup_actions()
             self._refresh_empty_startup_visibility()
             return
@@ -3724,14 +3731,22 @@ class MainWindow(QMainWindow):
             f"{session.symbol} · {session.chart_timeframe} · {status_text} · "
             f"第 {session.current_index + 1}/{self.engine.total_count} 根K线"
         )
-        if self._auto_save_timer.isActive() or self._has_pending_step_forward_save():
+        if self._save_failure_message:
+            state, text = "failed", "保存失败"
+            tooltip = f"保存失败：{self._save_failure_message}"
+        elif self._sync_save_in_progress or self._auto_save_timer.isActive() or self._has_pending_step_forward_save():
             state, text = "saving", "保存中"
+            tooltip = "正在保存当前案例"
         elif self._session_dirty:
             state, text = "dirty", "有未保存更改"
+            tooltip = "当前案例包含尚未写入本地数据库的更改"
         else:
             state, text = "saved", "已保存"
+            tooltip = "当前案例已安全写入本地数据库"
         self._set_label_text_if_changed(self.case_save_state_label, text)
+        self.case_save_state_label.setToolTip(tooltip)
         self._set_case_save_state_if_changed(state)
+        self._sync_case_save_retry_control()
         self._refresh_empty_startup_visibility()
 
     @staticmethod
@@ -3751,6 +3766,29 @@ class MainWindow(QMainWindow):
         self.case_save_state_label.style().unpolish(self.case_save_state_label)
         self.case_save_state_label.style().polish(self.case_save_state_label)
         self.case_save_state_label.update()
+
+    def _sync_case_save_retry_control(self) -> None:
+        if self.case_save_retry_button is None:
+            return
+        has_failure = bool(self.engine and self._save_failure_message)
+        self.case_save_retry_button.setVisible(has_failure)
+        self.case_save_retry_button.setEnabled(has_failure and not self._save_retry_in_progress)
+        self.case_save_retry_button.setText("重试中…" if self._save_retry_in_progress else "重试保存")
+        self.case_save_retry_button.setToolTip(
+            f"再次保存当前案例。上次失败原因：{self._save_failure_message}" if has_failure else ""
+        )
+
+    def _record_save_failure(self, message: str, *, generation: int = 0) -> None:
+        normalized_message = str(message).strip() or "未知错误"
+        if generation >= self._save_failure_generation or self._save_failure_message is None:
+            self._save_failure_message = normalized_message
+            self._save_failure_generation = max(0, generation)
+        self._session_dirty = True
+        self._sync_case_header()
+
+    def _clear_save_failure(self) -> None:
+        self._save_failure_message = None
+        self._save_failure_generation = 0
 
     @staticmethod
     def _rebind_button_clicked(button: QPushButton | None, handler: Callable[[], None]) -> None:
@@ -4165,8 +4203,15 @@ class MainWindow(QMainWindow):
         self.case_save_state_label = QLabel("准备就绪")
         self.case_save_state_label.setProperty("role", "caseSaveState")
         self.case_save_state_label.setProperty("state", "idle")
+        self.case_save_state_label.setAccessibleName("案例保存状态")
+        self.case_save_retry_button = QPushButton("重试保存")
+        self.case_save_retry_button.setProperty("role", "saveRetry")
+        self.case_save_retry_button.setAccessibleName("重试保存当前案例")
+        self.case_save_retry_button.setVisible(False)
+        self.case_save_retry_button.clicked.connect(self.retry_failed_save)
         case_header_top.addWidget(self.case_title_label)
         case_header_top.addWidget(self.case_save_state_label)
+        case_header_top.addWidget(self.case_save_retry_button)
         case_header_top.addStretch(1)
         self.case_meta_label = QLabel("未打开案例")
         self.case_meta_label.setProperty("role", "caseMeta")
@@ -5421,6 +5466,7 @@ class MainWindow(QMainWindow):
         )
 
     def _clear_current_session(self) -> None:
+        self._clear_save_failure()
         self.engine = None
         self.current_session_id = None
         self._drawing_style_presets = {}
@@ -5450,6 +5496,7 @@ class MainWindow(QMainWindow):
             self.trade_review_sidebar.refresh_items()
         self.trade_price_label.setText("--")
         self._sync_draw_order_controls()
+        self._sync_case_header()
         self._restore_progress_label()
 
     def _default_progress_text(self) -> str:
@@ -6316,9 +6363,9 @@ class MainWindow(QMainWindow):
         persist_drawings: bool = True,
         persist_trades: bool = True,
         flush_step_forward_pending: bool = True,
-    ) -> None:
+    ) -> bool:
         if not self.engine:
-            return
+            return False
         if flush_step_forward_pending:
             self._flush_pending_step_forward_save(trigger)
         self._auto_save_timer.stop()
@@ -6329,17 +6376,37 @@ class MainWindow(QMainWindow):
             session_to_save = deepcopy(self.engine.session)
             session_to_save.position = PositionState()
             session_to_save.stats = SessionStats()
-        saved = self.repo.save_session(
-            session_to_save,
-            self.engine.actions if persist_trades else None,
-            self.engine.order_lines if persist_trades else None,
-            self.chart_widget.drawings() if persist_drawings else None,
-            self.engine.trade_review_items() if persist_trades else None,
-        )
+        self._sync_save_in_progress = True
+        self._sync_case_header()
+        try:
+            saved = self.repo.save_session(
+                session_to_save,
+                self.engine.actions if persist_trades else None,
+                self.engine.order_lines if persist_trades else None,
+                self.chart_widget.drawings() if persist_drawings else None,
+                self.engine.trade_review_items() if persist_trades else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._sync_save_in_progress = False
+            self._record_save_failure(str(exc))
+            logger.bind(
+                component="session",
+                session_id=self.current_session_id,
+                trigger=trigger,
+            ).warning("event=save_session_failed message={message}", message=str(exc))
+            self._show_error(
+                "保存失败",
+                "未能保存当前案例",
+                "更改仍保留在当前窗口中。请检查磁盘或数据库状态后重试。",
+                str(exc),
+            )
+            return False
+        self._sync_save_in_progress = False
         self.engine.session = saved
         if persist_trades:
             self.engine.order_lines = self.repo.get_order_lines(saved.id or 0, saved.chart_timeframe)
         self._session_dirty = False
+        self._clear_save_failure()
         self._sync_case_header()
         logger.bind(
             component="session",
@@ -6349,6 +6416,22 @@ class MainWindow(QMainWindow):
             trigger=trigger,
         ).info("event=save_session")
         self._show_transient_message("会话已保存", 2500)
+        return True
+
+    @Slot()
+    def retry_failed_save(self) -> None:
+        if not self.engine or not self._save_failure_message or self._save_retry_in_progress:
+            return
+        self._save_retry_in_progress = True
+        self._sync_case_header()
+        try:
+            if self._has_pending_step_forward_save():
+                self._flush_pending_step_forward_save("manual_retry")
+            else:
+                self.save_session(trigger="manual_retry", flush_step_forward_pending=False)
+        finally:
+            self._save_retry_in_progress = False
+            self._sync_case_header()
 
     def complete_session(self) -> None:
         if not self.engine:
@@ -6894,6 +6977,7 @@ class MainWindow(QMainWindow):
                 window,
                 persisted_trade_review_items,
             )
+            self._clear_save_failure()
             if session.id is not None and (recovered_timeframe or persisted_timeframe != chart_timeframe):
                 self.engine.session = self.repo.save_session(self.engine.session, None)
             log.bind(session_id=session.id, dataset_id=dataset.id).debug(
@@ -7049,10 +7133,11 @@ class MainWindow(QMainWindow):
                 reason=reason,
                 latest_generation=self._latest_step_forward_save_generation,
             ).warning("event=flush_pending_step_forward_save_fallback_sync")
-            self.save_session(trigger=f"async_flush:{reason}", flush_step_forward_pending=False)
-            self._last_completed_step_forward_save_generation = self._latest_step_forward_save_generation
-            self._failed_step_forward_save_generation = 0
-            self._step_forward_save_in_flight = False
+            persisted = self.save_session(trigger=f"async_flush:{reason}", flush_step_forward_pending=False)
+            if persisted:
+                self._last_completed_step_forward_save_generation = self._latest_step_forward_save_generation
+                self._failed_step_forward_save_generation = 0
+                self._step_forward_save_in_flight = False
 
     @Slot(int, bool)
     def _handle_async_save_finished(self, generation: int, persisted: bool) -> None:
@@ -7073,6 +7158,9 @@ class MainWindow(QMainWindow):
         if generation >= self._latest_step_forward_save_generation:
             self._last_completed_step_forward_save_generation = generation
             self._failed_step_forward_save_generation = 0
+        if persisted and generation >= self._save_failure_generation:
+            self._session_dirty = False
+            self._clear_save_failure()
         self._sync_case_header()
 
     @Slot(int, str)
@@ -7080,7 +7168,7 @@ class MainWindow(QMainWindow):
         self._log_ui_thread("handle_async_save_failed")
         self._failed_step_forward_save_generation = max(self._failed_step_forward_save_generation, generation)
         self._step_forward_save_in_flight = generation < self._latest_step_forward_save_generation
-        self._sync_case_header()
+        self._record_save_failure(message, generation=generation)
         logger.bind(
             component="session_save_async",
             session_id=self.current_session_id,

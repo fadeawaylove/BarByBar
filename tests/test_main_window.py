@@ -314,8 +314,10 @@ def test_main_window_applies_professional_light_theme(window: MainWindow) -> Non
     assert window.case_title_label is not None
     assert window.case_meta_label is not None
     assert window.case_save_state_label is not None
+    assert window.case_save_retry_button is not None
     assert window.case_title_label.property("role") == "caseTitle"
     assert window.case_save_state_label.property("role") == "caseSaveState"
+    assert window.case_save_retry_button.property("role") == "saveRetry"
 
 
 def test_theme_exposes_workflow_and_financial_visual_roles(window: MainWindow) -> None:
@@ -333,6 +335,8 @@ def test_theme_exposes_workflow_and_financial_visual_roles(window: MainWindow) -
     ]:
         assert token in stylesheet
     assert "QLabel[role='caseSaveState'][state='saving']" in stylesheet
+    assert "QLabel[role='caseSaveState'][state='failed']" in stylesheet
+    assert "QPushButton[role='saveRetry']" in stylesheet
     assert "QLabel[role='numericReadout']" in stylesheet
     assert "QLabel[role='pnlPositive']" in stylesheet
     assert "QPushButton[compactAction='true'][role='reverse']:pressed" in stylesheet
@@ -365,6 +369,113 @@ def test_case_header_summarizes_open_session_and_save_state(window: MainWindow) 
     finally:
         window._auto_save_timer.stop()
         window._session_dirty = False
+
+
+def test_case_header_keeps_save_failure_visible_during_transient_hints(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    monkeypatch.setattr(window, "_show_error", lambda *args: None)
+    window._latest_step_forward_save_generation = 4
+
+    window._handle_async_save_failed(4, "database is locked")
+    window._show_transient_message("已切换到趋势线", 2500)
+
+    assert window.case_save_state_label.text() == "保存失败"
+    assert window.case_save_state_label.property("state") == "failed"
+    assert "database is locked" in window.case_save_state_label.toolTip()
+    assert window.case_save_retry_button.isHidden() is False
+    assert window.progress_label.text() == "已切换到趋势线"
+
+    window._transient_message_timer.stop()
+    window._restore_progress_label()
+    assert window.case_save_state_label.text() == "保存失败"
+    window._latest_step_forward_save_generation = 0
+    window._last_completed_step_forward_save_generation = 0
+    window._failed_step_forward_save_generation = 0
+    window._clear_save_failure()
+    window._session_dirty = False
+
+
+def test_sync_save_exposes_saving_then_saved_state(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    states_during_save: list[tuple[str, str]] = []
+
+    def fake_save_session(session, *args, **kwargs):  # noqa: ANN001
+        states_during_save.append((window.case_save_state_label.text(), window.case_save_state_label.property("state")))
+        return session
+
+    monkeypatch.setattr(window.repo, "save_session", fake_save_session)
+
+    assert window.save_session(trigger="test") is True
+    assert states_during_save == [("保存中", "saving")]
+    assert window.case_save_state_label.text() == "已保存"
+    assert window.case_save_state_label.property("state") == "saved"
+
+
+def test_sync_save_failure_stays_dirty_and_offers_retry(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    errors: list[tuple[str, str, str, str]] = []
+    monkeypatch.setattr(
+        window.repo,
+        "save_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")),
+    )
+    monkeypatch.setattr(window, "_show_error", lambda *args: errors.append(args))
+
+    assert window.save_session(trigger="test") is False
+    assert window._session_dirty is True
+    assert window.case_save_state_label.text() == "保存失败"
+    assert window.case_save_retry_button.isHidden() is False
+    assert "disk full" in window.case_save_retry_button.toolTip()
+    assert errors == [
+        (
+            "保存失败",
+            "未能保存当前案例",
+            "更改仍保留在当前窗口中。请检查磁盘或数据库状态后重试。",
+            "disk full",
+        )
+    ]
+    window._clear_save_failure()
+    window._session_dirty = False
+
+
+def test_retry_save_clears_failure_only_after_success(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    attempts = iter([RuntimeError("disk full"), None])
+    saved_states: list[str] = []
+
+    def flaky_save(session, *args, **kwargs):  # noqa: ANN001
+        outcome = next(attempts)
+        saved_states.append(window.case_save_retry_button.text())
+        if outcome is not None:
+            raise outcome
+        return session
+
+    monkeypatch.setattr(window.repo, "save_session", flaky_save)
+    monkeypatch.setattr(window, "_show_error", lambda *args: None)
+
+    assert window.save_session(trigger="test") is False
+    window.case_save_retry_button.click()
+
+    assert saved_states == ["重试保存", "重试中…"]
+    assert window._save_failure_message is None
+    assert window._session_dirty is False
+    assert window.case_save_state_label.text() == "已保存"
+    assert window.case_save_retry_button.isHidden() is True
+
+
+def test_later_async_save_success_clears_persistent_failure(window: MainWindow, monkeypatch) -> None:
+    _seed_engine(window)
+    monkeypatch.setattr(window, "_show_error", lambda *args: None)
+    window._latest_step_forward_save_generation = 5
+    window._handle_async_save_failed(4, "database is locked")
+
+    window._handle_async_save_finished(5, True)
+
+    assert window._save_failure_message is None
+    assert window._failed_step_forward_save_generation == 0
+    assert window._session_dirty is False
+    assert window.case_save_state_label.text() == "已保存"
+    assert window.case_save_retry_button.isHidden() is True
 
 
 def test_empty_startup_workspace_surfaces_primary_next_actions(window: MainWindow) -> None:
