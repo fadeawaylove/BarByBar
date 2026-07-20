@@ -25,4 +25,4 @@
 - [x] 4.2 Run the complete automated test suite and OpenSpec validation
 - [x] 4.3 Build v0.6.1 artifacts and run isolated Windows installer smoke validation
 - [x] 4.4 Commit and push the implementation checkpoint
-- [ ] 4.5 Publish v0.6.1 and verify remote tag, release notes, installer, and archive assets
+- [x] 4.5 Publish v0.6.1 and verify remote tag, release notes, installer, and archive assets
