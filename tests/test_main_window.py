@@ -1221,6 +1221,9 @@ def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWi
         assert dialog.choose_restore_button.property("role") == "secondary"
         assert dialog.data_safety_status_label.property("role") == "statusMuted"
         assert dialog.data_safety_progress.isVisible() is False
+        location = paths.current_data_location()
+        assert dialog.data_root_label.text() == str(location.root)
+        assert dialog.data_location_source_value_label.text() == paths.data_location_source_label(location.source)
         assert dialog.database_path_label.text() == str(window.active_database_path())
         assert dialog.backup_dir_label.text() == str(paths.default_backup_dir())
         label_texts = {label.text() for label in dialog.findChildren(QLabel)}

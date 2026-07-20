@@ -101,6 +101,8 @@ from barbybar.domain.models import (
 from barbybar.logging_config import log_dir
 from barbybar.logging_config import register_fatal_error_handler, unregister_fatal_error_handler
 from barbybar.paths import (
+    current_data_location,
+    data_location_source_label,
     default_backup_dir,
     default_db_path,
     default_drawing_templates_path,
@@ -3284,6 +3286,11 @@ class SettingsDialog(QDialog):
         self.database_path_label = QLabel()
         self.database_path_label.setWordWrap(True)
         self.database_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.data_root_label = QLabel()
+        self.data_root_label.setWordWrap(True)
+        self.data_root_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.data_location_source_value_label = QLabel()
+        self.data_location_source_value_label.setWordWrap(True)
         self.backup_dir_label = QLabel()
         self.backup_dir_label.setWordWrap(True)
         self.backup_dir_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -3299,6 +3306,10 @@ class SettingsDialog(QDialog):
         location_actions.addWidget(self.copy_database_path_button)
         location_actions.addStretch(1)
         location_layout.addWidget(location_hint)
+        location_layout.addWidget(QLabel("数据根目录"))
+        location_layout.addWidget(self.data_root_label)
+        location_layout.addWidget(QLabel("位置来源"))
+        location_layout.addWidget(self.data_location_source_value_label)
         location_layout.addWidget(QLabel("当前数据库"))
         location_layout.addWidget(self.database_path_label)
         location_layout.addWidget(QLabel("默认备份目录"))
@@ -3521,6 +3532,9 @@ class SettingsDialog(QDialog):
         return container
 
     def sync_from_owner(self) -> None:
+        location = current_data_location()
+        self.data_root_label.setText(str(location.root))
+        self.data_location_source_value_label.setText(data_location_source_label(location.source))
         self.database_path_label.setText(str(self.owner.active_database_path()))
         self.backup_dir_label.setText(str(default_backup_dir()))
         if default_pending_restore_manifest_path().exists() and not self.owner.data_safety_operation_running():

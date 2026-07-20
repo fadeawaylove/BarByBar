@@ -1,7 +1,12 @@
 param(
     [string]$Version = "",
     [string]$Tag = "",
-    [string]$InnoCompiler = ""
+    [string]$InnoCompiler = "",
+    [string]$AppId = "",
+    [string]$AppName = "",
+    [string]$ProgramGroupName = "",
+    [string]$OutputBaseName = "",
+    [switch]$SkipPortableBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,9 +16,11 @@ Set-Location $repoRoot
 
 $versionToShow = if ($Version) { $Version } else { & .\.venv\Scripts\python.exe -c "from barbybar import __version__; print(__version__)" }
 
-& .\scripts\build_release.ps1 -Version $Version -Tag $Tag
-if ($LASTEXITCODE -ne 0) {
-    throw "Portable build failed with exit code $LASTEXITCODE."
+if (-not $SkipPortableBuild) {
+    & .\scripts\build_release.ps1 -Version $Version -Tag $Tag
+    if ($LASTEXITCODE -ne 0) {
+        throw "Portable build failed with exit code $LASTEXITCODE."
+    }
 }
 
 if (-not $InnoCompiler) {
@@ -58,8 +65,8 @@ $installerDir = Join-Path $repoRoot "installer"
 $sourceDir = Join-Path $repoRoot "dist\release\BarByBar"
 $scriptPath = Join-Path $installerDir "BarByBar.iss"
 $outputDir = Join-Path $repoRoot "dist"
-$outputBaseName = "BarByBar-v$versionToShow-windows-x64-setup"
-$setupPath = Join-Path $outputDir "$outputBaseName.exe"
+$resolvedOutputBaseName = if ($OutputBaseName) { $OutputBaseName } else { "BarByBar-v$versionToShow-windows-x64-setup" }
+$setupPath = Join-Path $outputDir "$resolvedOutputBaseName.exe"
 $assetsDir = Join-Path $repoRoot "src\barbybar\assets"
 
 if (-not (Test-Path $scriptPath)) {
@@ -76,13 +83,25 @@ Write-Output "Using Inno Setup compiler: $InnoCompiler"
 Write-Output "Using source directory: $sourceDir"
 Write-Output "Using output path: $setupPath"
 
-& $InnoCompiler `
-    "/DMyAppVersion=$versionToShow" `
-    "/DSourceDir=$sourceDir" `
-    "/DAssetsDir=$assetsDir" `
-    "/DOutputDir=$outputDir" `
-    "/DOutputBaseFilename=$outputBaseName" `
-    $scriptPath
+$compilerArguments = @(
+    "/DMyAppVersion=$versionToShow",
+    "/DSourceDir=$sourceDir",
+    "/DAssetsDir=$assetsDir",
+    "/DOutputDir=$outputDir",
+    "/DOutputBaseFilename=$resolvedOutputBaseName"
+)
+if ($AppId) {
+    $compilerArguments += "/DMyAppId=$AppId"
+}
+if ($AppName) {
+    $compilerArguments += "/DMyAppName=$AppName"
+}
+if ($ProgramGroupName) {
+    $compilerArguments += "/DMyProgramGroupName=$ProgramGroupName"
+}
+$compilerArguments += $scriptPath
+
+& $InnoCompiler @compilerArguments
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup compilation failed with exit code $LASTEXITCODE."
 }

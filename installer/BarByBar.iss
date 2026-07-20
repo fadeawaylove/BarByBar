@@ -18,10 +18,17 @@
   #error "AssetsDir must be defined."
 #endif
 
-#define MyAppName "BarByBar"
+#ifndef MyAppName
+  #define MyAppName "BarByBar"
+#endif
 #define MyAppPublisher "BarByBar"
 #define MyAppExeName "BarByBar.exe"
-#define MyAppId "{{A516BBBA-3B66-4A27-9F44-03D52CB9D89D}"
+#ifndef MyAppId
+  #define MyAppId "{{A516BBBA-3B66-4A27-9F44-03D52CB9D89D}"
+#endif
+#ifndef MyProgramGroupName
+  #define MyProgramGroupName "BarByBar"
+#endif
 
 [Setup]
 AppId={#MyAppId}
@@ -30,7 +37,7 @@ AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\BarByBar
-DefaultGroupName=BarByBar
+DefaultGroupName={#MyProgramGroupName}
 DisableDirPage=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest

@@ -4,16 +4,28 @@ import sys
 from pathlib import Path
 
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from barbybar.logging_config import setup_logging
-from barbybar.paths import default_db_path
+from barbybar.paths import DataLocationError, default_db_path, initialize_data_location
 from barbybar.storage.data_safety import PendingRestoreError, apply_pending_restore
 from barbybar.storage.repository import Repository
 from barbybar.ui.main_window import MainWindow
 
 
 def main() -> int:
+    app = QApplication(sys.argv)
+    app.setApplicationName("BarByBar")
+    try:
+        initialize_data_location()
+    except DataLocationError as exc:
+        QMessageBox.critical(
+            None,
+            "无法确定数据目录",
+            f"{exc}\n\n为保护历史数据，BarByBar 没有创建、移动或覆盖任何数据库。",
+        )
+        return 2
+
     app_logger = setup_logging()
     try:
         restore_result = apply_pending_restore(current_database_path=default_db_path())
@@ -30,8 +42,6 @@ def main() -> int:
                     "event=pending_restore_cleanup_warning warning={}",
                     restore_result.cleanup_warning,
                 )
-    app = QApplication(sys.argv)
-    app.setApplicationName("BarByBar")
     icon_path = Path(__file__).resolve().parent / "assets" / "barbybar-icon.svg"
     if icon_path.exists():
         icon = QIcon(str(icon_path))

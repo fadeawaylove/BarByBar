@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, QtMsgType, Signal, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
 from barbybar import __version__
-from barbybar.paths import default_db_path, default_log_dir
+from barbybar.paths import current_data_location, default_db_path, default_log_dir
 
 
 LOG_ROTATION = "5 MB"
@@ -190,10 +190,13 @@ def setup_logging(base_log_dir: str | Path | None = None):
 
     _install_exception_hooks()
 
-    logger.bind(event="app_start").info(
-        "BarByBar starting version={} python={} db_path={} log_dir={}",
+    data_location = current_data_location()
+    logger.bind(event="app_start", data_source=data_location.source.value).info(
+        "BarByBar starting version={} python={} data_root={} data_source={} db_path={} log_dir={}",
         __version__,
         sys.version.split()[0],
+        data_location.root,
+        data_location.source.value,
         default_db_path(),
         target_dir,
     )

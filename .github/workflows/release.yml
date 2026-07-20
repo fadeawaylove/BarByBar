@@ -96,6 +96,10 @@ jobs:
         shell: pwsh
         run: .\scripts\build_installer.ps1 -Tag "$env:RELEASE_TAG"
 
+      - name: Run isolated installer smoke
+        shell: pwsh
+        run: .\scripts\smoke_test_installer.ps1
+
       - name: Generate release notes
         shell: pwsh
         run: |

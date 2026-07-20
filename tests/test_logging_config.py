@@ -38,6 +38,8 @@ def test_setup_logging_creates_log_files() -> None:
         assert (log_path / "debug.log").exists()
         assert (log_path / "error.log").exists()
         assert "hello loguru" in app_log
+        assert "data_root=" in app_log
+        assert "data_source=" in app_log
         assert "debug only" not in app_log
         assert "debug only" in debug_log
         assert "hello loguru" in debug_log
