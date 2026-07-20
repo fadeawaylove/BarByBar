@@ -12,7 +12,14 @@ from barbybar import paths
 from barbybar.domain.engine import ReviewEngine
 from barbybar.domain.models import ActionType, Bar, DrawingToolType, OrderLineType, PositionState, ReviewSession, SessionStats, SessionStatus, TradeReviewItem
 from barbybar.storage.repository import Repository
-from barbybar.ui.main_window import DataSetManagerDialog, MainWindow, SessionLibraryDialog, SettingsDialog, TradeHistoryDialog
+from barbybar.ui.main_window import (
+    DataSetManagerDialog,
+    MainWindow,
+    SessionLibraryDialog,
+    SettingsDialog,
+    TradeHistoryDialog,
+    UpdateActionDialog,
+)
 
 
 OUTPUT_DIR = Path("C:/tmp/reframe-review-workflow-shots")
@@ -73,7 +80,7 @@ def _seed_engine(window: MainWindow) -> None:
         current_index=28,
         current_bar_time=bars[28].timestamp,
         status=SessionStatus.ACTIVE,
-        title="Workflow Smoke Session",
+        title="沪深主连 · 突破训练",
         notes="",
         tags=[],
         position=PositionState(),
@@ -83,6 +90,7 @@ def _seed_engine(window: MainWindow) -> None:
     )
     window.engine = ReviewEngine(session, bars, window_start_index=0, total_count=len(bars))
     window.current_session_id = 1
+    window.chart_widget.set_window_data(bars, session.current_index, len(bars), 0, timeframe=session.chart_timeframe)
     window._update_ui_from_engine()
 
 
@@ -163,6 +171,14 @@ def main() -> None:
         _save_widget(window, OUTPUT_DIR / "08-completed-session.png", app)
         captures["completed_session"] = "08-completed-session.png"
 
+        window.engine.session.status = SessionStatus.ACTIVE
+        window._record_save_failure("数据库暂时不可写，请检查磁盘空间后重试")
+        _save_widget(window, OUTPUT_DIR / "08b-save-failure-recovery.png", app)
+        captures["save_failure_recovery"] = "08b-save-failure-recovery.png"
+        window._clear_save_failure()
+        window._session_dirty = False
+        window._sync_case_header()
+
         _seed_trade_review(window)
         trade_dialog = TradeHistoryDialog(window, window)
         trade_dialog.refresh_items()
@@ -175,6 +191,20 @@ def main() -> None:
         _save_widget(settings_dialog, OUTPUT_DIR / "10-settings-entry.png", app, QSize(1080, 760))
         captures["settings_entry"] = "10-settings-entry.png"
         settings_dialog.close()
+
+        error_dialog = UpdateActionDialog(
+            "保存失败",
+            "未能保存当前案例",
+            "更改仍保留在当前窗口中，请检查磁盘或数据库状态后重试。",
+            "数据库暂时不可写（database is locked）",
+            accept_text="知道了",
+            cancel_text=None,
+            accept_role="danger",
+            parent=window,
+        )
+        _save_widget(error_dialog, OUTPUT_DIR / "10b-error-dialog.png", app, QSize(620, 420))
+        captures["error_dialog"] = "10b-error-dialog.png"
+        error_dialog.close()
 
         dataset_dialog = DataSetManagerDialog(repo, window, window)
         _save_widget(dataset_dialog, OUTPUT_DIR / "11-dataset-manager-entry.png", app, QSize(860, 700))

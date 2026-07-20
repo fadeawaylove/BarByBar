@@ -854,6 +854,58 @@ def test_replay_control_bar_uses_three_part_layout(window: MainWindow) -> None:
     assert controls_bar.parentWidget() is center_panel
 
 
+@pytest.mark.parametrize(("width", "height"), [(1240, 820), (1600, 920)])
+def test_supported_desktop_sizes_keep_primary_controls_inside_window(
+    window: MainWindow,
+    app: QApplication,
+    width: int,
+    height: int,
+) -> None:
+    _seed_engine(window)
+    window.resize(width, height)
+    window.show()
+    window._update_ui_from_engine()
+    app.processEvents()
+    buttons_by_text = {button.text(): button for button in window.findChildren(QPushButton)}
+    critical_widgets = [
+        window.dataset_button,
+        window.session_button,
+        window.settings_button,
+        window.chart_widget,
+        window.next_button,
+        buttons_by_text["保存会话"],
+        buttons_by_text["标记完成"],
+    ]
+
+    for widget in critical_widgets:
+        top_left = widget.mapTo(window, QPoint(0, 0))
+        assert top_left.x() >= 0
+        assert top_left.y() >= 0
+        assert top_left.x() + widget.width() <= window.width()
+        assert top_left.y() + widget.height() <= window.height()
+        assert widget.isVisible() is True
+
+    for text in ["数据集", "案例库", "设置", "下一根", "保存会话", "标记完成"]:
+        button = buttons_by_text[text]
+        assert button.width() >= button.sizeHint().width()
+
+
+def test_keyboard_focus_can_advance_across_primary_controls(window: MainWindow, app: QApplication) -> None:
+    window.show()
+    window.dataset_button.setFocus(Qt.FocusReason.TabFocusReason)
+    app.processEvents()
+    first = app.focusWidget()
+
+    assert first is window.dataset_button
+    assert window.focusNextChild() is True
+    app.processEvents()
+
+    second = app.focusWidget()
+    assert second is not None
+    assert second is not first
+    assert second.focusPolicy() & Qt.FocusPolicy.TabFocus
+
+
 def test_replay_secondary_actions_keep_expected_order(window: MainWindow) -> None:
     center_panel = window.splitter.widget(0)
     controls_bar = center_panel.findChild(QWidget, "replayControlBar")
@@ -1174,6 +1226,8 @@ def test_settings_dialog_exposes_expected_categories_and_controls(window: MainWi
         label_texts = {label.text() for label in dialog.findChildren(QLabel)}
         assert "Alt + 左键拖拽" in label_texts
         assert "悬停 K 线时显示开盘时间和收盘时间" in label_texts
+        assert "悬停时间" in label_texts
+        assert all("Hover" not in text for text in label_texts)
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -3228,6 +3282,8 @@ def test_clicking_drawing_tool_updates_chart_widget(window: MainWindow) -> None:
     assert window.chart_widget.active_drawing_tool is DrawingToolType.HORIZONTAL_LINE
     assert window._drawing_tool_buttons[DrawingToolType.HORIZONTAL_LINE].isChecked() is True
     assert window.chart_widget.interaction_mode is InteractionMode.DRAWING
+    assert "自动回到浏览模式" in window.progress_label.text()
+    assert "hover" not in window.progress_label.text().lower()
 
 
 def test_completed_drawing_unchecks_toolbar_button(window: MainWindow) -> None:

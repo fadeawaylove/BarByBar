@@ -3201,7 +3201,7 @@ class SettingsDialog(QDialog):
         measure_label = QLabel("Alt + 左键拖拽")
         hover_time_label = QLabel("悬停 K 线时显示开盘时间和收盘时间")
         interaction_layout.addRow("临时量测", measure_label)
-        interaction_layout.addRow("Hover 时间", hover_time_label)
+        interaction_layout.addRow("悬停时间", hover_time_label)
         layout.addWidget(interaction_group)
 
         candle_group = QGroupBox("K线配色")
@@ -7566,7 +7566,10 @@ class MainWindow(QMainWindow):
                 active_drawing_tool=self.chart_widget.active_drawing_tool.value if self.chart_widget.active_drawing_tool else "",
                 button_checked=self._drawing_tool_buttons[tool].isChecked(),
             ).debug("event=toggle_drawing_tool_applied")
-            self._show_transient_message(f"已切换到{self._drawing_tool_label(tool)}，完成一笔后自动回到 hover，Esc 可取消", 3000)
+            self._show_transient_message(
+                f"已切换到{self._drawing_tool_label(tool)}，完成一笔后自动回到浏览模式，Esc 可取消",
+                3000,
+            )
             return
         if self.chart_widget.active_drawing_tool is tool:
             self.chart_widget.set_active_drawing_tool(None)

@@ -53,4 +53,4 @@ Complete automated suite: 761 passed
 OpenSpec strict validation: passed
 ```
 
-Next task: recapture the complete critical-state screenshot matrix in task 5.6.
+Next task: run the complete milestone validation suite in task 6.1.
