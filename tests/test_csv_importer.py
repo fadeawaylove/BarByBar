@@ -1,10 +1,16 @@
 from pathlib import Path
 import shutil
+from datetime import datetime
 from uuid import uuid4
 
 import pytest
 
-from barbybar.data.csv_importer import MissingColumnsError, infer_symbol_from_filename, load_bars_from_csv
+from barbybar.data.csv_importer import (
+    MissingColumnsError,
+    infer_symbol_from_filename,
+    inspect_csv,
+    load_bars_from_csv,
+)
 
 
 def test_import_standard_csv() -> None:
@@ -12,6 +18,85 @@ def test_import_standard_csv() -> None:
     assert len(result.bars) == 10
     assert result.bars[0].open == 3860.0
     assert result.bars[-1].close == 3884.0
+
+
+def test_inspect_csv_returns_mapping_samples_count_and_time_range() -> None:
+    result = inspect_csv(Path("sample_data/if_sample.csv"), sample_limit=3)
+
+    assert result.detected_columns == ("datetime", "open", "high", "low", "close", "volume")
+    assert result.suggested_mapping == {
+        "datetime": "datetime",
+        "open": "open",
+        "high": "high",
+        "low": "low",
+        "close": "close",
+        "volume": "volume",
+    }
+    assert len(result.sample_rows) == 3
+    assert result.sample_rows[0].row_number == 2
+    assert result.sample_rows[0].values[0] == "2025-01-02 09:30:00"
+    assert result.valid_row_count == 10
+    assert result.duplicates_removed == 0
+    assert result.start_time == datetime(2025, 1, 2, 9, 30)
+    assert result.end_time == datetime(2025, 1, 2, 9, 39)
+
+
+def test_inspect_csv_is_read_only_and_uses_explicit_mapping(tmp_path: Path) -> None:
+    csv_path = tmp_path / "custom.csv"
+    csv_path.write_text(
+        "Time,OpenPx,HighPx,LowPx,ClosePx,Vol\n"
+        "2025-01-01 09:00,1,2,0.5,1.5,10\n",
+        encoding="utf-8",
+    )
+    database_path = tmp_path / "barbybar.db"
+
+    result = inspect_csv(
+        csv_path,
+        field_map={
+            "datetime": "Time",
+            "open": "OpenPx",
+            "high": "HighPx",
+            "low": "LowPx",
+            "close": "ClosePx",
+            "volume": "Vol",
+        },
+    )
+
+    assert result.valid_row_count == 1
+    assert result.suggested_mapping["close"] == "ClosePx"
+    assert result.sample_rows[0].values == (
+        "2025-01-01 09:00",
+        "1",
+        "2",
+        "0.5",
+        "1.5",
+        "10",
+    )
+    assert database_path.exists() is False
+
+
+def test_inspect_csv_reports_importable_rows_after_deduplication(tmp_path: Path) -> None:
+    csv_path = tmp_path / "unordered-duplicates.csv"
+    csv_path.write_text(
+        "datetime,open,high,low,close,volume\n"
+        "2025-01-01 09:02,2,3,1,2.5,20\n"
+        "2025-01-01 09:01,1,2,0.5,1.5,10\n"
+        "2025-01-01 09:02,4,5,3,4.5,30\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_csv(csv_path, sample_limit=2)
+
+    assert result.valid_row_count == 2
+    assert result.duplicates_removed == 1
+    assert result.start_time == datetime(2025, 1, 1, 9, 1)
+    assert result.end_time == datetime(2025, 1, 1, 9, 2)
+    assert [row.row_number for row in result.sample_rows] == [2, 3]
+
+
+def test_inspect_csv_rejects_negative_sample_limit() -> None:
+    with pytest.raises(ValueError, match="sample_limit"):
+        inspect_csv(Path("sample_data/if_sample.csv"), sample_limit=-1)
 
 
 def test_import_custom_headers() -> None:

@@ -36,6 +36,32 @@ class ImportResult:
     duplicates_removed: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class CsvSampleRow:
+    row_number: int
+    values: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class CsvInspectionResult:
+    source_path: Path
+    detected_columns: tuple[str, ...]
+    suggested_mapping: dict[str, str]
+    sample_rows: tuple[CsvSampleRow, ...]
+    valid_row_count: int
+    start_time: datetime
+    end_time: datetime
+    duplicates_removed: int = 0
+
+
+@dataclass(slots=True)
+class _CsvSource:
+    path: Path
+    columns: tuple[str, ...]
+    rows: list[dict[str, str | None]]
+    mapping: dict[str, str]
+
+
 class CsvImportError(ValueError):
     pass
 
@@ -141,49 +167,98 @@ def _validate_bar(bar: Bar) -> None:
         raise CsvImportError(f"Invalid row for timestamp {timestamp}: volume must be non-negative")
 
 
-def load_bars_from_csv(path: str | Path, field_map: dict[str, str] | None = None) -> ImportResult:
+def _read_csv_source(path: str | Path, field_map: dict[str, str] | None = None) -> _CsvSource:
     csv_path = Path(path)
     if not csv_path.exists():
         raise CsvImportError(f"CSV file not found: {csv_path}")
-    bars: list[Bar] = []
-    duplicates_removed = 0
-    seen_timestamps: set[datetime] = set()
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:
             raise CsvImportError("CSV file does not contain headers.")
-        preview_rows = list(reader)
-        sample_row = next((row for row in preview_rows if any((value or "").strip() for value in row.values())), None)
-        mapping = build_field_map(reader.fieldnames, field_map=field_map, sample_row=sample_row)
-        normalized_headers = {normalize_header(name): name for name in reader.fieldnames}
-        missing = [name for name in REQUIRED_FIELDS if name not in mapping or normalize_header(mapping[name]) not in normalized_headers]
-        if missing:
-            raise MissingColumnsError(
-                available_headers=list(reader.fieldnames),
-                missing_fields=missing,
-                detected_field_map=mapping,
-            )
+        columns = tuple(reader.fieldnames)
+        rows = list(reader)
+    sample_row = next(
+        (row for row in rows if any((value or "").strip() for value in row.values())),
+        None,
+    )
+    mapping = build_field_map(list(columns), field_map=field_map, sample_row=sample_row)
+    normalized_headers = {normalize_header(name): name for name in columns}
+    missing = [
+        name
+        for name in REQUIRED_FIELDS
+        if name not in mapping or normalize_header(mapping[name]) not in normalized_headers
+    ]
+    if missing:
+        raise MissingColumnsError(
+            available_headers=list(columns),
+            missing_fields=missing,
+            detected_field_map=mapping,
+        )
+    return _CsvSource(path=csv_path, columns=columns, rows=rows, mapping=mapping)
 
-        for row in preview_rows:
-            timestamp = parse_datetime(row[normalized_headers[normalize_header(mapping["datetime"])]] )
-            if timestamp in seen_timestamps:
-                duplicates_removed += 1
-                continue
-            try:
-                bar = Bar(
-                    timestamp=timestamp,
-                    open=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["open"])]], "open", timestamp),
-                    high=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["high"])]], "high", timestamp),
-                    low=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["low"])]], "low", timestamp),
-                    close=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["close"])]], "close", timestamp),
-                    volume=_parse_numeric_field(row[normalized_headers[normalize_header(mapping["volume"])]], "volume", timestamp),
-                )
-                _validate_bar(bar)
-            except CsvImportError:
-                raise
-            seen_timestamps.add(timestamp)
-            bars.append(bar)
+
+def _parse_bars(source: _CsvSource) -> ImportResult:
+    bars: list[Bar] = []
+    duplicates_removed = 0
+    seen_timestamps: set[datetime] = set()
+    normalized_headers = {normalize_header(name): name for name in source.columns}
+    resolved = {
+        field: normalized_headers[normalize_header(source.mapping[field])]
+        for field in REQUIRED_FIELDS
+    }
+    for row in source.rows:
+        timestamp = parse_datetime(row[resolved["datetime"]] or "")
+        if timestamp in seen_timestamps:
+            duplicates_removed += 1
+            continue
+        bar = Bar(
+            timestamp=timestamp,
+            open=_parse_numeric_field(row[resolved["open"]], "open", timestamp),
+            high=_parse_numeric_field(row[resolved["high"]], "high", timestamp),
+            low=_parse_numeric_field(row[resolved["low"]], "low", timestamp),
+            close=_parse_numeric_field(row[resolved["close"]], "close", timestamp),
+            volume=_parse_numeric_field(row[resolved["volume"]], "volume", timestamp),
+        )
+        _validate_bar(bar)
+        seen_timestamps.add(timestamp)
+        bars.append(bar)
     if not bars:
         raise CsvImportError("CSV file does not contain usable rows.")
     bars.sort(key=lambda item: item.timestamp)
     return ImportResult(bars=bars, duplicates_removed=duplicates_removed)
+
+
+def inspect_csv(
+    path: str | Path,
+    field_map: dict[str, str] | None = None,
+    *,
+    sample_limit: int = 5,
+) -> CsvInspectionResult:
+    if sample_limit < 0:
+        raise ValueError("sample_limit must be greater than or equal to zero")
+    source = _read_csv_source(path, field_map=field_map)
+    parsed = _parse_bars(source)
+    sample_rows: list[CsvSampleRow] = []
+    if sample_limit:
+        for row_number, row in enumerate(source.rows, start=2):
+            values = tuple(row.get(column) or "" for column in source.columns)
+            if not any(value.strip() for value in values):
+                continue
+            sample_rows.append(CsvSampleRow(row_number=row_number, values=values))
+            if len(sample_rows) >= sample_limit:
+                break
+    bars = parsed.bars
+    return CsvInspectionResult(
+        source_path=source.path,
+        detected_columns=source.columns,
+        suggested_mapping=dict(source.mapping),
+        sample_rows=tuple(sample_rows),
+        valid_row_count=len(bars),
+        start_time=bars[0].timestamp,
+        end_time=bars[-1].timestamp,
+        duplicates_removed=parsed.duplicates_removed,
+    )
+
+
+def load_bars_from_csv(path: str | Path, field_map: dict[str, str] | None = None) -> ImportResult:
+    return _parse_bars(_read_csv_source(path, field_map=field_map))
