@@ -51,3 +51,13 @@ def default_updates_dir() -> Path:
     root = default_data_root() / "updates"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def default_restore_dir() -> Path:
+    root = default_data_root() / "restore"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def default_pending_restore_manifest_path() -> Path:
+    return default_restore_dir() / "pending_restore.json"

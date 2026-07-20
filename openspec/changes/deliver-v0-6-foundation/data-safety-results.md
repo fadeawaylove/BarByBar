@@ -1,6 +1,6 @@
 # Data Safety Results
 
-Measurement date: 2026-07-19
+Measurement date: 2026-07-20
 
 ## Consistent backup slice
 
@@ -24,4 +24,25 @@ Complete automated suite: 694 passed
 
 Covered failure cases include an invalid target parent, source/target identity, forced validation failure after the partial database exists, preservation of an existing target, partial-file cleanup, and source-data preservation.
 
-Next task: validate restore candidates and create a pending-restore manifest without replacing the active database.
+## Safe staged restore slice
+
+`validate_restore_database` opens the selected file in SQLite read-only mode, runs `PRAGMA quick_check`, and verifies the required BarByBar tables and identifying columns. It rejects the active database itself, non-SQLite content, incomplete schemas, and unreadable files before any staging work begins.
+
+`stage_pending_restore` then creates a separate SQLite-consistent snapshot under the dedicated restore directory. The pending manifest is flushed and atomically published only after the staged snapshot passes validation again. It stores a manifest version, controlled same-directory filename, byte size, SHA-256 digest, source display name, and UTC staging time; it never points the active application at a replacement database during the running session.
+
+Safety behavior:
+
+- The active database path cannot be used as either the restore source or manifest path.
+- The selected source and active database remain byte-for-byte unchanged while staging.
+- Invalid content is rejected before a pending manifest is created.
+- A manifest write failure preserves any existing manifest and removes the new staged database and partial manifest.
+- The default pending manifest lives at `data/restore/pending_restore.json`, including portable data-root overrides.
+
+Verification:
+
+```text
+Focused data-safety, path, and repository tests: 58 passed
+Complete automated suite: 702 passed
+```
+
+Next task: apply a validated pending restore before Repository creation, automatically back up the active database, and preserve the original database on every failure path.

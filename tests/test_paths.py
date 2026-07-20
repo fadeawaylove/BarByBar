@@ -30,3 +30,13 @@ def test_default_ui_settings_path_uses_data_root(monkeypatch, tmp_path: Path) ->
     path = paths.default_ui_settings_path()
 
     assert path == custom_root.resolve() / "ui_settings.json"
+
+
+def test_default_pending_restore_manifest_path_uses_dedicated_directory(monkeypatch, tmp_path: Path) -> None:
+    custom_root = tmp_path / "portable-data"
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(custom_root))
+
+    path = paths.default_pending_restore_manifest_path()
+
+    assert path == custom_root.resolve() / "restore" / "pending_restore.json"
+    assert path.parent.is_dir()
