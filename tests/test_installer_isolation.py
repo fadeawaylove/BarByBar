@@ -42,6 +42,7 @@ def test_smoke_installer_uses_dedicated_identity_and_checks_production_state() -
     assert "$installDirOne" in text and "$installDirTwo" in text
     assert "data-location.json" in text
     assert "executable-adjacent database" in text
+    assert "[AllowEmptyString()][string]$UninstallBefore" in text
 
 
 def test_release_workflow_runs_isolated_smoke_before_publishing() -> None:

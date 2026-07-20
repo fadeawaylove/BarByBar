@@ -131,8 +131,8 @@ function Invoke-SmokeApplication {
 
 function Assert-ProductionStateUnchanged {
     param(
-        [Parameter(Mandatory = $true)][string]$ShortcutBefore,
-        [Parameter(Mandatory = $true)][string]$UninstallBefore
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ShortcutBefore,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$UninstallBefore
     )
 
     $shortcutAfter = Get-ProductionShortcutState
