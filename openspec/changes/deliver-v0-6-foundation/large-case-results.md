@@ -58,3 +58,32 @@ Complete chart-widget tests after interaction optimizations: 265 passed
 Complete automated suite after interaction optimizations: 689 passed
 Strict v0.6 OpenSpec validation: passed
 ```
+
+## Final milestone matrix
+
+Measurement date: 2026-07-20
+
+The final v0.6 validation repeated the representative matrix after all foundation-experience changes. The focused release regression selection completed with `702 passed in 39.09s`; the complete suite completed with `764 passed in 42.40s`.
+
+| Operation | Scenario | Median | P95 | Maximum | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| Step forward | 50,000 source bars, 30 samples | 10.83ms | 30.28ms | 35.52ms | Within 40ms replay budget |
+| Step back | 50,000 source bars, 30 samples | 9.03ms | 10.96ms | 16.27ms | Within 40ms replay budget |
+| Cached left extension | 50,000 bars, 256-bar extension, 10 samples | 8.23ms | 9.37ms | 9.37ms | Within 16ms viewport budget |
+| Incremental EMA | 50,000 bars, one-value advance, 20 samples | 2.95ms | 3.83ms | 3.91ms | Within 16ms viewport budget |
+| Cached hover hit test | 10,000 objects, 100 samples | 0.075ms | 0.143ms | 0.303ms | Within 16ms viewport budget |
+| Pan | Representative: 50 drawings, 100 trades, 10 orders | 9.92ms | 13.17ms | 14.96ms | Within 16ms viewport budget |
+| Zoom | Representative: 50 drawings, 100 trades, 10 orders | 11.29ms | 20.73ms | 55.95ms | Warning: intermittent P95 regression |
+| Pan | Extreme: 1,000 drawings, 1,000 trades, 20 orders | 60.43ms | 71.27ms | 74.82ms | Warning: stress case over budget |
+| Zoom | Extreme: 1,000 drawings, 1,000 trades, 20 orders | 64.10ms | 77.33ms | 85.72ms | Warning: stress case over budget |
+
+Representative deferred overlay settlement was 20.87ms; the extreme case measured 211.29ms. The final run therefore retains three explicit warnings for the v0.7 backlog: representative zoom has occasional frame misses, deferred overlay settlement remains visible after input ends, and a 1,000-drawing case is not yet responsive. Profiling continues to point to drawing relayout/repaint and overlay settlement rather than candlestick, EMA, or hover caches.
+
+The offscreen development benchmark also reports a missing Qt font directory and `propagateSizeHints()` limitations. These are environment-only warnings: the v0.6 packaged-font and 125% high-DPI smoke pass rendered Chinese text correctly, as recorded in `foundation-visual-smoke-results.md`.
+
+Additional final reproduction commands:
+
+```text
+uv run python scripts/benchmark_ema_cache.py --bars 50000 --samples 20 --warmup 2
+uv run python scripts/benchmark_hover_prefilter.py --objects 10000 --samples 100 --warmup 5
+```
