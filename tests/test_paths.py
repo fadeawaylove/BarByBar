@@ -50,3 +50,13 @@ def test_default_backup_dir_uses_data_root(monkeypatch, tmp_path: Path) -> None:
 
     assert path == custom_root.resolve() / "backups"
     assert path.is_dir()
+
+
+def test_default_exports_dir_uses_data_root(monkeypatch, tmp_path: Path) -> None:
+    custom_root = tmp_path / "portable-data"
+    monkeypatch.setenv(paths.APP_DIR_ENV_VAR, str(custom_root))
+
+    path = paths.default_exports_dir()
+
+    assert path == custom_root.resolve() / "exports"
+    assert path.is_dir()

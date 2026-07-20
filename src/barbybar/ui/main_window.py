@@ -93,6 +93,7 @@ from barbybar.paths import (
     default_backup_dir,
     default_db_path,
     default_drawing_templates_path,
+    default_exports_dir,
     default_pending_restore_manifest_path,
     default_ui_settings_path,
     default_updates_dir,
@@ -100,6 +101,11 @@ from barbybar.paths import (
 from barbybar.performance_metrics import performance_summary_lines, record_metric
 from barbybar.storage.data_safety import create_database_backup, stage_pending_restore
 from barbybar.storage.repository import Repository
+from barbybar.trade_export import (
+    SessionTradeExport,
+    build_session_trade_export,
+    export_session_trade_data,
+)
 from barbybar.ui.async_tasks import AsyncTaskCoordinator
 from barbybar.ui.chart_widget import (
     ChartWidget,
@@ -675,6 +681,8 @@ class DataSafetyWorker(QObject):
         target_path: str | Path | None = None,
         current_database_path: str | Path | None = None,
         manifest_path: str | Path | None = None,
+        export_payload: SessionTradeExport | None = None,
+        export_format: str | None = None,
     ) -> None:
         super().__init__()
         self.operation = operation
@@ -682,6 +690,8 @@ class DataSafetyWorker(QObject):
         self.target_path = Path(target_path) if target_path is not None else None
         self.current_database_path = Path(current_database_path) if current_database_path is not None else None
         self.manifest_path = Path(manifest_path) if manifest_path is not None else None
+        self.export_payload = export_payload
+        self.export_format = export_format
 
     @Slot()
     def run(self) -> None:
@@ -693,6 +703,17 @@ class DataSafetyWorker(QObject):
                     self.source_path,
                     current_database_path=self.current_database_path,
                     manifest_path=self.manifest_path,
+                )
+            elif (
+                self.operation.startswith("export_")
+                and self.target_path is not None
+                and self.export_payload is not None
+                and self.export_format is not None
+            ):
+                result = export_session_trade_data(
+                    self.export_payload,
+                    self.target_path,
+                    format=self.export_format,
                 )
             else:
                 raise ValueError(f"Unsupported data-safety operation: {self.operation}")
@@ -1725,7 +1746,30 @@ class TradeHistoryDialog(QDialog):
         title_block.addWidget(subtitle)
         header_row.addLayout(title_block)
         header_row.addStretch(1)
+        self.export_csv_button = QPushButton("导出 CSV")
+        self.export_csv_button.setProperty("role", "secondary")
+        self.export_csv_button.clicked.connect(lambda: self._choose_export_target("csv"))
+        self.export_json_button = QPushButton("导出 JSON")
+        self.export_json_button.setProperty("role", "secondary")
+        self.export_json_button.clicked.connect(lambda: self._choose_export_target("json"))
+        header_row.addWidget(self.export_csv_button)
+        header_row.addWidget(self.export_json_button)
         layout.addLayout(header_row)
+
+        export_feedback = QHBoxLayout()
+        self.export_progress = QProgressBar()
+        self.export_progress.setRange(0, 0)
+        self.export_progress.setTextVisible(False)
+        self.export_progress.setMaximumWidth(140)
+        self.export_progress.setStyleSheet(progress_bar_stylesheet())
+        self.export_progress.hide()
+        self.export_status_label = QLabel("导出包含当前案例摘要和全部历史交易。")
+        self.export_status_label.setProperty("role", "statusMuted")
+        self.export_status_label.setStyleSheet(muted_status_stylesheet())
+        self.export_status_label.setWordWrap(True)
+        export_feedback.addWidget(self.export_progress)
+        export_feedback.addWidget(self.export_status_label, 1)
+        layout.addLayout(export_feedback)
 
         filter_layout = QGridLayout()
         filter_layout.setHorizontalSpacing(8)
@@ -1914,6 +1958,41 @@ class TradeHistoryDialog(QDialog):
 
         self.refresh_items()
 
+    def _choose_export_target(self, export_format: str) -> None:
+        session_id = self.owner.current_session_id
+        if session_id is None:
+            self.owner._show_notice(
+                "导出交易",
+                "当前没有打开案例",
+                "请先打开一个复盘案例，再导出案例摘要和交易记录。",
+            )
+            return
+        session = self.owner.repo.get_session(session_id)
+        safe_title = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "-", session.title or session.symbol).strip("-")
+        extension = export_format.lower()
+        suggested = default_exports_dir() / f"{safe_title or 'case'}-{session_id}.{extension}"
+        selected, _filter = QFileDialog.getSaveFileName(
+            self,
+            f"导出案例交易为 {extension.upper()}",
+            str(suggested),
+            f"{extension.upper()} 文件 (*.{extension});;所有文件 (*)",
+        )
+        if not selected:
+            return
+        if self.owner._selected_trade_number is not None:
+            self._save_selected_trade_notes()
+        self.owner.export_current_session(Path(selected), export_format=extension)
+
+    def set_export_state(self, *, busy: bool, message: str, error: bool = False) -> None:
+        enabled = self.owner.current_session_id is not None and not busy
+        self.export_csv_button.setEnabled(enabled)
+        self.export_json_button.setEnabled(enabled)
+        self.export_progress.setVisible(busy)
+        self.export_status_label.setText(message)
+        self.export_status_label.setStyleSheet(
+            error_banner_stylesheet() if error else muted_status_stylesheet()
+        )
+
     def refresh_items(self) -> None:
         previous_scroll = self.trade_history_table.verticalScrollBar().value()
         selected_trade_number = self.owner._selected_trade_number
@@ -1937,6 +2016,9 @@ class TradeHistoryDialog(QDialog):
         self.trade_history_table.verticalScrollBar().setValue(previous_scroll)
         self._refresh_focus_buttons()
         self._refresh_detail()
+        if not self.owner.data_safety_operation_running():
+            self.export_csv_button.setEnabled(self.owner.current_session_id is not None)
+            self.export_json_button.setEnabled(self.owner.current_session_id is not None)
 
     def _refresh_empty_state(self) -> None:
         total_count = len(self.trade_history_model.all_rows())
@@ -4644,6 +4726,46 @@ class MainWindow(QMainWindow):
             "正在校验备份并登记待恢复请求...",
         )
 
+    def export_current_session(self, target_path: str | Path, *, export_format: str) -> None:
+        session_id = self.current_session_id
+        normalized_format = export_format.strip().lower()
+        if session_id is None:
+            self._show_notice(
+                "导出交易",
+                "当前没有打开案例",
+                "请先打开一个复盘案例，再导出案例摘要和交易记录。",
+            )
+            return
+        try:
+            if self.engine is not None and self.engine.session.id == session_id:
+                self.save_session(trigger="trade_export")
+            session = self.repo.get_session(session_id)
+            dataset = self.repo.get_dataset(session.dataset_id)
+            trades = self.repo.get_trade_review_items(session_id, session.chart_timeframe)
+            export_payload = build_session_trade_export(session, dataset, trades)
+        except Exception as exc:  # noqa: BLE001
+            logger.bind(component="trade_export", session_id=session_id).exception(
+                "event=build_trade_export_failed error={error}",
+                error=str(exc),
+            )
+            self._show_error(
+                "导出失败",
+                "未能准备案例交易数据",
+                "案例数据没有写入目标文件，请重试或查看错误详情。",
+                str(exc),
+            )
+            return
+        self._start_data_safety_operation(
+            DataSafetyWorker(
+                f"export_{normalized_format}",
+                self.active_database_path(),
+                target_path=target_path,
+                export_payload=export_payload,
+                export_format=normalized_format,
+            ),
+            f"正在导出案例摘要和 {len(export_payload.trades)} 笔交易...",
+        )
+
     def _start_data_safety_operation(self, worker: DataSafetyWorker, status_message: str) -> None:
         if self._data_safety_tasks.is_running():
             self._show_notice(
@@ -4652,7 +4774,9 @@ class MainWindow(QMainWindow):
                 "请等待当前备份或恢复准备完成后再试。",
             )
             return
-        if self._settings_dialog is not None:
+        if worker.operation.startswith("export_") and self._trade_history_dialog is not None:
+            self._trade_history_dialog.set_export_state(busy=True, message=status_message)
+        elif self._settings_dialog is not None:
             self._settings_dialog.set_data_safety_state(busy=True, message=status_message)
         thread = self._data_safety_tasks.start(
             worker,
@@ -4665,6 +4789,30 @@ class MainWindow(QMainWindow):
 
     @Slot(str, object)
     def _handle_data_safety_finished(self, operation: str, result: object) -> None:
+        if operation.startswith("export_"):
+            path = Path(getattr(result, "path"))
+            trade_count = int(getattr(result, "trade_count"))
+            if trade_count:
+                message = f"已导出 {trade_count} 笔交易：{path}"
+                summary = f"案例摘要和 {trade_count} 笔交易已写入文件。"
+            else:
+                message = f"案例摘要已导出（暂无交易）：{path}"
+                summary = "当前案例暂无交易，已导出案例摘要和空交易列表。"
+            if self._trade_history_dialog is not None:
+                self._trade_history_dialog.set_export_state(busy=False, message=message)
+            logger.bind(
+                component="trade_export",
+                path=str(path),
+                trade_count=trade_count,
+                format=operation.removeprefix("export_"),
+            ).info("event=trade_export_complete")
+            self._show_notice(
+                "导出完成",
+                "案例交易数据已导出",
+                summary,
+                str(path),
+            )
+            return
         if operation == "backup":
             path = Path(getattr(result, "path"))
             message = f"备份已完成：{path}"
@@ -4695,9 +4843,14 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str)
     def _handle_data_safety_failed(self, operation: str, message: str) -> None:
-        action = "创建备份" if operation == "backup" else "准备恢复"
+        if operation.startswith("export_"):
+            action = "导出交易"
+        else:
+            action = "创建备份" if operation == "backup" else "准备恢复"
         status = f"{action}失败：{message}"
-        if self._settings_dialog is not None:
+        if operation.startswith("export_") and self._trade_history_dialog is not None:
+            self._trade_history_dialog.set_export_state(busy=False, message=status, error=True)
+        elif self._settings_dialog is not None:
             self._settings_dialog.set_data_safety_state(busy=False, message=status, error=True)
         logger.bind(component="data_safety", operation=operation).warning(
             "event=data_safety_operation_failed message={message}",
@@ -4706,7 +4859,11 @@ class MainWindow(QMainWindow):
         self._show_error(
             f"{action}失败",
             f"未能{action}",
-            "当前数据库未被替换。请检查所选文件和目标目录后重试。",
+            (
+                "案例数据没有写入目标文件。请检查目标目录后重试。"
+                if operation.startswith("export_")
+                else "当前数据库未被替换。请检查所选文件和目标目录后重试。"
+            ),
             message,
         )
 

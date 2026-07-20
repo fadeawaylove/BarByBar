@@ -26,7 +26,7 @@
 - [x] 3.5 Add settings or data-management UI for backup, restore selection, restart guidance, paths, progress, and actionable errors.
 - [x] 3.6 Define a stable session/trade export view model independent of internal database column names.
 - [x] 3.7 Export selected session summaries and trades as UTF-8 CSV and JSON with deterministic headers and formatting.
-- [ ] 3.8 Add export UI, success feedback, empty-session behavior, write-failure handling, and automated tests.
+- [x] 3.8 Add export UI, success feedback, empty-session behavior, write-failure handling, and automated tests.
 
 ## 4. CSV Import Quality Review
 

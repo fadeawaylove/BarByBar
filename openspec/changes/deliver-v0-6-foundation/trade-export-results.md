@@ -28,4 +28,23 @@ Focused export model and writer tests: 9 passed
 
 Covered cases include deterministic repeat exports, Chinese text, stable headers, trade ordering, entry-leg encoding, empty-case summaries, unsupported formats, atomic publish failure, preservation of an existing target, and partial-file cleanup.
 
-Next task: add export selection UI, background execution, success feedback, empty-session behavior, and write-failure handling.
+## Export workflow slice
+
+The full trade-history workspace now provides CSV and JSON export actions for the current case. Export preparation uses the stable view model, and file writing runs through the existing background data-safety coordinator so the window remains responsive and backup, restore, and export operations cannot overlap.
+
+The interface keeps the export scope explicit: every export contains the current case summary and all saved trades, independent of history filters. It shows progress while writing, reports the destination and trade count on success, produces a valid summary-only export for an empty case, and leaves the selected target untouched when writing fails. Failures remain visible in the workspace and include a concrete retry action.
+
+Visual verification used the 1080 x 640 full-history layout. The secondary export actions remain separate from filters and the progress or result message has a dedicated row without reducing the table or review workspace.
+
+Verification:
+
+```text
+Focused export workflow tests: 4 passed
+Focused export, paths, and main-window tests: 276 passed
+Complete automated suite: 727 passed
+OpenSpec strict validation: passed
+```
+
+Covered workflow cases include no open case, empty-case CSV export, saved-trade JSON export, review-note preservation, background progress, success re-enablement, actionable write failure, and preservation of a blocked target path.
+
+Next task: extract the pure CSV inspection result required by task 4.1 before changing the import interface.

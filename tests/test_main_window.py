@@ -1,7 +1,9 @@
+import csv
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta
 from math import floor
+from io import StringIO
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -3972,6 +3974,141 @@ def test_open_full_trade_history_dialog_reuses_dialog_instance(window: MainWindo
     window.open_full_trade_history_dialog()
 
     assert window._trade_history_dialog is first_dialog
+
+
+def test_trade_history_export_buttons_require_an_open_case(window: MainWindow) -> None:
+    dialog = TradeHistoryDialog(window)
+    try:
+        assert dialog.export_csv_button.text() == "导出 CSV"
+        assert dialog.export_json_button.text() == "导出 JSON"
+        assert dialog.export_csv_button.property("role") == "secondary"
+        assert dialog.export_json_button.property("role") == "secondary"
+        assert dialog.export_csv_button.isEnabled() is False
+        assert dialog.export_json_button.isEnabled() is False
+        assert "当前案例摘要和全部历史交易" in dialog.export_status_label.text()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_trade_history_exports_empty_case_summary_as_csv(
+    window: MainWindow,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dataset = window.repo.list_datasets()[0]
+    session = window.repo.create_session(dataset.id or 0, start_index=1, title="空案例导出")
+    window.current_session_id = session.id
+    window.current_dataset = dataset
+    target = tmp_path / "empty-case.csv"
+    notices: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        "barbybar.ui.main_window.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(target), "CSV 文件 (*.csv)"),
+    )
+    monkeypatch.setattr(window, "_show_notice", lambda *args: notices.append(args))
+    window.open_full_trade_history_dialog()
+    dialog = window._trade_history_dialog
+    assert dialog is not None
+
+    dialog.export_csv_button.click()
+    assert dialog.export_progress.isVisible() is True
+    _wait_until(app, lambda: not window.data_safety_operation_running())
+
+    rows = list(csv.DictReader(StringIO(target.read_text(encoding="utf-8-sig"))))
+    assert len(rows) == 1
+    assert rows[0]["case_id"] == str(session.id)
+    assert rows[0]["trade_number"] == ""
+    assert "暂无交易" in dialog.export_status_label.text()
+    assert dialog.export_csv_button.isEnabled() is True
+    assert notices and notices[-1][0] == "导出完成"
+
+
+def test_trade_history_exports_saved_trades_as_json(
+    window: MainWindow,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dataset = window.repo.list_datasets()[0]
+    session = window.repo.create_session(dataset.id or 0, start_index=1, title="交易导出")
+    start = datetime(2025, 1, 1, 9, 0)
+    trades = [
+        TradeReviewItem(
+            1,
+            start,
+            start + timedelta(minutes=3),
+            "long",
+            1,
+            100,
+            102,
+            2,
+            1,
+            4,
+            3,
+            "take_profit",
+            True,
+            True,
+            False,
+            True,
+            entry_note="突破后入场",
+            review_note="执行稳定",
+        )
+    ]
+    window.repo.save_trade_review_items(session.id or 0, session.chart_timeframe, trades)
+    window.current_session_id = session.id
+    window.current_dataset = dataset
+    window._trade_review_items = trades
+    target = tmp_path / "trades.json"
+    monkeypatch.setattr(
+        "barbybar.ui.main_window.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(target), "JSON 文件 (*.json)"),
+    )
+    monkeypatch.setattr(window, "_show_notice", lambda *args: None)
+    window.open_full_trade_history_dialog()
+    dialog = window._trade_history_dialog
+    assert dialog is not None
+
+    dialog.export_json_button.click()
+    _wait_until(app, lambda: not window.data_safety_operation_running())
+
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["session"]["case_id"] == session.id
+    assert payload["trades"][0]["direction"] == "long"
+    assert payload["trades"][0]["review_note"] == "执行稳定"
+    assert "已导出 1 笔交易" in dialog.export_status_label.text()
+
+
+def test_trade_history_export_write_failure_shows_recovery_message(
+    window: MainWindow,
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dataset = window.repo.list_datasets()[0]
+    session = window.repo.create_session(dataset.id or 0, start_index=1, title="失败导出")
+    window.current_session_id = session.id
+    window.current_dataset = dataset
+    blocked_parent = tmp_path / "blocked"
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    target = blocked_parent / "trades.json"
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        "barbybar.ui.main_window.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(target), "JSON 文件 (*.json)"),
+    )
+    monkeypatch.setattr(window, "_show_error", lambda *args: errors.append(args))
+    window.open_full_trade_history_dialog()
+    dialog = window._trade_history_dialog
+    assert dialog is not None
+
+    dialog.export_json_button.click()
+    _wait_until(app, lambda: not window.data_safety_operation_running())
+
+    assert "导出交易失败" in dialog.export_status_label.text()
+    assert "没有写入目标文件" in errors[-1][2]
+    assert blocked_parent.read_text(encoding="utf-8") == "not a directory"
 
 
 def test_right_sidebar_keeps_trade_and_review_surfaces_available(window: MainWindow) -> None:

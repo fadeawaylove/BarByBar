@@ -67,3 +67,9 @@ def default_backup_dir() -> Path:
     root = default_data_root() / "backups"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def default_exports_dir() -> Path:
+    root = default_data_root() / "exports"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
