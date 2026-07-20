@@ -61,6 +61,7 @@ TRADE_MARKER_OPACITY = 0.45
 TRADE_MARKER_FOCUSED_OPACITY = 0.65
 Y_AXIS_DRAG_GUTTER_WIDTH_PX = 48.0
 DEFAULT_RIGHT_PADDING = 3.0
+DEFAULT_BARS_IN_VIEW = 120
 DRAWING_SNAP_DISTANCE_PX = 50.0
 INTERACTIVE_VIEWPORT_REFRESH_DELAY_MS = 90
 VIEWPORT_CHANGED_THROTTLE_MS = 60
@@ -1175,7 +1176,7 @@ class ChartWidget(QWidget):
         if preserve_viewport:
             self._viewport.bars_in_view = self._clamp_bars_in_view(self._viewport.bars_in_view)
         else:
-            self._viewport.bars_in_view = self._clamp_bars_in_view(120)
+            self._viewport.bars_in_view = self._initial_bars_in_view()
         if not preserve_viewport:
             self._pending_drawing_anchors = []
             self._clear_drawing_preview_state()
@@ -1233,7 +1234,7 @@ class ChartWidget(QWidget):
 
     def reset_viewport(self, follow_latest: bool = True) -> None:
         self._viewport.follow_latest = follow_latest
-        self._viewport.bars_in_view = self._clamp_bars_in_view(120)
+        self._viewport.bars_in_view = self._initial_bars_in_view()
         self._viewport.right_edge_index = self._cursor + 1 if self._cursor >= 0 else 0.0
         self._reset_y_axis_offset()
         self._apply_viewport()
@@ -1325,6 +1326,14 @@ class ChartWidget(QWidget):
         logical_cap = max(self._viewport.min_bars_in_view, min(int(bars_in_view), self._viewport.max_bars_in_view))
         readable_cap = self._max_readable_bars_in_view()
         return min(logical_cap, readable_cap)
+
+    def _initial_bars_in_view(self) -> int:
+        revealed_count = min(
+            len(self._bars),
+            max(0, self._cursor - self._global_start_index + 1),
+        )
+        target = min(DEFAULT_BARS_IN_VIEW, revealed_count) if revealed_count else DEFAULT_BARS_IN_VIEW
+        return self._clamp_bars_in_view(target)
 
     @staticmethod
     def _order_lines_signature_for(order_lines: list[OrderLine]) -> tuple[object, ...]:

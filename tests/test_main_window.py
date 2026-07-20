@@ -3836,6 +3836,21 @@ def test_trade_history_focus_right_edge_clamps_near_data_end() -> None:
     assert left <= 238 <= floor(right_edge - 1e-9) + 0.5
 
 
+def test_trade_history_focus_ignores_stale_span_indices_outside_resolved_target() -> None:
+    right_edge = MainWindow._trade_history_focus_right_edge(
+        target_index=10,
+        entry_index=40,
+        exit_index=41,
+        bars_in_view=26,
+        total_count=60,
+    )
+    left = (floor(right_edge - 1e-9) + 0.5) - 26
+    visible_right = floor(right_edge - 1e-9) + 0.5
+
+    assert left <= 10 <= visible_right
+    assert floor(right_edge - 1e-9) - 10 >= 12
+
+
 def test_update_ui_populates_training_stats_and_trade_history(window: MainWindow) -> None:
     _seed_engine(window)
     window.chart_widget.set_window_data(

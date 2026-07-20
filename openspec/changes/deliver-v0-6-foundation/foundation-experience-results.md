@@ -19,4 +19,21 @@ User-visible source copy scan: no remaining PnL, Bar/bars, Template, or raw dire
 OpenSpec strict validation: passed
 ```
 
-Next task: add a bounded adaptive initial chart viewport for short revealed histories in task 5.2.
+## Adaptive initial viewport slice
+
+Initial session load and explicit viewport reset now adapt the visible candle capacity to the currently loaded, revealed history. The target is bounded by the existing 20-bar readability minimum, the 120-bar default, and the dynamic narrow-window pixel cap. Normal histories retain the 120-bar default.
+
+The existing three-bar right padding remains outside the candle capacity, so short histories remove unnecessary left-side blank space without losing future planning space. Manual pan and zoom, cursor stepping, and preserved viewport window extensions do not trigger adaptive resizing.
+
+Trade-history focus now ignores stale raw entry/exit index spans when they do not contain the timestamp-resolved target. This keeps the selected trade point visible with the smaller adaptive viewport while preserving span framing for consistent indices.
+
+Verification:
+
+```text
+Focused viewport, zoom, pan, padding, and trade-focus tests: 37 passed
+Chart widget suite: 271 passed
+Complete automated suite: 756 passed
+OpenSpec strict validation: passed
+```
+
+Next task: make save progress, success, and persistent failure states explicit in task 5.4.

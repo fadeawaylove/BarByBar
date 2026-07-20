@@ -5966,7 +5966,10 @@ class MainWindow(QMainWindow):
         span_end = max(0, max(int(entry_index), int(exit_index)))
         span_width = span_end - span_start + 1
         desired_right = single_focus_right
-        if span_width <= max(1, visible_bars - desired_right_context - TRADE_HISTORY_FOCUS_MIN_RIGHT_CONTEXT):
+        if (
+            span_start <= normalized_target <= span_end
+            and span_width <= max(1, visible_bars - desired_right_context - TRADE_HISTORY_FOCUS_MIN_RIGHT_CONTEXT)
+        ):
             span_focus_right = float(
                 max(
                     normalized_target + desired_right_context + 1,

@@ -445,14 +445,57 @@ def test_set_window_data_preserve_viewport_clamps_existing_zoom_instead_of_reset
     assert widget.viewport_state.bars_in_view != 120
 
 
-def test_early_cursor_keeps_fixed_window_width(widget: ChartWidget) -> None:
+def test_short_initial_history_adapts_viewport_and_preserves_planning_space(widget: ChartWidget) -> None:
+    widget.set_window_data(_bars(31), cursor=30, total_count=240, global_start_index=0)
+
+    left, visible_right = widget._visible_x_window()
+    _range_left, range_right = widget.current_x_range()
+
+    assert widget.viewport_state.bars_in_view == 31
+    assert left == pytest.approx(-BAR_SLOT_HALF_WIDTH)
+    assert range_right - visible_right == pytest.approx(widget._right_padding)
+
+
+def test_very_short_initial_history_respects_minimum_zoom(widget: ChartWidget) -> None:
+    widget.set_window_data(_bars(5), cursor=4, total_count=240, global_start_index=0)
+
+    assert widget.viewport_state.bars_in_view == widget.viewport_state.min_bars_in_view
+
+
+def test_normal_initial_history_keeps_default_viewport(widget: ChartWidget) -> None:
+    widget.set_window_data(_bars(180), cursor=179, total_count=240, global_start_index=0)
+
+    assert widget.viewport_state.bars_in_view == 120
+
+
+def test_empty_initial_history_keeps_safe_default_viewport(widget: ChartWidget) -> None:
+    widget.set_window_data([], cursor=-1, total_count=0, global_start_index=0)
+
+    assert widget.viewport_state.bars_in_view == 120
+    assert widget.viewport_state.right_edge_index == 0.0
+
+
+def test_reset_viewport_reapplies_adaptive_width_for_early_cursor(widget: ChartWidget) -> None:
     widget.set_full_data(_bars())
     widget.set_cursor(30)
-
-    left, right = widget.current_x_range()
-
-    assert right - left > 120
     assert widget.viewport_state.bars_in_view == 120
+
+    widget.reset_viewport(follow_latest=True)
+
+    assert widget.viewport_state.bars_in_view == 31
+    assert widget.viewport_state.follow_latest is True
+
+
+def test_short_initial_history_respects_narrow_window_readability(widget: ChartWidget, app: QApplication) -> None:
+    widget.resize(120, 600)
+    widget.show()
+    app.processEvents()
+    readable_cap = widget._max_readable_bars_in_view()
+
+    widget.set_window_data(_bars(80), cursor=79, total_count=240, global_start_index=0)
+
+    assert widget.viewport_state.bars_in_view == min(80, readable_cap)
+    assert widget.viewport_state.bars_in_view >= widget.viewport_state.min_bars_in_view
 
 
 def test_viewport_left_edge_aligns_to_whole_bar(widget: ChartWidget) -> None:
